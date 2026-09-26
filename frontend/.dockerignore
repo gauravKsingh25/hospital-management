@@ -1,0 +1,18 @@
+# Keep the build context small and free of anything secret.
+node_modules
+.next
+out
+.git
+.env
+.env.local
+.env.*.local
+
+# Test output — screenshots and traces of real (test) patient data.
+test-results
+playwright-report
+blob-report
+.playwright
+
+npm-debug.log*
+yarn-error.log*
+*.tsbuildinfo

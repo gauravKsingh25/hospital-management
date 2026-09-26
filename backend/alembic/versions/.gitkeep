@@ -1,0 +1,2 @@
+# Alembic revisions live here. Generated with:
+#   alembic revision --autogenerate -m "add hospitals table"

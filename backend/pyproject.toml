@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hospital-backend"
+version = "0.1.0"
+description = "Patient-journey management system for a multi-department hospital (modular monolith)"
+requires-python = ">=3.12"
+
+# Versions pinned exactly (CLAUDE.md §4). Bump deliberately, never implicitly.
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.0",
+    "sqlmodel==0.0.39",
+    "sqlalchemy==2.0.51",
+    "asyncpg==0.31.0",
+    "greenlet==3.5.4",
+    "alembic==1.18.5",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+    "arq==0.28.0",
+    "pyjwt==2.13.0",
+    "argon2-cffi==25.1.0",
+    "email-validator==2.3.0",
+    # IANA timezone database. Windows and slim Linux images ship none, so
+    # zoneinfo lookups ("UTC", "Asia/Kolkata") fail without it — needed by
+    # Alembic's timestamped revisions and by any IST-local reporting later.
+    "tzdata==2026.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "httpx>=0.28",
+    "ruff>=0.9",
+    "mypy>=1.15",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# --- Tooling ---------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "ASYNC", "S", "C4", "SIM", "BLE", "RUF"]
+ignore = [
+    "S101",  # assert — used by pytest
+    "B008",  # function call in default arg — that IS FastAPI's Depends() idiom
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["E501", "N999"]
+"tests/*" = ["S105", "S106"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["alembic.*", "arq.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Test helpers legitimately poke at private/dynamic SQLAlchemy attributes.
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra -q"

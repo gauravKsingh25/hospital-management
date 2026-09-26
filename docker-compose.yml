@@ -1,0 +1,131 @@
+# Local development stack.
+#
+# The api talks to whatever DATABASE_URL in .env points at — Neon by default.
+# The `postgres` service below is the offline/local alternative described in
+# CLAUDE.md §5 ("Docker Compose (local Postgres) -> Neon"); point DATABASE_URL
+# and DIRECT_URL at it when you want a throwaway database:
+#
+#   DATABASE_URL="postgresql://hospital:hospital@postgres:5432/hospital"
+#   DIRECT_URL="postgresql://hospital:hospital@postgres:5432/hospital"
+
+name: hospital-management
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      # Service-network overrides. .env holds host-machine values so the same
+      # file works for `uvicorn` run directly on the host.
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Source bind-mount + --reload: edits are live without a rebuild.
+      # PYTHONPATH=/code makes the mounted source win over the installed copy.
+      - ./backend:/code
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    # Its own process, not a thread inside the api. A background job sharing
+    # the web process competes with request handling for the event loop, and
+    # the first thing that suffers is the latency of the screen a receptionist
+    # is staring at. It also lets the two scale independently.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/code
+    command: ["arq", "app.workers.main.WorkerSettings"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      # Service-network address. `.env` holds the host-machine value so the
+      # same file works whether the frontend runs here or via `npm run dev`.
+      #
+      # This is a *server-side* variable. The browser never learns the API's
+      # address, because the browser never talks to it — every request goes
+      # through this app's own /bff proxy (see frontend/src/app/bff).
+      API_BASE_URL: http://api:8000/api/v1
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hospital}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hospital}
+      POSTGRES_DB: ${POSTGRES_DB:-hospital}
+      # Deterministic collation — index ordering must not depend on the host.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Postgres 18+ images expect the mount one level up, at
+      # /var/lib/postgresql, and place the cluster in a version-named
+      # subdirectory so `pg_upgrade --link` can work across a mount boundary.
+      # Mounting the old /var/lib/postgresql/data path makes the image refuse
+      # to start.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hospital} -d ${POSTGRES_DB:-hospital}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    # appendonly keeps queued jobs across a restart — a dropped notification
+    # or auto-close job is a real workflow failure, not just a cache miss.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

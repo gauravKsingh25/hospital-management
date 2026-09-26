@@ -1,0 +1,262 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * Sonner's stylesheet, imported rather than left to the library.
+ *
+ * Sonner injects its own CSS at runtime with a bare
+ * `document.createElement("style")`, and that element carries no nonce — so
+ * our Content-Security-Policy blocked it and every toast in the app rendered
+ * unstyled and `position: static`, in the document flow instead of floating.
+ * Confirmations, errors and "token issued" were all silently broken; the e2e
+ * suite never caught it because a toast's *text* is present either way.
+ *
+ * The package exports the same CSS as a file, so importing it here routes the
+ * styles through the bundler and they arrive as a stylesheet served from
+ * `self` — which CSP trusts. The library still attempts its injection and is
+ * still refused, which is correct and now harmless.
+ */
+@import "sonner/dist/styles.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Hospital theme (CLAUDE.md §4, §7b).
+ *
+ * Three rules drive every value below, and each is a clinical requirement
+ * rather than taste:
+ *
+ * 1. HIGH CONTRAST. Ward and OPD screens are read at an angle, under
+ *    fluorescent light, often on a cheap panel. Body text sits at ~15:1
+ *    against its background — well past WCAG AAA — because the failure mode
+ *    is a misread number on a drug chart.
+ * 2. LARGE TARGETS. `--tap-target` is 44px, the floor for a finger on a
+ *    counter touchscreen. Controls inherit it rather than each screen
+ *    picking its own height.
+ * 3. STATUS IS A COLOUR, AND THE COLOUR IS DEFINED ONCE. The encounter state
+ *    machine (CLAUDE.md §6) is rendered as chips all over the app. Defining
+ *    the palette here means "what colour is AWAITING_RESULTS?" has exactly
+ *    one answer, and a new status is a token rather than a hunt through JSX.
+ */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  /* Latin first, Devanagari second: each glyph is drawn by whichever family
+     covers it, so a Hindi label containing an English drug name renders in
+     one consistent line rather than falling back mid-sentence. */
+  --font-sans: var(--font-latin), var(--font-devanagari), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  /* Clinical semantics, usable as background, text and border utilities. */
+  --color-critical: var(--critical);
+  --color-critical-foreground: var(--critical-foreground);
+  --color-caution: var(--caution);
+  --color-caution-foreground: var(--caution-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --spacing-tap: var(--tap-target);
+}
+
+:root {
+  /* A near-white ground rather than pure white: less glare over an 8-hour
+     shift, with no measurable contrast cost. */
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.17 0.015 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.17 0.015 255);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.17 0.015 255);
+
+  /* Clinical teal. Deliberately not red or amber — those two are reserved
+     for meaning, and a primary button competing with a critical alert is how
+     a critical alert stops being noticed. */
+  --primary: oklch(0.48 0.1 205);
+  --primary-foreground: oklch(0.99 0.005 200);
+  --secondary: oklch(0.955 0.008 250);
+  --secondary-foreground: oklch(0.25 0.02 255);
+  --muted: oklch(0.955 0.008 250);
+  --muted-foreground: oklch(0.47 0.02 255);
+  --accent: oklch(0.94 0.02 205);
+  --accent-foreground: oklch(0.25 0.05 220);
+  --destructive: oklch(0.53 0.22 27);
+
+  --critical: oklch(0.53 0.22 27);
+  --critical-foreground: oklch(0.99 0.01 25);
+  --caution: oklch(0.72 0.16 75);
+  --caution-foreground: oklch(0.24 0.06 70);
+  --success: oklch(0.55 0.14 155);
+  --success-foreground: oklch(0.99 0.01 155);
+  --info: oklch(0.55 0.14 250);
+  --info-foreground: oklch(0.99 0.01 250);
+
+  --border: oklch(0.89 0.008 250);
+  --input: oklch(0.85 0.01 250);
+  --ring: oklch(0.48 0.1 205);
+
+  --chart-1: oklch(0.55 0.13 205);
+  --chart-2: oklch(0.62 0.14 155);
+  --chart-3: oklch(0.68 0.15 75);
+  --chart-4: oklch(0.58 0.17 285);
+  --chart-5: oklch(0.6 0.18 27);
+
+  --radius: 0.5rem;
+  --tap-target: 2.75rem;
+
+  --sidebar: oklch(0.975 0.005 250);
+  --sidebar-foreground: oklch(0.17 0.015 255);
+  --sidebar-primary: oklch(0.48 0.1 205);
+  --sidebar-primary-foreground: oklch(0.99 0.005 200);
+  --sidebar-accent: oklch(0.94 0.02 205);
+  --sidebar-accent-foreground: oklch(0.25 0.05 220);
+  --sidebar-border: oklch(0.89 0.008 250);
+  --sidebar-ring: oklch(0.48 0.1 205);
+}
+
+.dark {
+  --background: oklch(0.17 0.015 255);
+  --foreground: oklch(0.97 0.005 250);
+  --card: oklch(0.22 0.018 255);
+  --card-foreground: oklch(0.97 0.005 250);
+  --popover: oklch(0.22 0.018 255);
+  --popover-foreground: oklch(0.97 0.005 250);
+  --primary: oklch(0.72 0.12 200);
+  --primary-foreground: oklch(0.17 0.03 220);
+  --secondary: oklch(0.28 0.02 255);
+  --secondary-foreground: oklch(0.97 0.005 250);
+  --muted: oklch(0.28 0.02 255);
+  --muted-foreground: oklch(0.72 0.015 255);
+  --accent: oklch(0.32 0.04 210);
+  --accent-foreground: oklch(0.95 0.02 200);
+  --destructive: oklch(0.68 0.19 25);
+
+  --critical: oklch(0.68 0.19 25);
+  --critical-foreground: oklch(0.15 0.02 25);
+  --caution: oklch(0.8 0.15 80);
+  --caution-foreground: oklch(0.2 0.05 70);
+  --success: oklch(0.7 0.15 155);
+  --success-foreground: oklch(0.15 0.03 155);
+  --info: oklch(0.7 0.13 250);
+  --info-foreground: oklch(0.15 0.03 250);
+
+  --border: oklch(1 0 0 / 14%);
+  --input: oklch(1 0 0 / 20%);
+  --ring: oklch(0.72 0.12 200);
+
+  --chart-1: oklch(0.72 0.12 200);
+  --chart-2: oklch(0.72 0.14 155);
+  --chart-3: oklch(0.78 0.15 80);
+  --chart-4: oklch(0.68 0.16 285);
+  --chart-5: oklch(0.7 0.17 27);
+
+  --sidebar: oklch(0.2 0.018 255);
+  --sidebar-foreground: oklch(0.97 0.005 250);
+  --sidebar-primary: oklch(0.72 0.12 200);
+  --sidebar-primary-foreground: oklch(0.17 0.03 220);
+  --sidebar-accent: oklch(0.32 0.04 210);
+  --sidebar-accent-foreground: oklch(0.95 0.02 200);
+  --sidebar-border: oklch(1 0 0 / 14%);
+  --sidebar-ring: oklch(0.72 0.12 200);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    /* 16px floor. Below this, staff lean toward the monitor, and a ward
+       screen that has to be leaned into is a screen that gets ignored. */
+    font-size: 1rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  html {
+    @apply font-sans;
+  }
+  /* Tabular figures everywhere a number is compared down a column — vitals,
+     tokens, money, doses. Proportional digits make 11 and 77 different
+     widths, which is exactly wrong when scanning a list for an outlier. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Focus must be unmissable: this app is meant to be driven from the
+     keyboard (§7b), and an invisible focus ring makes that impossible. */
+  :focus-visible {
+    @apply outline-ring outline-2 outline-offset-2;
+  }
+  /* Respect the OS setting. Vestibular triggers are not a preference. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@media print {
+  /* Token slips, cards and receipts print from the same screen that shows
+     them, so everything that is chrome rather than artifact opts out. */
+  .no-print {
+    display: none !important;
+  }
+
+  /* Next's development overlay — the "N issues" badge and its error dialogs.
+     It mounts as a custom element outside the React tree, so no className can
+     reach it and it lands on top of a printed token slip. Dev-only, but the
+     one place a hospital would notice it is exactly here: somebody testing
+     the printer, on the artifact a patient walks away with. */
+  nextjs-portal {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+  }
+}
