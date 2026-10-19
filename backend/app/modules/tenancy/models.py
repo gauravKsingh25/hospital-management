@@ -6,12 +6,12 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, text
+from sqlalchemy import DateTime, Index, LargeBinary, UniqueConstraint, text
 from sqlmodel import Field
 
-from app.core.models import AuditedTenantModel, IdentifiedModel, SoftDeleteMixin
+from app.core.models import AuditedTenantModel, IdentifiedModel, SoftDeleteMixin, TenantModel
 
-__all__ = ["Department", "DepartmentType", "Hospital"]
+__all__ = ["Department", "DepartmentType", "Hospital", "HospitalLogo"]
 
 
 class Hospital(IdentifiedModel, SoftDeleteMixin, table=True):
@@ -61,6 +61,8 @@ class Hospital(IdentifiedModel, SoftDeleteMixin, table=True):
     # Where the reception counter's UPI QR sends money (CLAUDE.md §9,
     # UPI-first). Per tenant: two hospitals on one deployment are two payees.
     upi_vpa: str | None = Field(default=None, max_length=100, description="UPI ID, e.g. name@bank.")
+    # The current version in `hospital_logos`; null until one is uploaded.
+    logo_version: int | None = Field(default=None)
 
     # IANA name. Stored per tenant because a multi-hospital deployment may
     # eventually span timezones; all timestamps stay UTC in the database and
@@ -129,3 +131,20 @@ class Department(AuditedTenantModel, table=True):
         nullable=True,
         index=True,
     )
+
+
+class HospitalLogo(TenantModel, table=True):
+    """The hospital's logo, one row per upload, for the top of every bill.
+
+    Never overwritten: a new upload is a new version, and an issued bill names
+    the version it was printed with, so a reprint years later shows the logo
+    the patient was handed. Kept in the database rather than object storage —
+    it is a few kilobytes, and it then works the same on local Postgres and Neon.
+    """
+
+    __tablename__ = "hospital_logos"
+    __table_args__ = (UniqueConstraint("hospital_id", "version", name="uq_hospital_logos_version"),)
+
+    version: int = Field(ge=1)
+    content_type: str = Field(max_length=32)
+    data: bytes = Field(sa_type=LargeBinary)

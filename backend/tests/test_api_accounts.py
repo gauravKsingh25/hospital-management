@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import sqlalchemy as sa
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +19,7 @@ from app.core import database as db
 from app.core.pagination import PageParams
 from app.modules.billing import service as billing_service
 from app.modules.billing.models import ChargeStatus
-from app.modules.identity.models import User
+from app.modules.identity.models import AuditLog, User
 from app.modules.identity.rbac import Roles
 from app.modules.tenancy.models import Hospital
 from tests import accounts_support as support
@@ -147,7 +148,13 @@ class TestOnlyAccountsChangeAnIpdBill:
         admin_token: str,
         tenant: Hospital,
     ) -> None:
-        charge_id = await _pending_charge(session, tenant, stay.encounter.id)
+        added = await api.post(
+            CHARGES,
+            json={"encounter_id": str(stay.encounter.id), "service_item_code": "DRESSING"},
+            headers=auth(admin_token),
+        )
+        assert added.status_code == 201, added.text
+        charge_id = added.json()["id"]
 
         response = await api.post(
             f"{CHARGES}/{charge_id}/waive",
@@ -156,3 +163,99 @@ class TestOnlyAccountsChangeAnIpdBill:
         )
 
         assert response.status_code == 200, response.text
+
+
+# ---------------------------------------------------------------------------
+# The editor's routes
+# ---------------------------------------------------------------------------
+class TestIpdBillEditor:
+    async def test_every_change_is_audited_with_before_and_after(
+        self, api: AsyncClient, session: AsyncSession, tenant: Hospital, stay: support.Stay
+    ) -> None:
+        token = await _token(api, session, tenant, Roles.ACCOUNTANT)
+        url = f"{ACCOUNTS}/{stay.encounter.id}/ipd-bill"
+
+        loaded = await api.get(url, headers=auth(token))
+        assert loaded.status_code == 200, loaded.text
+        assert loaded.json()["stay"]["admission_number"] == stay.admission.admission_number
+
+        added = await api.post(
+            f"{url}/changes",
+            json={
+                "expected_version": loaded.json()["version"],
+                "ops": [{"op": "add", "service_item_code": "DRESSING", "reason": "Ward use"}],
+            },
+            headers=auth(token),
+        )
+        assert added.status_code == 200, added.text
+        [dressing] = added.json()["charges"]
+
+        edited = await api.post(
+            f"{url}/changes",
+            json={
+                "expected_version": added.json()["version"],
+                "ops": [
+                    {
+                        "op": "edit",
+                        "charge_id": dressing["id"],
+                        "quantity": "2",
+                        "reason": "Two dressings",
+                    }
+                ],
+            },
+            headers=auth(token),
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["total"] == "537.60"
+
+        async with db.system_context(session):
+            rows = (
+                (
+                    await session.execute(
+                        sa.select(AuditLog)
+                        .where(AuditLog.action == "billing.ipd_bill.edit")
+                        .order_by(AuditLog.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [row.changes["op"] for row in rows] == ["add", "edit"]
+        edit = rows[-1].changes
+        assert edit["reason"] == "Two dressings"
+        assert edit["before"]["quantity"] == "1.00"
+        assert edit["after"]["quantity"] == "2.00"
+        assert edit["after"]["total_amount"] == "537.60"
+
+    async def test_cashier_cannot_save_changes(
+        self, api: AsyncClient, session: AsyncSession, tenant: Hospital, stay: support.Stay
+    ) -> None:
+        token = await _token(api, session, tenant, Roles.CASHIER)
+
+        response = await api.post(
+            f"{ACCOUNTS}/{stay.encounter.id}/ipd-bill/changes",
+            json={
+                "expected_version": "x",
+                "ops": [{"op": "add", "service_item_code": "DRESSING", "reason": "Ward use"}],
+            },
+            headers=auth(token),
+        )
+
+        assert response.status_code == 403, response.text
+
+    async def test_a_stale_save_is_a_conflict(
+        self, api: AsyncClient, session: AsyncSession, tenant: Hospital, stay: support.Stay
+    ) -> None:
+        token = await _token(api, session, tenant, Roles.ACCOUNTANT)
+
+        response = await api.post(
+            f"{ACCOUNTS}/{stay.encounter.id}/ipd-bill/changes",
+            json={
+                "expected_version": "stale",
+                "ops": [{"op": "add", "service_item_code": "DRESSING", "reason": "Ward use"}],
+            },
+            headers=auth(token),
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "bill_changed"

@@ -10,10 +10,10 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import Page, PageParams, page_params
 from app.modules.identity import service as identity_service
 from app.modules.identity.rbac import Permissions
@@ -27,6 +27,7 @@ from app.modules.tenancy.schemas import (
     HospitalCreate,
     HospitalRead,
     HospitalUpdate,
+    LogoUploaded,
 )
 
 router = APIRouter(prefix="/hospitals", tags=["tenancy"])
@@ -132,6 +133,80 @@ async def update_hospital(
     )
     await session.commit()
     return HospitalRead.model_validate(hospital)
+
+
+@router.put(
+    "/{hospital_id}/logo",
+    response_model=LogoUploaded,
+    summary="Upload the hospital's logo (raw PNG or JPEG body)",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+            },
+        }
+    },
+)
+async def upload_logo(
+    hospital_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    context: CanUpdate,
+) -> LogoUploaded:
+    """The file itself is the request body, with its own Content-Type — no
+    multipart form. A new upload is a new version; issued bills keep theirs."""
+    _assert_visible(context, hospital_id)
+    declared = int(request.headers.get("content-length") or 0)
+    if declared > service.LOGO_MAX_BYTES:
+        # Refused before the body is read: nobody waits for 20 MB to arrive
+        # only to be told the limit is 500 KB.
+        raise ValidationError("The logo must be 500 KB or smaller.", code="logo_invalid")
+    data = await request.body()
+    version = await service.save_logo(
+        session,
+        hospital_id,
+        data=data,
+        content_type=request.headers.get("content-type", ""),
+    )
+    await identity_service.record_audit(
+        session,
+        action="hospital.logo.upload",
+        actor=context.user,
+        hospital_id=hospital_id,
+        resource_type="hospital",
+        resource_id=hospital_id,
+        changes={"version": version, "bytes": len(data)},
+        ip_address=await get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    await session.commit()
+    return LogoUploaded(version=version)
+
+
+@router.get(
+    "/{hospital_id}/logo",
+    response_class=Response,
+    responses={200: {"content": {"image/png": {}, "image/jpeg": {}}}},
+    summary="The hospital's logo",
+)
+async def get_logo(
+    hospital_id: uuid.UUID,
+    session: SessionDep,
+    context: CanRead,
+    version: Annotated[int | None, Query(ge=1)] = None,
+) -> Response:
+    """A versioned logo never changes, so it may be cached for a long time."""
+    _assert_visible(context, hospital_id)
+    logo = await service.get_logo(session, hospital_id, version=version)
+    return Response(
+        content=logo.data,
+        media_type=logo.content_type,
+        headers={"Cache-Control": "private, max-age=31536000, immutable"}
+        if version is not None
+        else {"Cache-Control": "private, no-cache"},
+    )
 
 
 @router.post(

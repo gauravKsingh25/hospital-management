@@ -240,6 +240,21 @@ async def get_user(session: AsyncSession, user_id: uuid.UUID) -> User:
     return user
 
 
+async def get_user_names(
+    session: AsyncSession, user_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Staff names for a list that says who did what — "received by" on a
+    receipt list. One query for the page; tenant isolation applies as usual."""
+    if not user_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(User.id, User.full_name).where(col(User.id).in_(set(user_ids)))
+        )
+    ).all()
+    return {row[0]: row[1] for row in rows}
+
+
 async def get_user_by_email(session: AsyncSession, email: str) -> User | None:
     """Look up by login identifier.
 

@@ -230,7 +230,7 @@ async def clean_database(request: pytest.FixtureRequest) -> AsyncIterator[None]:
                     "insurance_claims, payments, charges, invoices, service_prices, "
                     "service_items, rate_cards, invoice_sequences, "
                     "encounter_events, vitals, clinical_notes, diagnoses, orders, "
-                    "note_templates, encounters, encounter_sequences "
+                    "note_templates, encounters, encounter_sequences, hospital_logos "
                     "RESTART IDENTITY CASCADE"
                 )
             )

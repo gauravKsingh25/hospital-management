@@ -14,16 +14,16 @@ months later.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
 from app.core.exceptions import PermissionDeniedError
 from app.core.pagination import MAX_PAGE_SIZE, Page, PageParams, page_params
-from app.modules.billing import service
+from app.modules.billing import accounts, service
 from app.modules.billing.models import (
     ChargeCategory,
     ChargeStatus,
@@ -36,6 +36,10 @@ from app.modules.billing.models import (
 from app.modules.billing.rbac import BillingPermissions
 from app.modules.billing.schemas import (
     AccountBoardEntry,
+    AccountsSummary,
+    BillChangesRequest,
+    BillHistory,
+    BillRow,
     ChargeAdd,
     ChargeRead,
     ClaimCreate,
@@ -50,8 +54,13 @@ from app.modules.billing.schemas import (
     InvoiceIssueRequest,
     InvoiceRead,
     InvoiceSummary,
+    IpdBill,
+    Journey,
+    PatientRow,
     PaymentRead,
     PaymentRequest,
+    PaymentRow,
+    PrintableBill,
     RateCardCreate,
     RateCardRead,
     RateCardUpdate,
@@ -62,6 +71,7 @@ from app.modules.billing.schemas import (
     ServiceItemUpdate,
     ServicePriceRead,
     ServicePriceUpsert,
+    StayRead,
     VisitAccount,
 )
 from app.modules.clinical import service as clinical_service
@@ -78,6 +88,12 @@ invoices_router = APIRouter(prefix="/billing/invoices", tags=["billing"])
 payments_router = APIRouter(prefix="/billing/payments", tags=["billing"])
 claims_router = APIRouter(prefix="/billing/claims", tags=["billing"])
 accounts_router = APIRouter(prefix="/billing/accounts", tags=["billing"])
+billing_patients_router = APIRouter(prefix="/billing/patients", tags=["billing"])
+
+# The accounts dashboard's period, as the hospital's own calendar days.
+DateFrom = Annotated[date | None, Query(alias="from")]
+DateTo = Annotated[date | None, Query(alias="to")]
+Search = Annotated[str | None, Query(max_length=100)]
 
 CanReadRateCard = Annotated[AuthContext, Depends(require(BillingPermissions.RATECARD_READ))]
 CanManageRateCard = Annotated[AuthContext, Depends(require(BillingPermissions.RATECARD_MANAGE))]
@@ -97,6 +113,9 @@ CanRecordPayment = Annotated[AuthContext, Depends(require(BillingPermissions.PAY
 CanReversePayment = Annotated[AuthContext, Depends(require(BillingPermissions.PAYMENT_REVERSE))]
 CanReadClaim = Annotated[AuthContext, Depends(require(BillingPermissions.CLAIM_READ))]
 CanManageClaim = Annotated[AuthContext, Depends(require(BillingPermissions.CLAIM_MANAGE))]
+CanReadAccounts = Annotated[AuthContext, Depends(require(BillingPermissions.ACCOUNTS_READ))]
+CanEditIpdBill = Annotated[AuthContext, Depends(require(BillingPermissions.IPD_BILL_EDIT))]
+CanFinaliseIpdBill = Annotated[AuthContext, Depends(require(BillingPermissions.IPD_BILL_FINALISE))]
 
 
 async def _require_ipd_power(
@@ -531,6 +550,82 @@ async def accounts_board(
     return Page.build(board, total=total, params=params)
 
 
+# --- the accountant's dashboard: declared before "/{encounter_id}", which
+# would otherwise read "summary" as a visit id --------------------------------
+@accounts_router.get("/summary", response_model=AccountsSummary, summary="Accounts totals")
+async def accounts_summary(
+    session: SessionDep,
+    context: CanReadAccounts,
+    tenant_id: TenantId,
+    date_from: DateFrom = None,
+    date_to: DateTo = None,
+) -> AccountsSummary:
+    """Collected (by method), billed and reversals for the period; outstanding
+    and running in wards as of now. Default period: today."""
+    return await accounts.summary(session, hospital_id=tenant_id, start=date_from, end=date_to)
+
+
+@accounts_router.get("/bills", response_model=Page[BillRow], summary="Bills, newest first")
+async def accounts_bills(
+    session: SessionDep,
+    context: CanReadAccounts,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+    date_from: DateFrom = None,
+    date_to: DateTo = None,
+    q: Search = None,
+) -> Page[BillRow]:
+    return await accounts.list_bills(
+        session, params, hospital_id=tenant_id, start=date_from, end=date_to, query=q
+    )
+
+
+@accounts_router.get(
+    "/payments", response_model=Page[PaymentRow], summary="Payments received, newest first"
+)
+async def accounts_payments(
+    session: SessionDep,
+    context: CanReadAccounts,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+    date_from: DateFrom = None,
+    date_to: DateTo = None,
+    q: Search = None,
+) -> Page[PaymentRow]:
+    return await accounts.list_payments_received(
+        session, params, hospital_id=tenant_id, start=date_from, end=date_to, query=q
+    )
+
+
+@accounts_router.get(
+    "/outstanding", response_model=Page[BillRow], summary="Issued bills with a balance"
+)
+async def accounts_outstanding(
+    session: SessionDep,
+    context: CanReadAccounts,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+    q: Search = None,
+) -> Page[BillRow]:
+    return await accounts.list_bills(
+        session, params, hospital_id=tenant_id, query=q, outstanding_only=True
+    )
+
+
+@accounts_router.get(
+    "/patients", response_model=Page[PatientRow], summary="Patients, latest activity first"
+)
+async def accounts_patients(
+    session: SessionDep,
+    context: CanReadAccounts,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+    q: Search = None,
+) -> Page[PatientRow]:
+    """Ordered by last activity, not by cost: this is not a ranking."""
+    return await accounts.list_patients(session, params, hospital_id=tenant_id, query=q)
+
+
 @accounts_router.get("/{encounter_id}", response_model=VisitAccount, summary="A visit's account")
 async def visit_account(
     encounter_id: uuid.UUID, session: SessionDep, context: CanReadCharge, tenant_id: TenantId
@@ -646,6 +741,140 @@ async def collect(
 
 
 # ---------------------------------------------------------------------------
+# The accountant's IPD bill
+# ---------------------------------------------------------------------------
+def _ipd_bill_view(bill: service.IpdBillData) -> IpdBill:
+    return IpdBill(
+        encounter_id=bill.encounter_id,
+        version=bill.version,
+        stay=StayRead.model_validate(bill.stay),
+        charges=[ChargeRead.model_validate(charge) for charge in bill.charges],
+        total=bill.total,
+        has_unpriced_items=bill.has_unpriced_items,
+        final_invoice=(
+            InvoiceSummary.model_validate(bill.final_invoice) if bill.final_invoice else None
+        ),
+        can_finalise=bill.can_finalise,
+    )
+
+
+@accounts_router.get(
+    "/{encounter_id}/ipd-bill", response_model=IpdBill, summary="An IPD stay's running bill"
+)
+async def ipd_bill(
+    encounter_id: uuid.UUID, session: SessionDep, context: CanReadAccounts, tenant_id: TenantId
+) -> IpdBill:
+    """Every line from the admission on, the last saved total, and the version
+    the editor sends back on Save. An OPD visit is refused: its bill is frozen."""
+    encounter = await clinical_service.get_encounter(session, encounter_id, hospital_id=tenant_id)
+    return _ipd_bill_view(await service.ipd_bill(session, encounter, hospital_id=tenant_id))
+
+
+@accounts_router.get(
+    "/{encounter_id}/ipd-bill/printable",
+    response_model=PrintableBill,
+    summary="An IPD stay's running bill, to print",
+)
+async def ipd_bill_printable(
+    encounter_id: uuid.UUID, session: SessionDep, context: CanReadAccounts, tenant_id: TenantId
+) -> PrintableBill:
+    """The bill as last saved, marked INTERIM — NOT A FINAL BILL."""
+    encounter = await clinical_service.get_encounter(session, encounter_id, hospital_id=tenant_id)
+    bill = await service.ipd_bill(session, encounter, hospital_id=tenant_id)
+    return await accounts.printable_running_bill(
+        session,
+        patient_id=encounter.patient_id,
+        stay=bill.stay,
+        charges=bill.charges,
+        hospital_id=tenant_id,
+    )
+
+
+@accounts_router.post(
+    "/{encounter_id}/ipd-bill/changes",
+    response_model=IpdBill,
+    summary="Save the accountant's changes to an IPD bill",
+)
+async def save_ipd_bill(
+    encounter_id: uuid.UUID,
+    payload: BillChangesRequest,
+    session: SessionDep,
+    request: Request,
+    context: CanEditIpdBill,
+    tenant_id: TenantId,
+) -> IpdBill:
+    """All the staged changes in one request: applied together or not at all,
+    each audited with its before, after and reason. The total is recalculated
+    here, once, on Save."""
+    encounter = await clinical_service.get_encounter(session, encounter_id, hospital_id=tenant_id)
+    changes = await service.apply_bill_changes(
+        session,
+        encounter,
+        payload.ops,
+        expected_version=payload.expected_version,
+        actor=context.user,
+        hospital_id=tenant_id,
+    )
+    ip_address = await get_client_ip(request)
+    for change in changes:
+        await identity_service.record_audit(
+            session,
+            action="billing.ipd_bill.edit",
+            actor=context.user,
+            hospital_id=tenant_id,
+            resource_type="charge",
+            resource_id=change.charge.id,
+            changes={
+                "op": change.op,
+                "reason": change.reason,
+                "encounter_id": str(encounter_id),
+                "before": change.before,
+                "after": change.after,
+            },
+            ip_address=ip_address,
+        )
+    await session.commit()
+    return _ipd_bill_view(await service.ipd_bill(session, encounter, hospital_id=tenant_id))
+
+
+@accounts_router.post(
+    "/{encounter_id}/final-bill",
+    response_model=InvoiceRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate an IPD stay's final bill",
+)
+async def finalise_ipd_bill(
+    encounter_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    context: CanFinaliseIpdBill,
+    tenant_id: TenantId,
+) -> InvoiceRead:
+    """After discharge (or death, LAMA, referral) only. Issued and frozen:
+    the counter takes payment against it as against any invoice."""
+    encounter = await clinical_service.get_encounter(session, encounter_id, hospital_id=tenant_id)
+    invoice = await service.finalise_ipd_bill(
+        session, encounter, actor=context.user, hospital_id=tenant_id
+    )
+    await identity_service.record_audit(
+        session,
+        action="billing.ipd_bill.finalise",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="invoice",
+        resource_id=invoice.id,
+        changes={
+            "invoice_number": invoice.invoice_number,
+            "grand_total": str(invoice.grand_total),
+            "encounter_id": str(encounter_id),
+        },
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return await _render(session, invoice, hospital_id=tenant_id)
+
+
+# ---------------------------------------------------------------------------
 # Invoices
 # ---------------------------------------------------------------------------
 @invoices_router.post(
@@ -707,6 +936,26 @@ async def get_invoice(
 ) -> InvoiceRead:
     invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id)
     return await _render(session, invoice, hospital_id=tenant_id)
+
+
+@invoices_router.get(
+    "/{invoice_id}/printable", response_model=PrintableBill, summary="An invoice, to print"
+)
+async def invoice_printable(
+    invoice_id: uuid.UUID, session: SessionDep, context: CanReadInvoice, tenant_id: TenantId
+) -> PrintableBill:
+    """The printed page's data: letterhead from the day of issue, lines, GST,
+    totals and receipts. A draft prints as interim."""
+    invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id)
+    charges, _ = await service.list_charges(
+        session, PageParams(limit=MAX_PAGE_SIZE), hospital_id=tenant_id, invoice_id=invoice.id
+    )
+    payments, _ = await service.list_payments(
+        session, PageParams(limit=MAX_PAGE_SIZE), hospital_id=tenant_id, invoice_id=invoice.id
+    )
+    return await accounts.printable_invoice(
+        session, invoice, charges=charges, payments=payments, hospital_id=tenant_id
+    )
 
 
 @invoices_router.post(
@@ -1025,3 +1274,39 @@ async def progress_claim(
     )
     await session.commit()
     return ClaimRead.model_validate(updated)
+
+
+# ---------------------------------------------------------------------------
+# One patient, for the accountant
+# ---------------------------------------------------------------------------
+@billing_patients_router.get(
+    "/{patient_id}/history", response_model=BillHistory, summary="A patient's bill history"
+)
+async def patient_bill_history(
+    patient_id: uuid.UUID, session: SessionDep, context: CanReadAccounts, tenant_id: TenantId
+) -> BillHistory:
+    """Every bill-bearing visit, newest first, with lifetime billed, paid, due."""
+    return await accounts.bill_history(session, patient_id, hospital_id=tenant_id)
+
+
+@billing_patients_router.get(
+    "/{patient_id}/journey", response_model=Journey, summary="A patient's cost journey"
+)
+async def patient_cost_journey(
+    patient_id: uuid.UUID,
+    session: SessionDep,
+    context: CanReadAccounts,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+    category: ChargeCategory | None = None,
+    encounter_id: uuid.UUID | None = None,
+) -> Journey:
+    """Everything given to the patient, latest first, with totals by category."""
+    return await accounts.cost_journey(
+        session,
+        patient_id,
+        params,
+        hospital_id=tenant_id,
+        category=category,
+        encounter_id=encounter_id,
+    )

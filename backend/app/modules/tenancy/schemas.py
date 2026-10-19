@@ -112,8 +112,13 @@ class HospitalRead(HospitalBase):
     id: uuid.UUID
     code: str
     is_active: bool
+    logo_version: int | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class LogoUploaded(BaseModel):
+    version: int
 
 
 class DepartmentCreate(BaseModel):

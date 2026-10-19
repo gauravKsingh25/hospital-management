@@ -66,6 +66,7 @@ from app.modules.billing.models import (
     ClaimStatus,
     InsuranceClaim,
     Invoice,
+    InvoiceScope,
     InvoiceSequence,
     InvoiceStatus,
     PayerType,
@@ -77,6 +78,11 @@ from app.modules.billing.models import (
     ServicePrice,
 )
 from app.modules.billing.schemas import (
+    BillAdd,
+    BillDiscount,
+    BillEdit,
+    BillOp,
+    BillRemove,
     ChargeAdd,
     ClaimCreate,
     ClaimUpdate,
@@ -105,7 +111,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "StayInfo",
     "add_charge",
+    "apply_bill_changes",
     "assemble_draft",
+    "bill_version",
     "cancel_charges_for_source",
     "cancel_invoice",
     "capture_charge",
@@ -114,11 +122,14 @@ __all__ = [
     "create_rate_card",
     "create_service_item",
     "discount_charge",
+    "edit_charge",
+    "finalise_ipd_bill",
     "get_charge",
     "get_invoice",
     "get_payment",
     "get_rate_card_by_code",
     "get_service_item_by_code",
+    "ipd_bill",
     "issue_invoice",
     "list_charges",
     "list_invoices",
@@ -132,6 +143,7 @@ __all__ = [
     "reverse_payment",
     "set_price",
     "settle_on_closure",
+    "split_pre_admission",
     "stay_for",
     "stays_for",
     "sync_catalogue_item",
@@ -1115,7 +1127,11 @@ async def list_charges(
     return list(rows), total
 
 
-def _assert_charge_editable(charge: Charge) -> None:
+def _assert_charge_editable(charge: Charge, *, draft_id: uuid.UUID | None = None) -> None:
+    """`draft_id` is the stay's running IPD draft: its lines are still the
+    accountant's to correct, because a draft is a working total, not a document."""
+    if charge.status is ChargeStatus.INVOICED and draft_id and charge.invoice_id == draft_id:
+        return
     if charge.status is ChargeStatus.INVOICED:
         raise ConflictError(
             "This charge is on an invoice and can no longer be changed. "
@@ -1156,6 +1172,37 @@ async def _reprice(session: AsyncSession, charge: Charge) -> Charge:
     return charge
 
 
+async def edit_charge(
+    session: AsyncSession,
+    charge: Charge,
+    *,
+    quantity: Decimal | None = None,
+    unit_price: Decimal | None = None,
+    description: str | None = None,
+    draft_id: uuid.UUID | None = None,
+) -> Charge:
+    """Correct a line's quantity, rate or wording; tax and total follow.
+
+    A discount the smaller line can no longer carry is refused, for the same
+    reason `discount_charge` refuses one: somebody meant something else.
+    """
+    _assert_charge_editable(charge, draft_id=draft_id)
+    if quantity is not None:
+        charge.quantity = quantity
+    if unit_price is not None:
+        charge.unit_price = money(unit_price)
+        charge.needs_pricing = False
+    if description is not None:
+        charge.description = description
+    gross = money(charge.unit_price * charge.quantity)
+    if charge.discount_amount > gross:
+        raise ValidationError(
+            f"The discount of {charge.discount_amount} is more than the charge of {gross}.",
+            code="discount_exceeds_charge",
+        )
+    return await _reprice(session, charge)
+
+
 async def price_charge(session: AsyncSession, charge: Charge, *, unit_price: Decimal) -> Charge:
     """Put a price on a line that was captured without one."""
     _assert_charge_editable(charge)
@@ -1165,7 +1212,13 @@ async def price_charge(session: AsyncSession, charge: Charge, *, unit_price: Dec
 
 
 async def discount_charge(
-    session: AsyncSession, charge: Charge, *, amount: Decimal, reason: str, actor: User
+    session: AsyncSession,
+    charge: Charge,
+    *,
+    amount: Decimal,
+    reason: str,
+    actor: User,
+    draft_id: uuid.UUID | None = None,
 ) -> Charge:
     """Reduce a line, with a reason attached.
 
@@ -1173,7 +1226,7 @@ async def discount_charge(
     meant to type something else, and silently turning ₹5,000 off a ₹500 line
     into ₹500 off hides the typo.
     """
-    _assert_charge_editable(charge)
+    _assert_charge_editable(charge, draft_id=draft_id)
     gross = money(charge.unit_price * charge.quantity)
     if money(amount) > gross:
         raise ValidationError(
@@ -1186,7 +1239,12 @@ async def discount_charge(
 
 
 async def waive_charge(
-    session: AsyncSession, charge: Charge, *, reason: str, actor: User
+    session: AsyncSession,
+    charge: Charge,
+    *,
+    reason: str,
+    actor: User,
+    draft_id: uuid.UUID | None = None,
 ) -> Charge:
     """Decide this line is not owed.
 
@@ -1194,7 +1252,7 @@ async def waive_charge(
     what changed is that nobody is paying for it. Held behind its own permission
     because it is the lever somebody would pull to make money disappear.
     """
-    _assert_charge_editable(charge)
+    _assert_charge_editable(charge, draft_id=draft_id)
     charge.status = ChargeStatus.WAIVED
     charge.waiver_reason = reason
     charge.waived_by_id = actor.id
@@ -1431,22 +1489,21 @@ async def get_invoice(
 
 
 async def get_draft_for_encounter(
-    session: AsyncSession, encounter_id: uuid.UUID, *, hospital_id: uuid.UUID
+    session: AsyncSession,
+    encounter_id: uuid.UUID,
+    *,
+    hospital_id: uuid.UUID,
+    scope: InvoiceScope | None = None,
 ) -> Invoice | None:
-    return (
-        (
-            await session.execute(
-                select(Invoice).where(
-                    col(Invoice.encounter_id) == encounter_id,
-                    col(Invoice.hospital_id) == hospital_id,
-                    col(Invoice.status) == InvoiceStatus.DRAFT,
-                    col(Invoice.deleted_at).is_(None),
-                )
-            )
-        )
-        .scalars()
-        .first()
+    query = select(Invoice).where(
+        col(Invoice.encounter_id) == encounter_id,
+        col(Invoice.hospital_id) == hospital_id,
+        col(Invoice.status) == InvoiceStatus.DRAFT,
+        col(Invoice.deleted_at).is_(None),
     )
+    if scope is not None:
+        query = query.where(col(Invoice.scope) == scope)
+    return (await session.execute(query)).scalars().first()
 
 
 async def list_invoices(
@@ -1585,64 +1642,152 @@ async def assemble_draft(
     encounter = await clinical_service.get_encounter(
         session, payload.encounter_id, hospital_id=hospital_id
     )
-    card = await resolve_rate_card(
-        session, hospital_id=hospital_id, preferred_id=payload.rate_card_id
-    )
+    # A stay's bill holds only what was charged from the admission on; what
+    # came before was split off as its own OPD bill when the patient was
+    # admitted (`split_pre_admission`).
+    stay = await stay_for(session, encounter.id, hospital_id=hospital_id)
+    scope = InvoiceScope.IPD if stay is not None else InvoiceScope.OPD
 
-    invoice = await get_draft_for_encounter(session, encounter.id, hospital_id=hospital_id)
+    invoice = await get_draft_for_encounter(
+        session, encounter.id, hospital_id=hospital_id, scope=scope
+    )
     if invoice is None:
-        hospital = await tenancy_service.get_hospital(session, hospital_id)
-        invoice = Invoice(
-            hospital_id=hospital_id,
-            invoice_number=await _next_number(session, hospital_id, "INV"),
-            encounter_id=encounter.id,
-            patient_id=encounter.patient_id,
-            rate_card_id=card.id if card else None,
-            payer_type=payload.payer_type or (card.payer_type if card else PayerType.CASH),
-            status=InvoiceStatus.DRAFT,
-            payer_liability=money(payload.payer_liability),
-            # Snapshotted now rather than at issue so a draft printed for a
-            # patient to look at already carries the right registration.
-            hospital_gstin=hospital.gstin,
-            place_of_supply=payload.place_of_supply or hospital.state,
-            is_interstate=payload.is_interstate,
-            notes=payload.notes,
-        )
-        session.add(invoice)
-        await session.flush()
+        invoice = await _new_draft(session, encounter, payload, scope=scope)
     elif payload.payer_liability:
         invoice.payer_liability = money(payload.payer_liability)
         session.add(invoice)
 
-    pending = (
-        (
-            await session.execute(
-                select(Charge).where(
-                    col(Charge.encounter_id) == encounter.id,
-                    col(Charge.hospital_id) == hospital_id,
-                    col(Charge.status) == ChargeStatus.PENDING,
-                    col(Charge.deleted_at).is_(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    await _gather_pending(session, invoice, since=stay.admitted_at if stay else None)
+    return await _recompute_totals(session, invoice)
+
+
+async def _new_draft(
+    session: AsyncSession,
+    encounter: Encounter,
+    payload: InvoiceDraftRequest,
+    *,
+    scope: InvoiceScope,
+) -> Invoice:
+    hospital_id = encounter.hospital_id
+    card = await resolve_rate_card(
+        session, hospital_id=hospital_id, preferred_id=payload.rate_card_id
     )
-    for charge in pending:
+    hospital = await tenancy_service.get_hospital(session, hospital_id)
+    invoice = Invoice(
+        hospital_id=hospital_id,
+        invoice_number=await _next_number(session, hospital_id, "INV"),
+        encounter_id=encounter.id,
+        patient_id=encounter.patient_id,
+        rate_card_id=card.id if card else None,
+        payer_type=payload.payer_type or (card.payer_type if card else PayerType.CASH),
+        scope=scope,
+        status=InvoiceStatus.DRAFT,
+        payer_liability=money(payload.payer_liability),
+        # Snapshotted now rather than at issue so a draft printed for a
+        # patient to look at already carries the right registration.
+        hospital_gstin=hospital.gstin,
+        place_of_supply=payload.place_of_supply or hospital.state,
+        is_interstate=payload.is_interstate,
+        notes=payload.notes,
+    )
+    session.add(invoice)
+    await session.flush()
+    return invoice
+
+
+async def _gather_pending(
+    session: AsyncSession,
+    invoice: Invoice,
+    *,
+    since: datetime | None = None,
+    before: datetime | None = None,
+) -> None:
+    """Move the visit's pending charges onto `invoice`, optionally bounded by
+    when they were captured."""
+    query = select(Charge).where(
+        col(Charge.encounter_id) == invoice.encounter_id,
+        col(Charge.hospital_id) == invoice.hospital_id,
+        col(Charge.status) == ChargeStatus.PENDING,
+        col(Charge.deleted_at).is_(None),
+    )
+    if since is not None:
+        query = query.where(col(Charge.captured_at) >= since)
+    if before is not None:
+        query = query.where(col(Charge.captured_at) < before)
+    for charge in (await session.execute(query)).scalars().all():
         charge.status = ChargeStatus.INVOICED
         charge.invoice_id = invoice.id
         charge.updated_at = utc_now()
         session.add(charge)
     await session.flush()
 
-    return await _recompute_totals(session, invoice)
+
+async def split_pre_admission(
+    session: AsyncSession,
+    encounter: Encounter,
+    *,
+    admitted_at: datetime,
+    actor: User | None,
+    hospital_id: uuid.UUID,
+) -> Invoice | None:
+    """Freeze what a visit owed before its admission as its own OPD bill.
+
+    A patient admitted from a still-open OPD visit carries the visit — and its
+    consultation fee — into the stay. That fee is an OPD bill, payable at the
+    counter like any other, and must not disappear into the IPD bill the
+    accountant edits. So at the moment of admission every charge captured
+    before it, and any OPD draft the counter had started, is issued as one OPD
+    invoice. Already paid: nothing is pending, nothing happens.
+
+    An unpriced line is issued at its visible zero rather than blocking the
+    admission; billing staff cancel and re-issue the OPD bill to correct it.
+
+    Returns the issued invoice, or None when nothing was owed.
+    """
+    await _lock_visit_billing(session, encounter.id, hospital_id=hospital_id)
+    invoice = await get_draft_for_encounter(
+        session, encounter.id, hospital_id=hospital_id, scope=InvoiceScope.OPD
+    )
+    if invoice is None:
+        owed_before = (
+            await session.execute(
+                select(func.count())
+                .select_from(Charge)
+                .where(
+                    col(Charge.encounter_id) == encounter.id,
+                    col(Charge.hospital_id) == hospital_id,
+                    col(Charge.status) == ChargeStatus.PENDING,
+                    col(Charge.captured_at) < admitted_at,
+                    col(Charge.deleted_at).is_(None),
+                )
+            )
+        ).scalar_one()
+        if not owed_before:
+            return None
+        invoice = await _new_draft(
+            session,
+            encounter,
+            InvoiceDraftRequest(encounter_id=encounter.id),
+            scope=InvoiceScope.OPD,
+        )
+    await _gather_pending(session, invoice, before=admitted_at)
+    if not await _charges_on(session, invoice.id):
+        # An empty draft the counter left behind. Closed, because a visit may
+        # hold only one live draft and the stay's IPD bill needs that slot.
+        invoice.status = InvoiceStatus.CANCELLED
+        invoice.cancellation_reason = "Empty draft closed at admission."
+        invoice.updated_at = utc_now()
+        session.add(invoice)
+        await session.flush()
+        return None
+    return await issue_invoice(session, invoice, actor=actor, hospital_id=hospital_id)
 
 
 async def issue_invoice(
     session: AsyncSession,
     invoice: Invoice,
     *,
-    actor: User,
+    actor: User | None,
     hospital_id: uuid.UUID,
     notes: str | None = None,
 ) -> Invoice:
@@ -1663,8 +1808,10 @@ async def issue_invoice(
 
     moment = utc_now()
     invoice.status = InvoiceStatus.ISSUED
+    # Snapshotted at issue: a reprint shows the hospital as it was that day.
+    invoice.letterhead = await tenancy_service.letterhead_for(session, hospital_id)
     invoice.issued_at = moment
-    invoice.issued_by_id = actor.id
+    invoice.issued_by_id = actor.id if actor else None
     if notes:
         invoice.notes = notes
     invoice.updated_at = moment
@@ -1674,7 +1821,7 @@ async def issue_invoice(
     await event_bus.publish(
         InvoiceIssued(
             hospital_id=hospital_id,
-            actor_id=actor.id,
+            actor_id=actor.id if actor else None,
             invoice_id=invoice.id,
             encounter_id=invoice.encounter_id,
             patient_id=invoice.patient_id,
@@ -2609,3 +2756,289 @@ async def progress_claim(
 
     await session.refresh(claim)
     return claim
+
+
+# ---------------------------------------------------------------------------
+# The accountant's IPD bill
+# ---------------------------------------------------------------------------
+# An invoice that is the stay's final bill: issued, and not cancelled.
+_FINAL_STATUSES: tuple[InvoiceStatus, ...] = (
+    InvoiceStatus.ISSUED,
+    InvoiceStatus.PARTIALLY_PAID,
+    InvoiceStatus.PAID,
+    InvoiceStatus.WRITTEN_OFF,
+)
+_ON_THE_BILL: tuple[ChargeStatus, ...] = (ChargeStatus.PENDING, ChargeStatus.INVOICED)
+
+
+@dataclass(frozen=True, slots=True)
+class IpdBillData:
+    encounter_id: uuid.UUID
+    version: str
+    stay: StayInfo
+    charges: list[Charge]
+    total: Decimal
+    has_unpriced_items: bool
+    final_invoice: Invoice | None
+    can_finalise: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BillChange:
+    """One applied change, for the router to audit with its before and after."""
+
+    op: str
+    charge: Charge
+    before: dict[str, Any]
+    after: dict[str, Any]
+    reason: str
+
+
+def _snapshot(charge: Charge) -> dict[str, Any]:
+    return {
+        "description": charge.description,
+        "quantity": str(charge.quantity),
+        "unit_price": str(charge.unit_price),
+        "discount_amount": str(charge.discount_amount),
+        "total_amount": str(charge.total_amount),
+        "status": charge.status.value,
+    }
+
+
+async def _require_stay(
+    session: AsyncSession, encounter: Encounter, *, hospital_id: uuid.UUID
+) -> StayInfo:
+    stay = await stay_for(session, encounter.id, hospital_id=hospital_id)
+    if stay is None:
+        raise ConflictError(
+            "An OPD bill is frozen once it is made. Only an IPD stay's bill can be changed.",
+            code="opd_bill_locked",
+        )
+    return stay
+
+
+async def _stay_charges(
+    session: AsyncSession, encounter_id: uuid.UUID, stay: StayInfo, *, hospital_id: uuid.UUID
+) -> list[Charge]:
+    """Every line from the admission on, waived ones included (shown struck
+    through); cancelled acts never happened and are left out."""
+    rows = (
+        (
+            await session.execute(
+                select(Charge)
+                .where(
+                    col(Charge.hospital_id) == hospital_id,
+                    col(Charge.encounter_id) == encounter_id,
+                    col(Charge.captured_at) >= stay.admitted_at,
+                    col(Charge.status) != ChargeStatus.CANCELLED,
+                    col(Charge.deleted_at).is_(None),
+                )
+                .order_by(col(Charge.captured_at), col(Charge.id))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows)
+
+
+async def _final_ipd_invoice(
+    session: AsyncSession, encounter_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> Invoice | None:
+    return (
+        (
+            await session.execute(
+                select(Invoice)
+                .where(
+                    col(Invoice.hospital_id) == hospital_id,
+                    col(Invoice.encounter_id) == encounter_id,
+                    col(Invoice.scope) == InvoiceScope.IPD,
+                    col(Invoice.status).in_(_FINAL_STATUSES),
+                    col(Invoice.deleted_at).is_(None),
+                )
+                .order_by(col(Invoice.issued_at).desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _version_of(charges: list[Charge]) -> str:
+    latest = max((charge.updated_at for charge in charges), default=None)
+    stamp = latest.isoformat() if latest else "none"
+    return f"{stamp}#{len(charges)}"
+
+
+async def bill_version(
+    session: AsyncSession, encounter_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> str:
+    """The editor's concurrency token: the newest change and the line count.
+
+    Any write to a line bumps its `updated_at`; a line captured or cancelled
+    changes the count. So two loads of an unchanged bill agree, and anything
+    that touched the stay in between — another accountant, a night's bed-day —
+    makes the token stale.
+    """
+    stay = await stay_for(session, encounter_id, hospital_id=hospital_id)
+    if stay is None:
+        return ""
+    return _version_of(await _stay_charges(session, encounter_id, stay, hospital_id=hospital_id))
+
+
+async def ipd_bill(
+    session: AsyncSession, encounter: Encounter, *, hospital_id: uuid.UUID
+) -> IpdBillData:
+    """The stay's running bill as the accountant sees it."""
+    stay = await _require_stay(session, encounter, hospital_id=hospital_id)
+    charges = await _stay_charges(session, encounter.id, stay, hospital_id=hospital_id)
+    live = [charge for charge in charges if charge.status in _ON_THE_BILL]
+    final = await _final_ipd_invoice(session, encounter.id, hospital_id=hospital_id)
+    unpriced = any(charge.needs_pricing for charge in live)
+    return IpdBillData(
+        encounter_id=encounter.id,
+        version=_version_of(charges),
+        stay=stay,
+        charges=charges,
+        total=money(sum((charge.total_amount for charge in live), start=ZERO)),
+        has_unpriced_items=unpriced,
+        final_invoice=final,
+        # After the patient has left (discharge, death, LAMA and referral all
+        # close the visit), and only once.
+        can_finalise=encounter.is_closed and final is None and bool(live) and not unpriced,
+    )
+
+
+async def apply_bill_changes(
+    session: AsyncSession,
+    encounter: Encounter,
+    ops: list[BillOp],
+    *,
+    expected_version: str,
+    actor: User,
+    hospital_id: uuid.UUID,
+) -> list[BillChange]:
+    """Apply everything the accountant staged, in order, all or nothing.
+
+    Inside a savepoint: one bad change — a discount bigger than its line, a
+    line already on the final bill — raises, and none of the others land. The
+    stay's billing rows are locked before the version is compared, so two
+    accountants saving at once cannot both pass the check.
+    """
+    stay = await _require_stay(session, encounter, hospital_id=hospital_id)
+    await _lock_visit_billing(session, encounter.id, hospital_id=hospital_id)
+    if await _final_ipd_invoice(session, encounter.id, hospital_id=hospital_id) is not None:
+        raise ConflictError(
+            "The final bill for this stay has been generated. Cancel it to make corrections.",
+            code="ipd_bill_final",
+        )
+    current = await bill_version(session, encounter.id, hospital_id=hospital_id)
+    if current != expected_version:
+        raise ConflictError(
+            "This bill changed since you opened it. It has been reloaded with the latest.",
+            code="bill_changed",
+            details={"version": current},
+        )
+
+    draft = await get_draft_for_encounter(
+        session, encounter.id, hospital_id=hospital_id, scope=InvoiceScope.IPD
+    )
+    draft_id = draft.id if draft else None
+    on_stay = {
+        charge.id: charge
+        for charge in await _stay_charges(session, encounter.id, stay, hospital_id=hospital_id)
+    }
+    applied: list[BillChange] = []
+    async with session.begin_nested():
+        for op in ops:
+            if isinstance(op, BillAdd):
+                added = await add_charge(
+                    session,
+                    ChargeAdd(
+                        encounter_id=encounter.id,
+                        service_item_code=op.service_item_code,
+                        description=op.description,
+                        category=op.category,
+                        quantity=op.quantity,
+                        unit_price=op.unit_price,
+                    ),
+                    hospital_id=hospital_id,
+                    actor=actor,
+                )
+                on_stay[added.id] = added
+                applied.append(BillChange("add", added, {}, _snapshot(added), op.reason))
+                continue
+
+            charge = on_stay.get(op.charge_id)
+            if charge is None:
+                raise NotFoundError(
+                    "That line is not on this stay's bill.", code="charge_not_found"
+                )
+            before = _snapshot(charge)
+            if isinstance(op, BillEdit):
+                charge = await edit_charge(
+                    session,
+                    charge,
+                    quantity=op.quantity,
+                    unit_price=op.unit_price,
+                    description=op.description,
+                    draft_id=draft_id,
+                )
+            elif isinstance(op, BillDiscount):
+                charge = await discount_charge(
+                    session,
+                    charge,
+                    amount=op.amount,
+                    reason=op.reason,
+                    actor=actor,
+                    draft_id=draft_id,
+                )
+            elif isinstance(op, BillRemove):
+                charge = await waive_charge(
+                    session, charge, reason=op.reason, actor=actor, draft_id=draft_id
+                )
+            applied.append(BillChange(op.op, charge, before, _snapshot(charge), op.reason))
+
+        if draft is not None:
+            # One running document: new lines join the draft, and its footer is
+            # re-added from the corrected lines.
+            await _gather_pending(session, draft, since=stay.admitted_at)
+            await _recompute_totals(session, draft)
+    return applied
+
+
+async def finalise_ipd_bill(
+    session: AsyncSession, encounter: Encounter, *, actor: User, hospital_id: uuid.UUID
+) -> Invoice:
+    """Generate the stay's final bill: gather what is left and issue it.
+
+    Only once the patient has left. Discharge, death, LAMA and referral all
+    close the visit, and discharge accrues the last night before it does, so
+    by now nothing more is coming. Refused with an unpriced line: a final bill
+    with a zero on it goes to the tax filing as a zero. Once issued it is
+    frozen like any invoice; a correction is cancel, edit, generate again.
+    """
+    await _require_stay(session, encounter, hospital_id=hospital_id)
+    if not encounter.is_closed:
+        raise ConflictError(
+            "The patient is still admitted. The final bill is generated after discharge.",
+            code="stay_not_discharged",
+        )
+    await _lock_visit_billing(session, encounter.id, hospital_id=hospital_id)
+    if await _final_ipd_invoice(session, encounter.id, hospital_id=hospital_id) is not None:
+        raise ConflictError(
+            "The final bill for this stay has already been generated.", code="ipd_bill_final"
+        )
+    bill = await ipd_bill(session, encounter, hospital_id=hospital_id)
+    if bill.has_unpriced_items:
+        raise ValidationError(
+            "A charge on this stay has no price yet. Price it before the final bill.",
+            code="unpriced_charges",
+        )
+    draft = await assemble_draft(
+        session,
+        InvoiceDraftRequest(encounter_id=encounter.id),
+        hospital_id=hospital_id,
+        actor=actor,
+    )
+    return await issue_invoice(session, draft, actor=actor, hospital_id=hospital_id)

@@ -10,17 +10,17 @@ import uuid
 import zoneinfo
 from collections.abc import Collection
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import ColumnElement, func
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.database import system_context
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.models import utc_now
 from app.core.pagination import PageParams
-from app.modules.tenancy.models import Department, Hospital
+from app.modules.tenancy.models import Department, Hospital, HospitalLogo
 from app.modules.tenancy.schemas import (
     DepartmentCreate,
     DepartmentUpdate,
@@ -357,3 +357,93 @@ async def update_department(
     await session.flush()
     await session.refresh(department)
     return department
+
+
+# ---------------------------------------------------------------------------
+# The bill's letterhead: the logo and the identity printed on every bill
+# ---------------------------------------------------------------------------
+LOGO_MAX_BYTES = 512_000
+# Checked by the file's first bytes, not by what the browser says it is.
+_LOGO_SIGNATURES: dict[str, bytes] = {
+    "image/png": b"\x89PNG\r\n\x1a\n",
+    "image/jpeg": b"\xff\xd8\xff",
+}
+
+
+def assert_logo(data: bytes, content_type: str) -> str:
+    """A PNG or JPEG of at most 500 KB, whose bytes agree with its label."""
+    kind = content_type.split(";")[0].strip().lower()
+    signature = _LOGO_SIGNATURES.get(kind)
+    if signature is None or not data.startswith(signature):
+        raise ValidationError("The logo must be a PNG or JPEG image.", code="logo_invalid")
+    if len(data) > LOGO_MAX_BYTES:
+        raise ValidationError("The logo must be 500 KB or smaller.", code="logo_invalid")
+    return kind
+
+
+async def save_logo(
+    session: AsyncSession | SAAsyncSession,
+    hospital_id: uuid.UUID,
+    *,
+    data: bytes,
+    content_type: str,
+) -> int:
+    """Store a new logo version and make it current. Returns the version."""
+    kind = assert_logo(data, content_type)
+    hospital = await get_hospital(session, hospital_id)
+    latest = (
+        await session.execute(
+            select(func.max(col(HospitalLogo.version))).where(
+                col(HospitalLogo.hospital_id) == hospital_id
+            )
+        )
+    ).scalar_one()
+    version = (latest or 0) + 1
+    session.add(
+        HospitalLogo(hospital_id=hospital_id, version=version, content_type=kind, data=data)
+    )
+    hospital.logo_version = version
+    hospital.updated_at = utc_now()
+    session.add(hospital)
+    await session.flush()
+    return version
+
+
+async def get_logo(
+    session: AsyncSession | SAAsyncSession, hospital_id: uuid.UUID, *, version: int | None = None
+) -> HospitalLogo:
+    """A given version, or the current one. 404 when none was ever uploaded."""
+    query = select(HospitalLogo).where(col(HospitalLogo.hospital_id) == hospital_id)
+    if version is not None:
+        query = query.where(col(HospitalLogo.version) == version)
+    logo = (
+        (await session.execute(query.order_by(col(HospitalLogo.version).desc()))).scalars().first()
+    )
+    if logo is None:
+        raise NotFoundError("No logo has been uploaded.", code="logo_not_found")
+    return logo
+
+
+_LETTERHEAD_FIELDS = (
+    "name",
+    "legal_name",
+    "address_line1",
+    "address_line2",
+    "city",
+    "state",
+    "pincode",
+    "phone",
+    "email",
+    "gstin",
+    "hfr_facility_id",
+    "logo_version",
+)
+
+
+async def letterhead_for(
+    session: AsyncSession | SAAsyncSession, hospital_id: uuid.UUID
+) -> dict[str, Any]:
+    """The hospital's identity as a bill prints it — snapshotted onto each
+    invoice at issue, so later changes to the profile never rewrite old bills."""
+    hospital = await get_hospital(session, hospital_id)
+    return {field: getattr(hospital, field) for field in _LETTERHEAD_FIELDS}

@@ -160,6 +160,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(billing_router.services_router, prefix=prefix)
     app.include_router(billing_router.charges_router, prefix=prefix)
     app.include_router(billing_router.accounts_router, prefix=prefix)
+    app.include_router(billing_router.billing_patients_router, prefix=prefix)
     app.include_router(billing_router.invoices_router, prefix=prefix)
     app.include_router(billing_router.payments_router, prefix=prefix)
     app.include_router(billing_router.claims_router, prefix=prefix)

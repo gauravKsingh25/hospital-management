@@ -911,6 +911,18 @@ async def admit_patient(
         encounter.encounter_type = EncounterType.IPD
         session.add(encounter)
 
+    # A visit that carries on into the stay would carry its consultation fee
+    # with it. That fee is an OPD bill and stays one: frozen now, payable at
+    # the counter, never part of the IPD bill the accountant edits. A fresh IPD
+    # visit has nothing captured before the admission, so this is a no-op.
+    await billing_service.split_pre_admission(
+        session,
+        encounter,
+        admitted_at=admission.admitted_at,
+        actor=actor,
+        hospital_id=hospital_id,
+    )
+
     await session.flush()
     await session.refresh(admission)
 

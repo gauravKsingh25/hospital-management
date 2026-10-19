@@ -5,14 +5,16 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.core.pagination import Page
 from app.modules.billing.models import (
     ChargeCategory,
     ChargeStatus,
     ClaimStatus,
+    InvoiceScope,
     InvoiceStatus,
     PayerType,
     PaymentMethod,
@@ -21,6 +23,15 @@ from app.modules.billing.models import (
 
 __all__ = [
     "AccountBoardEntry",
+    "AccountsSummary",
+    "BillAdd",
+    "BillChangesRequest",
+    "BillDiscount",
+    "BillEdit",
+    "BillHistory",
+    "BillOp",
+    "BillRemove",
+    "BillRow",
     "ChargeAdd",
     "ChargeRead",
     "ClaimCreate",
@@ -31,8 +42,16 @@ __all__ = [
     "InvoiceIssueRequest",
     "InvoiceRead",
     "InvoiceSummary",
+    "IpdBill",
+    "Journey",
+    "JourneyLine",
+    "PatientBrief",
+    "PatientRow",
     "PaymentRead",
     "PaymentRequest",
+    "PaymentRow",
+    "PrintableBill",
+    "PrintableTotals",
     "RateCardCreate",
     "RateCardRead",
     "RateCardUpdate",
@@ -43,7 +62,9 @@ __all__ = [
     "ServiceItemUpdate",
     "ServicePriceRead",
     "ServicePriceUpsert",
+    "StayRead",
     "VisitAccount",
+    "VisitBills",
 ]
 
 # Money on the wire is a Decimal, never a float. Pydantic v2 serialises it as a
@@ -339,6 +360,7 @@ class InvoiceSummary(BaseModel):
     encounter_id: uuid.UUID
     patient_id: uuid.UUID
     status: InvoiceStatus
+    scope: InvoiceScope
     payer_type: PayerType
     grand_total: Decimal
     amount_paid: Decimal
@@ -357,6 +379,7 @@ class InvoiceRead(BaseModel):
     patient_id: uuid.UUID
     rate_card_id: uuid.UUID | None
     payer_type: PayerType
+    scope: InvoiceScope
     status: InvoiceStatus
 
     subtotal: Decimal
@@ -520,3 +543,263 @@ class ClaimRead(BaseModel):
     responded_at: datetime | None
     settled_at: datetime | None
     remarks: str | None
+
+
+# ---------------------------------------------------------------------------
+# The accountant's IPD bill editor
+# ---------------------------------------------------------------------------
+# Every change to an IPD bill carries its reason into the audit log (NABH/DPDP):
+# an amount that moved without a why is the one an auditor asks about.
+_Reason = Annotated[str, Field(min_length=3, max_length=255)]
+_Quantity = Annotated[Decimal, Field(gt=0, max_digits=9, decimal_places=2)]
+
+
+class StayRead(BaseModel):
+    """The admission a bill belongs to, as billing knows it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    admission_id: uuid.UUID
+    admission_number: str
+    status: str
+    admitted_at: datetime
+    discharged_at: datetime | None
+    ward_bed: str | None
+    attending_doctor: str | None
+
+
+class BillAdd(BaseModel):
+    """A line the events could not see: from the catalogue, or free text with a price."""
+
+    op: Literal["add"]
+    service_item_code: Annotated[str | None, Field(max_length=32)] = None
+    description: Annotated[str | None, Field(min_length=1, max_length=250)] = None
+    category: ChargeCategory = ChargeCategory.OTHER
+    quantity: _Quantity = Decimal("1")
+    unit_price: Money | None = None
+    reason: _Reason
+
+    @model_validator(mode="after")
+    def _priced(self) -> Self:
+        if not self.service_item_code and not self.description:
+            raise ValueError("Give a service code or a description.")
+        if not self.service_item_code and self.unit_price is None:
+            # A free-text line has no rate card to fall back on.
+            raise ValueError("A line that is not from the catalogue needs a price.")
+        return self
+
+
+class BillEdit(BaseModel):
+    op: Literal["edit"]
+    charge_id: uuid.UUID
+    quantity: _Quantity | None = None
+    unit_price: Money | None = None
+    description: Annotated[str | None, Field(min_length=1, max_length=250)] = None
+    reason: _Reason
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if self.quantity is None and self.unit_price is None and self.description is None:
+            raise ValueError("Change the quantity, the price or the description.")
+        return self
+
+
+class BillDiscount(BaseModel):
+    op: Literal["discount"]
+    charge_id: uuid.UUID
+    amount: Money
+    reason: _Reason
+
+
+class BillRemove(BaseModel):
+    """Waives the line: the care stays on the record, the money does not."""
+
+    op: Literal["remove"]
+    charge_id: uuid.UUID
+    reason: _Reason
+
+
+BillOp = Annotated[BillAdd | BillEdit | BillDiscount | BillRemove, Field(discriminator="op")]
+
+
+class BillChangesRequest(BaseModel):
+    """Everything the accountant staged, applied together or not at all.
+
+    `expected_version` is the bill's version when the editor loaded it. If the
+    stay changed since — another accountant, a night's bed-day — the save is
+    refused and the editor reloads, rather than one person's edits silently
+    landing on a bill they never saw.
+    """
+
+    expected_version: Annotated[str, Field(max_length=64)]
+    ops: Annotated[list[BillOp], Field(min_length=1, max_length=200)]
+
+
+class IpdBill(BaseModel):
+    encounter_id: uuid.UUID
+    version: str
+    stay: StayRead
+    charges: list[ChargeRead]
+    # The last saved total — the server's, never the browser's.
+    total: Decimal
+    has_unpriced_items: bool
+    final_invoice: InvoiceSummary | None
+    can_finalise: bool
+
+
+# ---------------------------------------------------------------------------
+# The accounts dashboard, bill history, cost journey and printed bill
+# ---------------------------------------------------------------------------
+class AccountsSummary(BaseModel):
+    """The totals strip for a period. Outstanding and running are as of now."""
+
+    collected: Decimal
+    collected_by_method: dict[str, Decimal]
+    bills_count: int
+    billed: Decimal
+    # Issued bills not fully paid. A patient still in a bed is not here.
+    outstanding: Decimal
+    outstanding_patients: int
+    # Charges on IPD stays that have no final bill yet.
+    running_in_wards: Decimal
+    running_patients: int
+    reversals: Decimal
+
+
+class BillRow(BaseModel):
+    invoice_id: uuid.UUID
+    invoice_number: str
+    issued_at: datetime | None
+    created_at: datetime
+    status: InvoiceStatus
+    scope: InvoiceScope
+    encounter_id: uuid.UUID
+    patient_id: uuid.UUID
+    patient_name: str | None = None
+    uhid: str | None = None
+    admission_number: str | None = None
+    stay_days: int | None = None
+    grand_total: Decimal
+    amount_paid: Decimal
+    balance_due: Decimal
+
+
+class PaymentRow(BaseModel):
+    id: uuid.UUID
+    receipt_number: str
+    invoice_id: uuid.UUID
+    invoice_number: str | None = None
+    patient_id: uuid.UUID
+    patient_name: str | None = None
+    uhid: str | None = None
+    amount: Decimal
+    method: PaymentMethod
+    reference: str | None
+    status: PaymentStatus
+    received_at: datetime
+    received_by_name: str | None = None
+    # Set on the row that records a reversal.
+    reverses_payment_id: uuid.UUID | None
+
+
+class PatientRow(BaseModel):
+    """A patient with billing activity. Ordered by last activity — not a ranking."""
+
+    patient_id: uuid.UUID
+    name: str | None
+    uhid: str | None
+    last_activity_at: datetime
+    visits: int
+    billed: Decimal
+    paid: Decimal
+    due: Decimal
+
+
+class PatientBrief(BaseModel):
+    id: uuid.UUID
+    name: str
+    uhid: str
+    age_years: int | None
+    gender: str
+    phone: str | None
+
+
+class VisitBills(BaseModel):
+    """One bill-bearing visit. A patient admitted from an open OPD visit has two:
+    the consultation (OPD) and the stay (IPD), on the same encounter."""
+
+    encounter_id: uuid.UUID
+    kind: Literal["OPD", "IPD"]
+    started_at: datetime
+    ended_at: datetime | None
+    doctor_name: str | None
+    admission_number: str | None = None
+    ward_bed: str | None = None
+    # OPD: Paid · Due · No charge. IPD: Running · Awaiting final bill · Final · Paid.
+    status_label: str
+    total: Decimal
+    paid: Decimal
+    due: Decimal
+    invoices: list[InvoiceSummary]
+
+
+class BillHistory(BaseModel):
+    patient: PatientBrief
+    lifetime_billed: Decimal
+    lifetime_paid: Decimal
+    lifetime_due: Decimal
+    visits: list[VisitBills]
+
+
+class JourneyLine(BaseModel):
+    """One thing given to the patient, as billing recorded it."""
+
+    charge_id: uuid.UUID
+    captured_at: datetime
+    encounter_id: uuid.UUID
+    kind: Literal["OPD", "IPD"]
+    category: ChargeCategory
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    total_amount: Decimal
+    status: ChargeStatus
+    # Which part of the hospital recorded it: ward, pharmacy, lab, billing.
+    source_module: str
+
+
+class Journey(BaseModel):
+    lines: Page[JourneyLine]
+    totals_by_category: dict[str, Decimal]
+
+
+class PrintableTotals(BaseModel):
+    subtotal: Decimal
+    discount_total: Decimal
+    taxable_total: Decimal
+    cgst_total: Decimal
+    sgst_total: Decimal
+    igst_total: Decimal
+    round_off: Decimal
+    grand_total: Decimal
+    paid: Decimal
+    balance: Decimal
+
+
+class PrintableBill(BaseModel):
+    """Everything the printed page needs, in one response."""
+
+    invoice_id: uuid.UUID | None
+    # None on a running (interim) bill: it is not a document yet.
+    number: str | None
+    date: datetime
+    title: Literal["TAX INVOICE", "BILL OF SUPPLY", "INTERIM — NOT A FINAL BILL"]
+    scope: InvoiceScope
+    status: InvoiceStatus | None
+    place_of_supply: str | None
+    letterhead: dict[str, Any]
+    patient: PatientBrief
+    stay: StayRead | None
+    lines: list[ChargeRead]
+    totals: PrintableTotals
+    payments: list[PaymentRead]

@@ -46,8 +46,10 @@ import enum
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import Date, DateTime, Index, Numeric, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from app.core.models import AuditedTenantModel, TenantModel
@@ -113,6 +115,19 @@ class ChargeStatus(enum.StrEnum):
     # Deliberately not charged — a concession, a staff discount, a goodwill
     # write-off. Distinct from CANCELLED: the act happened, the money did not.
     WAIVED = "WAIVED"
+
+
+class InvoiceScope(enum.StrEnum):
+    """Which kind of bill this is — the two have different owners.
+
+    An OPD bill is made at the counter and frozen when paid. An IPD bill covers
+    a stay from the admission on, is corrected by the accountant and issued as
+    the final bill after discharge. A patient admitted from a still-open OPD
+    visit gets one of each on the same visit.
+    """
+
+    OPD = "OPD"
+    IPD = "IPD"
 
 
 class InvoiceStatus(enum.StrEnum):
@@ -432,6 +447,7 @@ class Invoice(AuditedTenantModel, table=True):
         index=True,
     )
     payer_type: PayerType = Field(default=PayerType.CASH, index=True)
+    scope: InvoiceScope = Field(default=InvoiceScope.OPD, index=True)
 
     status: InvoiceStatus = Field(default=InvoiceStatus.DRAFT, index=True)
 
@@ -458,6 +474,9 @@ class Invoice(AuditedTenantModel, table=True):
     # Copied at issue: a hospital that changes its registration must not rewrite
     # the GSTIN on invoices already filed under the old one.
     hospital_gstin: str | None = Field(default=None, max_length=15)
+    # The hospital's name, address, GSTIN and logo version on the day of issue,
+    # so a reprint years later shows what the patient was handed.
+    letterhead: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
     place_of_supply: str | None = Field(default=None, max_length=100)
     # Intra-state is CGST + SGST; inter-state is IGST. Almost always false for
     # in-person care, and it has to be recorded rather than assumed.
