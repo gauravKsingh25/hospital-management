@@ -7,7 +7,7 @@ import { DelayAlert } from "@/features/reports/delay-alert";
 import { NoPermission } from "@/components/no-permission";
 import { LinkButton } from "@/components/ui/link-button";
 import { getCurrentUser } from "@/lib/api/server";
-import { can } from "@/lib/permissions";
+import { can, canAll } from "@/lib/permissions";
 
 export async function generateMetadata() {
   const t = await getTranslations("nav");
@@ -69,6 +69,7 @@ export default async function ReceptionPage() {
         <DoctorQueues
           canManage={can(user, "queue:manage")}
           canRequestAdmission={can(user, "admission:request")}
+          canCollect={canAll(user, "payment:record", "invoice:issue")}
         />
       ) : (
         <div className="text-muted-foreground flex flex-col items-center gap-3 rounded-lg border border-dashed py-16">

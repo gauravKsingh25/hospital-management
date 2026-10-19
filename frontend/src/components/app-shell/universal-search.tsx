@@ -104,12 +104,10 @@ export function UniversalSearch() {
   /**
    * Where each kind of hit leads.
    *
-   * A token or a visit opens the chart — that is what somebody holding a token
-   * slip actually wants. Everything else opens the patient record, and a
-   * doctor opens the queue filtered to them.
+   * A patient, a token or a visit opens the patient record — their visits,
+   * and where each one stands. A doctor opens the queue.
    */
   const openHit = (hit: SearchHit) => {
-    if (hit.encounter_id) return go(`/consultation/${hit.encounter_id}`);
     if (hit.patient_id) return go(`/patients/${hit.patient_id}`);
     if (hit.doctor_id) return go("/queue");
     return go("/");

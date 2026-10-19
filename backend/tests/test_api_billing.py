@@ -617,3 +617,99 @@ class TestPermissions:
         response = await api.get(f"{INVOICES}/{uuid.uuid4()}", headers=auth(cashier_token))
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "invoice_not_found"
+
+
+# ---------------------------------------------------------------------------
+# The reception row's "Get payment" / "Paid"
+# ---------------------------------------------------------------------------
+class TestCollectAtReception:
+    async def test_reception_settles_the_visit_in_one_request(
+        self, api: AsyncClient, reception_token: str, visit: dict
+    ) -> None:
+        encounter_id = visit["encounter"]["id"]
+
+        response = await api.post(
+            f"{ACCOUNTS}/{encounter_id}/collect",
+            json={"method": "CASH"},
+            headers=auth(reception_token),
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["amount"] == "500.00"
+        assert result["balance_due"] == "0.00"
+        [receipt] = result["receipts"]
+        assert receipt["method"] == "CASH"
+        assert receipt["receipt_number"]
+
+        account = await api.get(f"{ACCOUNTS}/{encounter_id}", headers=auth(reception_token))
+        assert account.json()["balance_due"] == "0.00"
+
+    async def test_a_upi_collection_needs_the_transaction_reference(
+        self, api: AsyncClient, reception_token: str, visit: dict
+    ) -> None:
+        response = await api.post(
+            f"{ACCOUNTS}/{visit['encounter']['id']}/collect",
+            json={"method": "UPI"},
+            headers=auth(reception_token),
+        )
+        assert response.status_code == 422, response.text
+
+    async def test_collecting_twice_is_a_conflict_not_a_second_receipt(
+        self, api: AsyncClient, reception_token: str, visit: dict
+    ) -> None:
+        url = f"{ACCOUNTS}/{visit['encounter']['id']}/collect"
+        first = await api.post(url, json={"method": "CASH"}, headers=auth(reception_token))
+        assert first.status_code == 200, first.text
+
+        second = await api.post(url, json={"method": "CASH"}, headers=auth(reception_token))
+        assert second.status_code == 409, second.text
+        assert second.json()["error"]["code"] == "nothing_due"
+
+    async def test_a_doctor_cannot_collect(
+        self, api: AsyncClient, doctor_token: str, visit: dict
+    ) -> None:
+        response = await api.post(
+            f"{ACCOUNTS}/{visit['encounter']['id']}/collect",
+            json={"method": "CASH"},
+            headers=auth(doctor_token),
+        )
+        assert response.status_code == 403
+
+    async def test_the_account_says_where_to_pay_by_upi(
+        self,
+        api: AsyncClient,
+        admin_token: str,
+        reception_token: str,
+        hospital: Hospital,
+        visit: dict,
+    ) -> None:
+        """The QR on the payment dialog pays the hospital's own UPI ID — per
+        tenant, set by its administrator, never a constant in the frontend."""
+        account = await api.get(
+            f"{ACCOUNTS}/{visit['encounter']['id']}", headers=auth(reception_token)
+        )
+        assert account.json()["upi_vpa"] is None
+
+        updated = await api.patch(
+            f"/api/v1/hospitals/{hospital.id}",
+            json={"upi_vpa": " Sunrise.Hospital@okicici "},
+            headers=auth(admin_token),
+        )
+        assert updated.status_code == 200, updated.text
+
+        account = await api.get(
+            f"{ACCOUNTS}/{visit['encounter']['id']}", headers=auth(reception_token)
+        )
+        assert account.json()["upi_vpa"] == "sunrise.hospital@okicici"
+        assert account.json()["payee_name"] == hospital.name
+
+    async def test_a_malformed_upi_id_is_refused(
+        self, api: AsyncClient, admin_token: str, hospital: Hospital
+    ) -> None:
+        """A typo here is every QR of the day paying nobody."""
+        response = await api.patch(
+            f"/api/v1/hospitals/{hospital.id}",
+            json={"upi_vpa": "sunrise hospital"},
+            headers=auth(admin_token),
+        )
+        assert response.status_code == 422, response.text

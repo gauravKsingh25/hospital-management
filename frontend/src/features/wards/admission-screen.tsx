@@ -25,6 +25,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ItemsUsedPanel, StayCostPanel } from "@/features/medicines/stay-medicines";
+import { VisitOutcomeAction } from "@/features/outcomes/visit-outcome-action";
+import { LatestVitals } from "@/features/vitals/latest-vitals";
 import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
@@ -43,6 +46,10 @@ import type { Admission, BoardWard, DischargeType } from "@/types/api";
  *
  * **Transfer** moves them between beds, releasing the old one to cleaning.
  *
+ * Below the details, what the stay has used from the medicine list and what it
+ * has cost so far — so the desk, the ward and a relative asking at the counter
+ * all read the same number billing will invoice.
+ *
  * Two discharge outcomes are deliberately missing from the picker: death and
  * leaving against advice. Both are recorded against the *visit* through
  * `clinical`, which captures what CLAUDE.md §6 requires — who certified, the
@@ -57,11 +64,27 @@ export function AdmissionScreen({
   initial,
   canTransfer,
   canDischarge,
+  canIssue = false,
+  canSeeCost = false,
+  canRecordDeath = false,
+  canRecordReferral = false,
+  canRecordLama = false,
+  canReadVitals = false,
+  canRecordVitals = false,
 }: {
   admissionId: string;
   initial: Admission;
   canTransfer: boolean;
   canDischarge: boolean;
+  /** Record medicines and supplies used (`medicine:issue`). */
+  canIssue?: boolean;
+  /** See what the stay has cost (`charge:read`). */
+  canSeeCost?: boolean;
+  canRecordDeath?: boolean;
+  canRecordReferral?: boolean;
+  canRecordLama?: boolean;
+  canReadVitals?: boolean;
+  canRecordVitals?: boolean;
 }) {
   const t = useTranslations("wards");
   const common = useTranslations("common");
@@ -179,6 +202,24 @@ export function AdmissionScreen({
         </dl>
       </section>
 
+      {canReadVitals ? (
+        <LatestVitals
+          encounterId={data.encounter_id}
+          patientName={data.patient_name ?? ""}
+          canRecord={canRecordVitals}
+          live={live}
+        />
+      ) : null}
+
+      <ItemsUsedPanel
+        admissionId={admissionId}
+        encounterId={data.encounter_id}
+        canIssue={canIssue}
+        live={live}
+      />
+
+      {canSeeCost ? <StayCostPanel encounterId={data.encounter_id} /> : null}
+
       {live ? (
         <section className="space-y-3 rounded-lg border p-4" aria-labelledby="actions-heading">
           <h2 id="actions-heading" className="text-sm font-semibold">
@@ -212,7 +253,16 @@ export function AdmissionScreen({
               </Button>
             ) : null}
           </div>
-          <p className="text-muted-foreground text-xs">{t("terminalOutcomesHint")}</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-muted-foreground text-xs">{t("terminalOutcomesHint")}</p>
+            <VisitOutcomeAction
+              encounterId={data.encounter_id}
+              patientName={data.patient_name ?? ""}
+              canRecordDeath={canRecordDeath}
+              canRecordReferral={canRecordReferral}
+              canRecordLama={canRecordLama}
+            />
+          </div>
         </section>
       ) : null}
 

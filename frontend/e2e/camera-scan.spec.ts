@@ -146,11 +146,11 @@ test.describe("the camera scan button", () => {
      */
     await signIn(page, ACCOUNTS.reception);
 
-    for (const path of ["/reception", "/queue"]) {
-      await page.goto(path);
-      await waitForHydration(page);
-      await expect(scanButton(page)).toHaveCount(0);
-    }
+    // Reception's one screen with the button; the Queue screen it used to
+    // share it with is no longer theirs.
+    await page.goto("/reception");
+    await waitForHydration(page);
+    await expect(scanButton(page)).toHaveCount(0);
   });
 
   test("appears where the browser can scan, and opens the patient", async ({ page }) => {
@@ -163,7 +163,7 @@ test.describe("the camera scan button", () => {
       [UHID_KEY, uhid] as [string, string],
     );
 
-    await page.goto("/queue");
+    await page.goto("/reception");
     // The button is client-only, so seeing it is itself proof of hydration.
     await expect(scanButton(page)).toBeVisible({ timeout: 45_000 });
 
@@ -192,7 +192,7 @@ test.describe("the camera scan button", () => {
       [UHID_KEY, uhid] as [string, string],
     );
 
-    await page.goto("/queue");
+    await page.goto("/reception");
     await expect(scanButton(page)).toBeVisible({ timeout: 45_000 });
 
     // Record every track the page hands out, so the check does not depend on
@@ -232,7 +232,7 @@ test.describe("the camera scan button", () => {
      */
     await stubCamera(page);
     await signIn(page, ACCOUNTS.reception);
-    await page.goto("/queue");
+    await page.goto("/reception");
     await expect(scanButton(page)).toBeVisible({ timeout: 45_000 });
     await page.evaluate((key) => window.localStorage.setItem(key, "1"), DENY_KEY);
 
@@ -244,6 +244,6 @@ test.describe("the camera scan button", () => {
     // No black rectangle sitting under the explanation.
     await expect(page.getByTestId("scan-preview")).toHaveCount(0);
     // And nothing navigated.
-    await expect(page).toHaveURL(/\/queue/);
+    await expect(page).toHaveURL(/\/reception/);
   });
 });

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -39,7 +40,7 @@ from typing import Any
 # clauses and biased towards model classes; the open-accounts aggregate selects
 # five labelled columns. Everything else in this module stays on the SQLModel
 # one, imported below.
-from sqlalchemy import ColumnElement, Select, func, literal, text, union_all
+from sqlalchemy import ColumnElement, Select, case, func, literal, text, union_all
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
@@ -106,6 +107,8 @@ __all__ = [
     "cancel_charges_for_source",
     "cancel_invoice",
     "capture_charge",
+    "catalogue_prices",
+    "cost_breakdown",
     "create_rate_card",
     "create_service_item",
     "discount_charge",
@@ -123,9 +126,11 @@ __all__ = [
     "raise_claim",
     "record_payment",
     "resolve_rate_card",
+    "reverse_charge_for_source",
     "reverse_payment",
     "set_price",
     "settle_on_closure",
+    "sync_catalogue_item",
     "visit_account",
     "waive_charge",
     "write_off_invoice",
@@ -436,22 +441,16 @@ async def get_service_item(
 
 
 async def get_service_item_by_code(
-    session: AsyncSession, code: str, *, hospital_id: uuid.UUID
+    session: AsyncSession, code: str, *, hospital_id: uuid.UUID, include_inactive: bool = False
 ) -> ServiceItem | None:
-    return (
-        (
-            await session.execute(
-                select(ServiceItem).where(
-                    col(ServiceItem.hospital_id) == hospital_id,
-                    col(ServiceItem.code) == code.strip().upper(),
-                    col(ServiceItem.is_active).is_(True),
-                    col(ServiceItem.deleted_at).is_(None),
-                )
-            )
-        )
-        .scalars()
-        .first()
-    )
+    filters: list[ColumnElement[bool]] = [
+        col(ServiceItem.hospital_id) == hospital_id,
+        col(ServiceItem.code) == code.strip().upper(),
+        col(ServiceItem.deleted_at).is_(None),
+    ]
+    if not include_inactive:
+        filters.append(col(ServiceItem.is_active).is_(True))
+    return (await session.execute(select(ServiceItem).where(*filters))).scalars().first()
 
 
 async def list_service_items(
@@ -551,6 +550,98 @@ async def set_price(
     return price
 
 
+async def sync_catalogue_item(
+    session: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    code: str,
+    name: str,
+    unit: str | None,
+    is_active: bool,
+    price: Decimal | None,
+    category: ChargeCategory = ChargeCategory.PHARMACY,
+) -> ServiceItem:
+    """Keep the priced half of another module's catalogue item in step.
+
+    The medicine list (`ipd`) owns what an item *is*; this module owns what it
+    *costs*. The two are linked by `code`, as every catalogue here is, and this
+    is the one door through which the list writes its half: create the service
+    on first sight, keep its name, unit and active flag in step afterwards,
+    and — when `price` is given — set it on the default rate card, which is the
+    card `capture_charge` resolves for a patient with no scheme.
+
+    GST is left alone after creation. The administrator's price list is where
+    tax is set, and an edit to a medicine's name must not quietly reset it.
+
+    Refuses to set a price with no default rate card, rather than creating one
+    on the caller's behalf: a price list appearing out of nowhere is exactly
+    the kind of configuration nobody can later explain.
+    """
+    code = code.strip().upper()
+    item = await get_service_item_by_code(
+        session, code, hospital_id=hospital_id, include_inactive=True
+    )
+    if item is None:
+        item = ServiceItem(
+            hospital_id=hospital_id,
+            code=code,
+            name=name[:200],
+            category=category,
+            unit=unit[:24] if unit else None,
+            is_active=is_active,
+        )
+    else:
+        item.name = name[:200]
+        item.unit = unit[:24] if unit else None
+        item.is_active = is_active
+        item.updated_at = utc_now()
+    session.add(item)
+    await session.flush()
+
+    if price is not None:
+        card = await get_default_rate_card(session, hospital_id=hospital_id)
+        if card is None:
+            raise ConflictError(
+                "There is no default price list yet. An administrator sets one up under "
+                "Administration → Services; prices can be added after that.",
+                code="no_default_rate_card",
+            )
+        await set_price(session, item, ServicePriceUpsert(rate_card_id=card.id, price=price))
+
+    await session.refresh(item)
+    return item
+
+
+async def catalogue_prices(
+    session: AsyncSession, codes: Collection[str], *, hospital_id: uuid.UUID
+) -> dict[str, Decimal]:
+    """What each code costs on the default rate card — the price a cash patient pays.
+
+    One query for a whole list, keyed by code. A code with no price is simply
+    absent, which the caller shows as "not priced" rather than as zero: a
+    visible gap in a price list gets filled, a zero gets charged.
+    """
+    wanted = {code.strip().upper() for code in codes if code}
+    if not wanted:
+        return {}
+    card = await get_default_rate_card(session, hospital_id=hospital_id)
+    if card is None:
+        return {}
+
+    rows = await session.execute(
+        select(col(ServiceItem.code), col(ServicePrice.price))
+        .join(ServicePrice, col(ServicePrice.service_item_id) == col(ServiceItem.id))
+        .where(
+            col(ServiceItem.hospital_id) == hospital_id,
+            col(ServiceItem.code).in_(wanted),
+            col(ServiceItem.deleted_at).is_(None),
+            col(ServicePrice.rate_card_id) == card.id,
+            col(ServicePrice.deleted_at).is_(None),
+        )
+    )
+    return {row[0]: row[1] for row in rows}
+
+
 async def list_prices(session: AsyncSession, service_item_id: uuid.UUID) -> list[ServicePrice]:
     rows = (
         (
@@ -634,6 +725,7 @@ async def capture_charge(
     discount_reason: str | None = None,
     actor_id: uuid.UUID | None = None,
     rate_card: RateCard | None = None,
+    fallback_to_category_default: bool = True,
 ) -> Charge:
     """Put a billable act on a visit's running bill.
 
@@ -648,6 +740,13 @@ async def capture_charge(
     `needs_pricing` set, and it lands on an exception worklist where somebody
     can price it. That is what allows this to run inside a clinical transaction
     without ever being the reason an order fails.
+
+    `fallback_to_category_default` decides what an unmapped `item_code` means.
+    For a consultation the hospital-wide fee is the right answer. For a named
+    item from the medicine list it is not: the first pharmacy service on file
+    is some *other* drug, and charging its price for this one is a wrong
+    number presented as a right one. Those callers pass False, and a missing
+    item lands on the exception list instead.
     """
     existing = await find_charge_for_source(
         session,
@@ -661,13 +760,23 @@ async def capture_charge(
         return existing
 
     item = (
-        await get_service_item_by_code(session, item_code, hospital_id=hospital_id)
+        await get_service_item_by_code(
+            session,
+            item_code,
+            hospital_id=hospital_id,
+            # A named catalogue item (the medicine list) switched off *after* it
+            # was prescribed is still the item that was given, and its price
+            # still applies. Switching off stops new picks, not running courses
+            # — without this, every later dose of the course would land at zero
+            # on the exception worklist.
+            include_inactive=not fallback_to_category_default,
+        )
         if item_code
         else None
     )
     if item is None and doctor_id is not None and category is ChargeCategory.CONSULTATION:
         item = await _consultation_item_for(session, hospital_id=hospital_id, doctor_id=doctor_id)
-    if item is None:
+    if item is None and fallback_to_category_default:
         item = await _default_item_for(session, hospital_id=hospital_id, category=category)
 
     card = rate_card or await resolve_rate_card(session, hospital_id=hospital_id)
@@ -841,6 +950,48 @@ async def cancel_charges_for_source(
     await session.flush()
     await session.refresh(charge)
     return charge
+
+
+async def reverse_charge_for_source(
+    session: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    source_module: str,
+    source_type: str,
+    source_id: uuid.UUID,
+    reason: str,
+) -> Charge | None:
+    """Take an act's charge off the bill because the act itself is being undone.
+
+    The strict sibling of `cancel_charges_for_source`. That one is for acts
+    that were *called off* upstream, and quietly leaves an invoiced line alone.
+    This one is for a record being corrected — "we did not use that IV set" —
+    and a correction the bill cannot follow must not half-happen: it refuses,
+    so the caller's whole transaction rolls back and the record still matches
+    the invoice the patient is holding.
+    """
+    charge = await find_charge_for_source(
+        session,
+        hospital_id=hospital_id,
+        source_module=source_module,
+        source_type=source_type,
+        source_id=source_id,
+    )
+    if charge is not None and charge.status is ChargeStatus.INVOICED:
+        raise ConflictError(
+            "This is already on an invoice, so it cannot simply be removed. "
+            "Billing can raise a credit note for it.",
+            code="charge_invoiced",
+            details={"invoice_id": str(charge.invoice_id)},
+        )
+    return await cancel_charges_for_source(
+        session,
+        hospital_id=hospital_id,
+        source_module=source_module,
+        source_type=source_type,
+        source_id=source_id,
+        reason=reason,
+    )
 
 
 async def add_charge(
@@ -1084,6 +1235,71 @@ async def open_balance(session: AsyncSession, encounter_id: uuid.UUID) -> Decima
 
 
 @dataclass(frozen=True, slots=True)
+class VisitBalance:
+    """What a visit owes and what it has paid — the reception row's money chip."""
+
+    balance_due: Decimal
+    amount_paid: Decimal
+
+
+async def balances_for(
+    session: AsyncSession, encounter_ids: Collection[uuid.UUID], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, VisitBalance]:
+    """`open_balance` for a whole queue board in two queries, not two per row.
+
+    A visit with no billing rows at all is absent from the result, which the
+    caller reads as "nothing to collect" — not as a zero that was paid.
+    """
+    if not encounter_ids:
+        return {}
+
+    pending_rows = (
+        await session.execute(
+            sa_select(col(Charge.encounter_id), func.sum(col(Charge.total_amount)))
+            .where(
+                col(Charge.hospital_id) == hospital_id,
+                col(Charge.encounter_id).in_(encounter_ids),
+                col(Charge.status) == ChargeStatus.PENDING,
+                col(Charge.deleted_at).is_(None),
+            )
+            .group_by(col(Charge.encounter_id))
+        )
+    ).all()
+    invoice_rows = (
+        await session.execute(
+            sa_select(
+                col(Invoice.encounter_id),
+                func.sum(
+                    case(
+                        (col(Invoice.status).in_(_OPEN_INVOICE_STATUSES), col(Invoice.balance_due)),
+                        else_=ZERO,
+                    )
+                ),
+                func.sum(col(Invoice.amount_paid)),
+            )
+            .where(
+                col(Invoice.hospital_id) == hospital_id,
+                col(Invoice.encounter_id).in_(encounter_ids),
+                col(Invoice.status) != InvoiceStatus.CANCELLED,
+                col(Invoice.deleted_at).is_(None),
+            )
+            .group_by(col(Invoice.encounter_id))
+        )
+    ).all()
+
+    pending = {encounter_id: Decimal(total) for encounter_id, total in pending_rows}
+    owed = {encounter_id: Decimal(balance) for encounter_id, balance, _ in invoice_rows}
+    paid = {encounter_id: Decimal(amount) for encounter_id, _, amount in invoice_rows}
+    return {
+        encounter_id: VisitBalance(
+            balance_due=money(pending.get(encounter_id, ZERO) + owed.get(encounter_id, ZERO)),
+            amount_paid=money(paid.get(encounter_id, ZERO)),
+        )
+        for encounter_id in pending.keys() | owed.keys()
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class OpenAccount:
     """One visit that still owes the hospital money."""
 
@@ -1182,21 +1398,23 @@ async def list_open_accounts(
 # Invoices
 # ---------------------------------------------------------------------------
 async def get_invoice(
-    session: AsyncSession, invoice_id: uuid.UUID, *, hospital_id: uuid.UUID
+    session: AsyncSession,
+    invoice_id: uuid.UUID,
+    *,
+    hospital_id: uuid.UUID,
+    for_update: bool = False,
 ) -> Invoice:
-    invoice = (
-        (
-            await session.execute(
-                select(Invoice).where(
-                    col(Invoice.id) == invoice_id,
-                    col(Invoice.hospital_id) == hospital_id,
-                    col(Invoice.deleted_at).is_(None),
-                )
-            )
-        )
-        .scalars()
-        .first()
+    """`for_update` before taking money against it: a second payment on the same
+    invoice then waits for the first and checks the balance the first left,
+    rather than the balance both of them read."""
+    query = select(Invoice).where(
+        col(Invoice.id) == invoice_id,
+        col(Invoice.hospital_id) == hospital_id,
+        col(Invoice.deleted_at).is_(None),
     )
+    if for_update:
+        query = query.with_for_update()
+    invoice = (await session.execute(query)).scalars().first()
     if invoice is None:
         raise NotFoundError("Invoice not found.", code="invoice_not_found")
     return invoice
@@ -1738,6 +1956,132 @@ async def record_payment(
     return payment, invoice
 
 
+async def _lock_visit_billing(
+    session: AsyncSession, encounter_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> None:
+    """Row-lock what a collection is about to settle: pending charges, then open
+    invoices — always in that order, so two collections cannot deadlock.
+
+    Postgres re-checks a locked row's filter once the holder commits, so the
+    waiting request sees charges already invoiced and invoices already paid
+    drop out of its result rather than settling them a second time.
+    """
+    await session.execute(
+        select(col(Charge.id))
+        .where(
+            col(Charge.hospital_id) == hospital_id,
+            col(Charge.encounter_id) == encounter_id,
+            col(Charge.status) == ChargeStatus.PENDING,
+            col(Charge.deleted_at).is_(None),
+        )
+        .with_for_update()
+    )
+    await session.execute(
+        select(col(Invoice.id))
+        .where(
+            col(Invoice.hospital_id) == hospital_id,
+            col(Invoice.encounter_id) == encounter_id,
+            col(Invoice.status).in_(_OPEN_INVOICE_STATUSES),
+            col(Invoice.deleted_at).is_(None),
+        )
+        .with_for_update()
+    )
+
+
+async def collect_balance(
+    session: AsyncSession,
+    encounter: Encounter,
+    *,
+    method: PaymentMethod,
+    actor: User,
+    hospital_id: uuid.UUID,
+    reference: str | None = None,
+    payer_name: str | None = None,
+    expected_amount: Decimal | None = None,
+) -> list[Payment]:
+    """Take everything a visit owes in one step — reception's "Paid" tap.
+
+    The billing screen's three steps (assemble, issue, pay) run here in one
+    transaction, through the same functions, so numbering, events and the §6
+    closure rule behave exactly as they do there. One receipt per invoice
+    settled: an invoice issued earlier and a charge that landed since are both
+    cleared.
+
+    Refuses an unpriced line rather than issuing a bill with a zero on it — a
+    one-tap path is the wrong place to discover that a price is missing.
+
+    `expected_amount` is the figure the counter showed — the amount on the UPI
+    QR the patient just paid. If a charge has landed since, the balance no
+    longer matches it, and recording the new total against that reference
+    would be a receipt for money nobody sent. Refused, so the screen refreshes.
+
+    Two receptionists tapping "Paid" at the same instant: the visit's billing
+    rows are locked first, so the second request waits, then finds the bill
+    already settled and is refused — never a second receipt.
+    """
+    await _lock_visit_billing(session, encounter.id, hospital_id=hospital_id)
+
+    if expected_amount is not None:
+        due = await open_balance(session, encounter.id)
+        if money(expected_amount) != due:
+            raise ConflictError(
+                f"The bill changed while you were collecting — it is now {due}.",
+                code="balance_changed",
+                details={"balance_due": str(due)},
+            )
+
+    pending, _ = await list_charges(
+        session,
+        PageParams(limit=MAX_PAGE_SIZE),
+        hospital_id=hospital_id,
+        encounter_id=encounter.id,
+        status=ChargeStatus.PENDING,
+    )
+    draft = await get_draft_for_encounter(session, encounter.id, hospital_id=hospital_id)
+    lines = [*pending, *(await _charges_on(session, draft.id) if draft else [])]
+    if any(line.needs_pricing for line in lines):
+        raise ValidationError(
+            "A charge on this visit has no price yet. Price it on the billing screen first.",
+            code="unpriced_charges",
+        )
+
+    if lines:
+        draft = await assemble_draft(
+            session,
+            InvoiceDraftRequest(encounter_id=encounter.id),
+            hospital_id=hospital_id,
+            actor=actor,
+        )
+        await issue_invoice(session, draft, actor=actor, hospital_id=hospital_id)
+
+    unpaid, _ = await list_invoices(
+        session,
+        PageParams(limit=MAX_PAGE_SIZE),
+        hospital_id=hospital_id,
+        encounter_id=encounter.id,
+        unpaid_only=True,
+    )
+    payments: list[Payment] = []
+    for invoice in unpaid:
+        if invoice.status is InvoiceStatus.DRAFT:
+            continue  # An empty draft: nothing on it to take money for.
+        payment, _ = await record_payment(
+            session,
+            invoice,
+            amount=invoice.balance_due,
+            method=method,
+            actor=actor,
+            hospital_id=hospital_id,
+            reference=reference,
+            payer_name=payer_name,
+        )
+        payments.append(payment)
+
+    if not payments:
+        raise ConflictError("Nothing is owed on this visit.", code="nothing_due")
+    return payments
+
+
 async def reverse_payment(
     session: AsyncSession,
     payment: Payment,
@@ -1996,6 +2340,94 @@ async def visit_account(
         paid_total=paid_total,
         balance_due=await open_balance(session, encounter.id),
         has_unpriced_items=any(charge.needs_pricing for charge in charges),
+    )
+
+
+# The order a relative asks about a stay: the room, then the medicines, then
+# everything else.
+_COST_ORDER: tuple[ChargeCategory, ...] = (
+    ChargeCategory.ROOM,
+    ChargeCategory.PHARMACY,
+    ChargeCategory.LAB,
+    ChargeCategory.RADIOLOGY,
+    ChargeCategory.PROCEDURE,
+    ChargeCategory.CONSULTATION,
+    ChargeCategory.REGISTRATION,
+    ChargeCategory.OTHER,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CostLineData:
+    category: ChargeCategory
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    total_amount: Decimal
+    needs_pricing: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CostBreakdownData:
+    encounter_id: uuid.UUID
+    lines: list[CostLineData]
+    total: Decimal
+    has_unpriced_items: bool
+
+
+async def cost_breakdown(
+    session: AsyncSession, encounter_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> CostBreakdownData:
+    """What a visit has cost so far, in the shape a relative asks about it.
+
+    Every charge that stands counts — pending or already invoiced — because
+    "what has this stay cost" does not care whether the counter has printed it
+    yet. Cancelled and waived lines do not: nobody owes them.
+
+    Grouped by (category, description, unit price), so twelve doses of
+    ceftriaxone are one line of twelve rather than twelve lines, and aggregated
+    in SQL rather than by fetching every charge — a fortnight's stay on four
+    drugs is several hundred rows, well past one page of `list_charges`.
+    """
+    rows = await session.execute(
+        sa_select(
+            col(Charge.category),
+            col(Charge.description),
+            col(Charge.unit_price),
+            col(Charge.needs_pricing),
+            func.sum(col(Charge.quantity)),
+            func.sum(col(Charge.total_amount)),
+        )
+        .where(
+            col(Charge.hospital_id) == hospital_id,
+            col(Charge.encounter_id) == encounter_id,
+            col(Charge.deleted_at).is_(None),
+            col(Charge.status).in_([ChargeStatus.PENDING, ChargeStatus.INVOICED]),
+        )
+        .group_by(
+            col(Charge.category),
+            col(Charge.description),
+            col(Charge.unit_price),
+            col(Charge.needs_pricing),
+        )
+    )
+    lines = [
+        CostLineData(
+            category=ChargeCategory(row[0]),
+            description=row[1],
+            unit_price=row[2],
+            needs_pricing=row[3],
+            quantity=row[4],
+            total_amount=money(row[5]),
+        )
+        for row in rows
+    ]
+    lines.sort(key=lambda line: (_COST_ORDER.index(line.category), line.description))
+    return CostBreakdownData(
+        encounter_id=encounter_id,
+        lines=lines,
+        total=money(sum((line.total_amount for line in lines), ZERO)),
+        has_unpriced_items=any(line.needs_pricing for line in lines),
     )
 
 

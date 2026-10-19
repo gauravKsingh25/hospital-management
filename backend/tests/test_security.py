@@ -89,7 +89,9 @@ class TestAccessTokens:
         token, _ = create_access_token(uuid.uuid4(), hospital_id=None)
         forged = jwt.encode(
             jwt.decode(token, options={"verify_signature": False}),
-            "not-the-real-signing-key",
+            # A *wrong* key, but a full-length one: a short key only adds a
+            # PyJWT InsecureKeyLengthWarning, and is not what this test is about.
+            "not-the-real-signing-key-but-a-full-32-bytes",
             algorithm=settings.JWT_ALGORITHM,
         )
         with pytest.raises(AuthenticationError):

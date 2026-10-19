@@ -3,11 +3,11 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   ACCOUNTS,
   bedTile,
-  registerAndQueue,
+  deskAdmits,
   releaseTrackedBeds,
+  sentForAdmission,
   signIn,
   signOut,
-  trackBed,
 } from "./support";
 
 /**
@@ -25,47 +25,25 @@ import {
  * system that frees it at the signature double-books it.
  */
 
-/** Put a patient in front of the doctor and open the consultation. */
-async function consultingRoom(page: Page): Promise<string> {
-  const name = await registerAndQueue(page);
-
-  await signIn(page, ACCOUNTS.doctor);
-  const row = page.getByTestId("queue-row").filter({ hasText: name });
-  await row.getByRole("link", { name: /Start consultation/ }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-  await page.getByRole("button", { name: "Start consultation" }).click();
-
-  const note = page.getByRole("textbox", { name: "Clinical note" });
-  await expect(note).toBeEnabled({ timeout: 45_000 });
-  await note.fill("Breathless at rest. Needs inpatient care.");
-  await note.press("Control+Enter");
-
-  return name;
-}
+/** A patient the doctor saw (on paper), sent by reception to the admission desk. */
+const consultingRoom = sentForAdmission;
 
 /**
- * Admit the patient currently on screen.
+ * The admission desk admits them into General Ward, then the doctor opens the
+ * stay — the doctor still runs the inpatient side.
  *
  * Returns the stay's URL *and* the bed taken, because the suite shares one
  * ward: assertions have to follow the specific bed this test used rather than
  * "the first one in cleaning", which belongs to whichever test ran before.
  */
 async function admit(page: Page, name: string): Promise<{ url: string; bed: string }> {
-  await page.getByTestId("admit-patient").click();
-
-  const dialog = page.getByRole("dialog", { name: "Admit to a ward" });
-  await expect(dialog).toBeVisible();
-  const choice = dialog.getByRole("group", { name: "Choose a bed" }).getByText(/^GW1-/).first();
-  const bed = (await choice.innerText()).trim();
-  await choice.click();
-  await dialog.getByLabel(/Attendant$/).fill("Sita Devi");
-  await dialog.getByRole("button", { name: "Admit", exact: true }).click();
-
-  await expect(page).toHaveURL(/\/admissions\/[0-9a-f-]{36}/, { timeout: 45_000 });
+  const stay = await deskAdmits(page, name, { bed: /^GW1-/, attendant: "Sita Devi" });
   await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible({ timeout: 45_000 });
+  await signOut(page);
 
-  const stay = { url: page.url(), bed };
-  trackBed(stay);
+  await signIn(page, ACCOUNTS.doctor);
+  await page.goto(stay.url);
+  await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible({ timeout: 45_000 });
   return stay;
 }
 
@@ -143,7 +121,7 @@ test.describe("the bed board", () => {
 });
 
 test.describe("admitting", () => {
-  test("the doctor admits from the consultation and lands on the stay", async ({ page }) => {
+  test("the admission desk admits, and the stay names the patient and the bed", async ({ page }) => {
     const name = await consultingRoom(page);
     await admit(page, name);
 

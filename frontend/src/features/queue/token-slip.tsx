@@ -6,7 +6,6 @@ import { Printer, UserPlus } from "lucide-react";
 
 import { PatientQr } from "@/components/patient/qr-code";
 import { Button } from "@/components/ui/button";
-import { LinkButton } from "@/components/ui/link-button";
 import type { QuickOpdResult } from "@/types/api";
 
 /**
@@ -108,11 +107,6 @@ export function TokenSlip({
         </Button>
       </div>
 
-      <div className="text-center no-print">
-        <LinkButton variant="link" size="sm" href={`/consultation/${result.encounter_id}`}>
-          {t("openChart")}
-        </LinkButton>
-      </div>
     </div>
   );
 }

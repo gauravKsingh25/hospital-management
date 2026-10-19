@@ -5,8 +5,10 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { Pill } from "lucide-react";
 
+import { LoadError } from "@/components/load-error";
 import { Pager } from "@/components/pager";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { DoseRow } from "@/features/chart/dose-row";
 import { api } from "@/lib/api/client";
 import { BOARD_PAGE_SIZE } from "@/lib/pagination";
@@ -84,7 +86,19 @@ export function MedicationRound({
         </Button>
       </div>
 
-      {doses.length === 0 ? (
+      {/*
+        Loading and failure are kept visibly distinct from "round clear": a
+        nurse must never read a network error as "no doses due".
+      */}
+      {round.isPending ? (
+        <div className="space-y-2" aria-busy="true">
+          {[0, 1, 2].map((row) => (
+            <Skeleton key={row} className="h-16 w-full rounded-lg" />
+          ))}
+        </div>
+      ) : round.isError && !round.data ? (
+        <LoadError onRetry={() => round.refetch()} />
+      ) : doses.length === 0 ? (
         <div className="text-muted-foreground flex flex-col items-center gap-2 rounded-lg border border-dashed py-16 text-center">
           <Pill aria-hidden className="size-6" />
           <p className="text-foreground text-sm font-medium">

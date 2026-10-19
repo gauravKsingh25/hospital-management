@@ -261,6 +261,49 @@ async def test_an_unpriced_act_is_still_captured_and_flagged(
     assert unpriced[0].id == charge.id
 
 
+async def test_a_medicine_switched_off_mid_course_is_still_charged_at_its_price(
+    session: AsyncSession, encounter: Encounter, priced_hospital: Hospital
+) -> None:
+    """Switching a medicine off stops new picks; it does not stop the courses
+    already running. A dose signed after the switch is still that medicine, at
+    that price — not a zero on the exception worklist."""
+    await service.sync_catalogue_item(
+        session,
+        hospital_id=priced_hospital.id,
+        code="MED-PARACETAMOL",
+        name="Paracetamol 500mg",
+        unit="tablet",
+        is_active=True,
+        price=D("12.00"),
+    )
+    await service.sync_catalogue_item(
+        session,
+        hospital_id=priced_hospital.id,
+        code="MED-PARACETAMOL",
+        name="Paracetamol 500mg",
+        unit="tablet",
+        is_active=False,
+        price=None,
+    )
+
+    charge = await service.capture_charge(
+        session,
+        hospital_id=priced_hospital.id,
+        encounter_id=encounter.id,
+        patient_id=encounter.patient_id,
+        source_module="ipd",
+        source_type="dose",
+        source_id=encounter.id,
+        description="Paracetamol 500mg",
+        category=ChargeCategory.PHARMACY,
+        item_code="MED-PARACETAMOL",
+        fallback_to_category_default=False,
+    )
+
+    assert charge.needs_pricing is False
+    assert charge.unit_price == D("12.00")
+
+
 async def test_capture_survives_a_hospital_with_no_rate_card_at_all(
     session: AsyncSession, tenant: Hospital, patient: Patient, doctor_user: User
 ) -> None:
@@ -1120,3 +1163,341 @@ async def test_a_discount_larger_than_the_charge_is_refused(
             actor=cashier_user,
         )
     assert exc.value.code == "discount_exceeds_charge"
+
+
+# ---------------------------------------------------------------------------
+# Collecting at the reception counter — the queue row's "Get payment" / "Paid"
+# ---------------------------------------------------------------------------
+async def test_collecting_invoices_and_settles_the_whole_balance_in_one_step(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    cashier_user: User,
+) -> None:
+    """Reception taps "Paid": the pending consultation fee becomes an issued,
+    paid invoice without anyone assembling or issuing it by hand."""
+    payments = await service.collect_balance(
+        session,
+        encounter,
+        method=PaymentMethod.CASH,
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+    )
+    await session.commit()
+
+    assert [payment.amount for payment in payments] == [D("500.00")]
+    assert payments[0].method is PaymentMethod.CASH
+    invoice = await service.get_invoice(
+        session, payments[0].invoice_id, hospital_id=priced_hospital.id
+    )
+    assert invoice.status is InvoiceStatus.PAID
+    assert await service.open_balance(session, encounter.id) == D("0.00")
+
+
+async def test_collecting_before_the_consultation_leaves_the_visit_open(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    cashier_user: User,
+) -> None:
+    """Indian OPDs take the fee at the token desk. Paying up front must not
+    close a visit the doctor has not even started."""
+    before = encounter.status
+
+    await service.collect_balance(
+        session,
+        encounter,
+        method=PaymentMethod.UPI,
+        reference="UTR 4821",
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+    )
+    await session.commit()
+
+    after = await clinical_service.get_encounter(
+        session, encounter.id, hospital_id=priced_hospital.id
+    )
+    assert after.status is before
+    assert not after.is_closed
+
+
+async def test_collecting_after_the_doctor_finishes_closes_the_visit(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    doctor_user: User,
+    cashier_user: User,
+) -> None:
+    await clinical_service.start_consultation(session, encounter, actor=doctor_user)
+    await clinical_service.complete_consultation(session, encounter, actor=doctor_user)
+
+    await service.collect_balance(
+        session,
+        encounter,
+        method=PaymentMethod.CASH,
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+    )
+    await session.commit()
+
+    closed = await clinical_service.get_encounter(
+        session, encounter.id, hospital_id=priced_hospital.id
+    )
+    assert closed.status is EncounterStatus.COMPLETED
+
+
+async def test_collecting_settles_an_earlier_invoice_and_a_later_charge_together(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    doctor_user: User,
+    cashier_user: User,
+) -> None:
+    """The fee was invoiced at the counter, then the doctor ordered a CBC. One
+    tap clears both — the reception row shows one balance, not two."""
+    first = await service.assemble_draft(
+        session, InvoiceDraftRequest(encounter_id=encounter.id), hospital_id=priced_hospital.id
+    )
+    await service.issue_invoice(session, first, actor=cashier_user, hospital_id=priced_hospital.id)
+    await clinical_service.start_consultation(session, encounter, actor=doctor_user)
+    await clinical_service.place_order(
+        session,
+        encounter,
+        OrderCreate(order_type=OrderType.LAB, item_code="CBC", item_name="CBC"),
+        actor=doctor_user,
+    )
+
+    payments = await service.collect_balance(
+        session,
+        encounter,
+        method=PaymentMethod.CASH,
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+    )
+    await session.commit()
+
+    assert sorted(payment.amount for payment in payments) == [D("350.00"), D("500.00")]
+    assert await service.open_balance(session, encounter.id) == D("0.00")
+
+
+async def test_collecting_with_an_unpriced_charge_is_refused(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    cashier_user: User,
+) -> None:
+    """A one-tap collection would issue a bill with a zero line on it. The
+    counter is sent to the billing screen to price it first."""
+    await service.capture_charge(
+        session,
+        hospital_id=priced_hospital.id,
+        encounter_id=encounter.id,
+        patient_id=encounter.patient_id,
+        source_module="clinical",
+        source_type="order",
+        source_id=encounter.id,
+        description="Nerve conduction study",
+        category=ChargeCategory.PROCEDURE,
+        item_code="NCS-NOT-CONFIGURED",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        await service.collect_balance(
+            session,
+            encounter,
+            method=PaymentMethod.CASH,
+            actor=cashier_user,
+            hospital_id=priced_hospital.id,
+        )
+    assert exc.value.code == "unpriced_charges"
+
+
+async def test_collecting_when_nothing_is_owed_is_refused(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    cashier_user: User,
+) -> None:
+    """Two receptionists tapping "Paid" on the same row: the second gets an
+    answer, not a second receipt."""
+    await service.collect_balance(
+        session,
+        encounter,
+        method=PaymentMethod.CASH,
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+    )
+    await session.commit()
+
+    with pytest.raises(ConflictError) as exc:
+        await service.collect_balance(
+            session,
+            encounter,
+            method=PaymentMethod.CASH,
+            actor=cashier_user,
+            hospital_id=priced_hospital.id,
+        )
+    assert exc.value.code == "nothing_due"
+
+
+def test_a_digital_collection_needs_a_reference() -> None:
+    """Same reconciliation rule as a payment taken on the billing screen."""
+    from pydantic import ValidationError as SchemaError
+
+    from app.modules.billing.schemas import CollectPayment
+
+    with pytest.raises(SchemaError):
+        CollectPayment(method=PaymentMethod.UPI)
+    assert CollectPayment(method=PaymentMethod.CASH).reference is None
+    assert CollectPayment(method=PaymentMethod.UPI, reference="4821").reference == "4821"
+
+
+async def test_balances_are_reported_per_visit_for_the_queue_board(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    cashier_user: User,
+) -> None:
+    """One bulk read for the whole board: what is owed, and what has been paid."""
+    owed = await service.balances_for(session, [encounter.id], hospital_id=priced_hospital.id)
+    assert owed[encounter.id].balance_due == D("500.00")
+    assert owed[encounter.id].amount_paid == D("0.00")
+
+    await service.collect_balance(
+        session,
+        encounter,
+        method=PaymentMethod.CASH,
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+    )
+    await session.commit()
+
+    paid = await service.balances_for(session, [encounter.id], hospital_id=priced_hospital.id)
+    assert paid[encounter.id].balance_due == D("0.00")
+    assert paid[encounter.id].amount_paid == D("500.00")
+
+
+async def test_collecting_refuses_when_the_balance_moved_since_it_was_shown(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    doctor_user: User,
+    cashier_user: User,
+) -> None:
+    """The QR asked the patient for 500; a CBC landed while they were paying.
+    Recording 850 against that UPI reference would be a receipt for money
+    nobody sent — so the counter is told the amount changed instead."""
+    await clinical_service.start_consultation(session, encounter, actor=doctor_user)
+    await clinical_service.place_order(
+        session,
+        encounter,
+        OrderCreate(order_type=OrderType.LAB, item_code="CBC", item_name="CBC"),
+        actor=doctor_user,
+    )
+
+    with pytest.raises(ConflictError) as exc:
+        await service.collect_balance(
+            session,
+            encounter,
+            method=PaymentMethod.UPI,
+            reference="4821",
+            expected_amount=D("500.00"),
+            actor=cashier_user,
+            hospital_id=priced_hospital.id,
+        )
+    assert exc.value.code == "balance_changed"
+
+    payments = await service.collect_balance(
+        session,
+        encounter,
+        method=PaymentMethod.UPI,
+        reference="4821",
+        expected_amount=D("850.00"),
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+    )
+    assert sum(payment.amount for payment in payments) == D("850.00")
+
+
+# ---------------------------------------------------------------------------
+# Two people, one bill, the same instant
+# ---------------------------------------------------------------------------
+async def test_two_simultaneous_collections_record_one_receipt(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    cashier_user: User,
+) -> None:
+    """Two receptionists tap "Paid" on the same row at once. Each request runs
+    in its own transaction, the way two HTTP requests do. One takes the money;
+    the other is told nothing is due — never a second receipt."""
+    import asyncio
+
+    hospital_id = priced_hospital.id
+    encounter_id = encounter.id
+    await session.commit()
+
+    async def tap() -> int:
+        async with db.session_scope() as own:
+            await db.set_tenant_context(own, hospital_id)
+            visit = await clinical_service.get_encounter(own, encounter_id, hospital_id=hospital_id)
+            payments = await service.collect_balance(
+                own,
+                visit,
+                method=PaymentMethod.CASH,
+                actor=cashier_user,
+                hospital_id=hospital_id,
+            )
+            return len(payments)
+
+    outcomes = await asyncio.gather(tap(), tap(), return_exceptions=True)
+
+    receipts = [outcome for outcome in outcomes if isinstance(outcome, int)]
+    refusals = [outcome for outcome in outcomes if isinstance(outcome, ConflictError)]
+    assert receipts == [1], outcomes
+    assert len(refusals) == 1, outcomes
+    assert refusals[0].code == "nothing_due"
+
+    payments, _ = await service.list_payments(session, PageParams(), hospital_id=hospital_id)
+    assert [payment.amount for payment in payments] == [D("500.00")]
+
+
+async def test_two_simultaneous_payments_on_one_invoice_cannot_overpay_it(
+    session: AsyncSession,
+    encounter: Encounter,
+    priced_hospital: Hospital,
+    cashier_user: User,
+) -> None:
+    """The billing screen's "Take payment", twice at once for the full balance.
+    The second must see the first's receipt, not the balance before it."""
+    import asyncio
+
+    hospital_id = priced_hospital.id
+    invoice = await service.assemble_draft(
+        session, InvoiceDraftRequest(encounter_id=encounter.id), hospital_id=hospital_id
+    )
+    await service.issue_invoice(session, invoice, actor=cashier_user, hospital_id=hospital_id)
+    invoice_id = invoice.id
+    await session.commit()
+
+    async def pay() -> None:
+        async with db.session_scope() as own:
+            await db.set_tenant_context(own, hospital_id)
+            target = await service.get_invoice(
+                own, invoice_id, hospital_id=hospital_id, for_update=True
+            )
+            await service.record_payment(
+                own,
+                target,
+                amount=D("500.00"),
+                method=PaymentMethod.CASH,
+                actor=cashier_user,
+                hospital_id=hospital_id,
+            )
+
+    outcomes = await asyncio.gather(pay(), pay(), return_exceptions=True)
+
+    failures = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    assert len(failures) == 1, outcomes
+    payments, _ = await service.list_payments(session, PageParams(), hospital_id=hospital_id)
+    assert [payment.amount for payment in payments] == [D("500.00")]

@@ -14,7 +14,9 @@ Four tests carry most of the weight, and each guards a failure a real ward has:
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +27,8 @@ from app.core.exceptions import ConflictError, IllegalStateTransitionError
 from app.core.models import utc_now
 from app.core.pagination import PageParams
 from app.modules.billing import service as billing_service
-from app.modules.billing.models import ChargeCategory, ChargeStatus
+from app.modules.billing.models import ChargeCategory, ChargeStatus, PayerType
+from app.modules.billing.schemas import RateCardCreate, ServiceItemCreate, ServicePriceUpsert
 from app.modules.clinical import service as clinical_service
 from app.modules.clinical.models import Encounter, EncounterStatus, EncounterType, NoteType
 from app.modules.clinical.schemas import DeathRecord, DiagnosisCreate, LamaRecord, NoteCreate
@@ -54,6 +57,7 @@ from app.modules.ipd.schemas import (
 from app.modules.patients import service as patients_service
 from app.modules.patients.models import Gender, Patient
 from app.modules.patients.schemas import PatientRegister
+from app.modules.tenancy import service as tenancy_service
 from app.modules.tenancy.models import Hospital
 
 pytestmark = pytest.mark.integration
@@ -985,6 +989,122 @@ async def test_a_cancelled_admission_accrues_nothing(
     result = await service.accrue_bed_days(session, hospital_id=tenant.id)
     await session.commit()
     assert result["bed_days_accrued"] == 0
+
+
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def _ist(day: date, hour: int) -> datetime:
+    return datetime.combine(day, time(hour), tzinfo=_IST)
+
+
+def test_census_counts_admission_day_but_not_discharge_day() -> None:
+    """Monday to Wednesday is two nights — what a family expects, and what
+    `length_of_stay` says. Charging Wednesday too bills a night never spent."""
+    monday = date(2026, 10, 5)
+    first, last = service.census_nights(
+        _ist(monday, 10),
+        _ist(monday + timedelta(days=2), 11),
+        zone=_IST,
+        now=_ist(monday + timedelta(days=2), 12),
+    )
+    assert (first, last) == (monday, monday + timedelta(days=1))
+
+
+def test_a_day_case_is_one_night_not_zero() -> None:
+    monday = date(2026, 10, 5)
+    first, last = service.census_nights(
+        _ist(monday, 9), _ist(monday, 17), zone=_IST, now=_ist(monday, 18)
+    )
+    assert first == last == monday
+
+
+def test_an_open_stay_is_charged_up_to_the_last_midnight_passed() -> None:
+    """The admission night shows on the running bill from the start; later
+    nights are charged once the patient is still in the bed at midnight."""
+    monday = date(2026, 10, 5)
+    same_day = service.census_nights(_ist(monday, 10), None, zone=_IST, now=_ist(monday, 22))
+    assert same_day == (monday, monday)
+
+    two_days_on = service.census_nights(
+        _ist(monday, 10), None, zone=_IST, now=_ist(monday + timedelta(days=2), 9)
+    )
+    assert two_days_on == (monday, monday + timedelta(days=1))
+
+
+def test_census_dates_are_the_hospitals_not_utc() -> None:
+    """02:00 IST on Wednesday is still Tuesday in UTC. Counting in UTC bills the
+    patient for Tuesday night, which ended before they arrived."""
+    wednesday = date(2026, 10, 7)
+    admitted = _ist(wednesday, 2)
+    assert admitted.astimezone(UTC).date() == wednesday - timedelta(days=1)
+
+    first, last = service.census_nights(
+        admitted,
+        _ist(wednesday + timedelta(days=1), 10),
+        zone=_IST,
+        now=_ist(wednesday + timedelta(days=1), 11),
+    )
+    assert (first, last) == (wednesday, wednesday)
+
+
+async def test_the_final_bill_carries_every_night_and_no_more(
+    session: AsyncSession, tenant: Hospital, admission: Admission, doctor_user: User
+) -> None:
+    """Discharge accrues the stay up to the minute, before the Encounter closes —
+    so the bill assembled on closure has the last night on it, and the census
+    rule keeps discharge day off it."""
+    card = await billing_service.create_rate_card(
+        session,
+        RateCardCreate(code="CASH", name="Cash", payer_type=PayerType.CASH, is_default=True),
+        hospital_id=tenant.id,
+    )
+    room_item = await billing_service.get_service_item_by_code(
+        session, "ROOM-GEN", hospital_id=tenant.id
+    ) or await billing_service.create_service_item(
+        session,
+        ServiceItemCreate(code="ROOM-GEN", name="General bed", category=ChargeCategory.ROOM),
+        hospital_id=tenant.id,
+    )
+    await billing_service.set_price(
+        session, room_item, ServicePriceUpsert(rate_card_id=card.id, price=Decimal("1500.00"))
+    )
+
+    zone = await tenancy_service.local_zone(session, tenant.id)
+    today = datetime.now(zone).date()
+    admitted = datetime.combine(today - timedelta(days=2), time(10), tzinfo=zone)
+
+    admission.admitted_at = admitted
+    session.add(admission)
+    assignment = await service.current_assignment(session, admission.id)
+    assert assignment is not None
+    assignment.assigned_at = admitted
+    session.add(assignment)
+    await session.commit()
+
+    discharged = await service.discharge_patient(
+        session,
+        admission,
+        DischargeRequest(discharge_type=DischargeType.RECOVERED),
+        actor=doctor_user,
+    )
+    await session.commit()
+
+    # Nights counted from the *actual* discharge date, not from `today` above:
+    # if hospital-local midnight passes between the two, the stay genuinely
+    # spans three census nights, and a hard-coded 2 would fail at random.
+    assert discharged.discharged_at is not None
+    nights = (discharged.discharged_at.astimezone(zone).date() - admitted.date()).days
+    assert nights in (2, 3)
+
+    charges, _ = await billing_service.list_charges(
+        session, PageParams(limit=50), hospital_id=tenant.id, encounter_id=admission.encounter_id
+    )
+    room = [charge for charge in charges if charge.category is ChargeCategory.ROOM]
+    assert len(room) == nights
+    # Gathered onto the final bill, not left loose for the counter to find.
+    assert all(charge.status is ChargeStatus.INVOICED for charge in room)
+    assert sum((charge.total_amount for charge in room), Decimal(0)) == Decimal("1500.00") * nights
 
 
 # ---------------------------------------------------------------------------

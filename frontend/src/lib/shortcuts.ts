@@ -37,6 +37,8 @@ export type Shortcut = {
   action: ShortcutAction;
   /** Hidden when the user holds none of these. Empty means always shown. */
   permissions?: Permission[];
+  /** Hidden when the user holds any of these — mirrors `NavItem.hiddenWith`. */
+  hiddenWith?: Permission[];
 };
 
 export const DEFAULT_SHORTCUTS: Shortcut[] = [
@@ -60,6 +62,8 @@ export const DEFAULT_SHORTCUTS: Shortcut[] = [
     labelKey: "queue",
     action: { kind: "navigate", href: "/queue" },
     permissions: ["queue:read"],
+    // Reception has no Queue screen; its queue is the Reception screen.
+    hiddenWith: ["patient:create"],
   },
   {
     id: "help",

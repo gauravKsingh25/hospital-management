@@ -1,6 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, findOnBoard, registerAndQueue, signIn, signOut } from "./support";
+import {
+  ACCOUNTS,
+  doctorFinishesVisit,
+  findOnBoard,
+  openPatient,
+  recordDeath,
+  registerAndQueue,
+  signIn,
+  signOut,
+} from "./support";
 
 /**
  * The outbox, the block list, and the standing copy.
@@ -20,33 +29,10 @@ import { ACCOUNTS, findOnBoard, registerAndQueue, signIn, signOut } from "./supp
  * people quietly stop believing in.
  */
 
-/** Find a patient in the index and open their record. */
-async function openPatient(page: Page, name: string): Promise<void> {
-  await page.goto("/patients");
-  await page.getByLabel("Search").fill(name);
-  const row = page.getByTestId("patient-row").filter({ hasText: name });
-  await expect(row).toBeVisible({ timeout: 45_000 });
-  await row.getByRole("link", { name: "Open" }).click();
-  await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible({ timeout: 45_000 });
-}
-
 /** Register, queue, and let the doctor close the visit — which triggers messages. */
 async function visitWithMessages(page: Page): Promise<string> {
   const name = await registerAndQueue(page);
-
-  await signIn(page, ACCOUNTS.doctor);
-  const row = page.getByTestId("queue-row").filter({ hasText: name });
-  await row.getByRole("link", { name: /Start consultation/ }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-  await page.getByRole("button", { name: "Start consultation" }).click();
-
-  const note = page.getByRole("textbox", { name: "Clinical note" });
-  await expect(note).toBeEnabled({ timeout: 45_000 });
-  await note.fill("Seen and well. Review in a month.");
-  await note.press("Control+Enter");
-  await page.getByRole("button", { name: /Complete/ }).first().click();
-
-  await signOut(page);
+  await doctorFinishesVisit(page, name);
   return name;
 }
 
@@ -160,20 +146,8 @@ test.describe("blocking", () => {
     const name = await registerAndQueue(page);
 
     await signIn(page, ACCOUNTS.doctor);
-    const row = page.getByTestId("queue-row").filter({ hasText: name });
-    await row.getByRole("link", { name: /Start consultation/ }).click();
-    await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-
-    await page.getByTestId("record-outcome").click();
-    const outcome = page.getByRole("dialog", { name: "How did this visit end?" });
-    await outcome.getByLabel("What happened").click();
-    await page.getByRole("option", { name: "The patient died" }).click();
-    await outcome.getByLabel("Certified by").click();
-    await page.getByRole("option", { name: /Vikram/ }).click();
-    await outcome.getByLabel("Cause of death").fill("Cardiac arrest.");
-    await outcome.getByTestId("confirm-outcome").click();
-    await expect(page.getByTestId("outcome-summary")).toBeVisible({ timeout: 45_000 });
-
+    await openPatient(page, name);
+    await recordDeath(page, "Cardiac arrest.");
     await signOut(page);
 
     await signIn(page, ACCOUNTS.reception);
@@ -247,7 +221,12 @@ test.describe("message templates", () => {
     // `reset_demo_data.py` rightly leaves them alone — which means a fixed
     // code/channel/language would collide with the previous run and 409. The
     // same reasoning as `uniquePatient`.
-    const language = `q${Date.now().toString().slice(-2)}`;
+    //
+    // Seven base-36 digits of the clock, not two decimal ones: two digits gave
+    // only 100 possible codes, so the suite collided with its own leftovers
+    // more often with every run. Seven are unique to the millisecond for about
+    // 2.5 years and, with the "q", fit the backend's 8-character limit.
+    const language = `q${Date.now().toString(36).slice(-7)}`;
 
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Message").click();

@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 
 import { LiveQueue } from "@/features/queue/live-queue";
@@ -12,7 +13,7 @@ export async function generateMetadata() {
 }
 
 /**
- * The whole hospital's queue — nursing's screen, and reception's second one.
+ * The whole hospital's queue — nursing's screen, and a doctor's home.
  *
  * The same component as the doctor's list, unfiltered. A nurse calling
  * patients for vitals works across every clinic, so scoping this to one
@@ -23,6 +24,10 @@ export default async function QueuePage() {
   const user = await getCurrentUser();
 
   if (!can(user, "queue:read")) return <NoPermission />;
+  // Reception manages the queue from its own screen, which does everything
+  // this one does and more. A bookmark, an old link or a search hit for a
+  // doctor lands them there rather than on a second, lesser view.
+  if (can(user, "patient:create")) redirect("/reception");
 
   return (
     <div className="space-y-6">
@@ -33,7 +38,6 @@ export default async function QueuePage() {
         {can(user, "patient:read") ? <CameraScanButton /> : null}
       </header>
       <LiveQueue
-        showConsultLink={can(user, "encounter:complete")}
         canRecordVitals={can(user, "vitals:record")}
       />
     </div>

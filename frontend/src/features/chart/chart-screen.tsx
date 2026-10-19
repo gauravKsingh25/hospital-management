@@ -25,7 +25,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { formatMoney } from "@/features/billing/money";
 import { DoseRow } from "@/features/chart/dose-row";
+import { MedicinePicker } from "@/features/medicines/medicine-picker";
 import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
@@ -35,6 +37,7 @@ import type {
   DrugSchedule,
   MedicationOrder,
   MedicationRoute,
+  MedicineItem,
   Page,
 } from "@/types/api";
 
@@ -66,6 +69,10 @@ const SCHEDULES: DrugSchedule[] = ["NONE", "H", "H1", "X", "NARCOTIC"];
  * Stopping a drug is a prescriber's act and needs a reason, because a drug
  * that vanishes from a chart with no explanation is one a covering doctor
  * restarts.
+ *
+ * A drug picked from the medicine list is billed per dose given, and the chart
+ * says so beside it — as it says "not billed" beside one typed free-hand, so
+ * the gap is visible to the one person who can close it.
  */
 export function ChartScreen({
   admission,
@@ -73,12 +80,15 @@ export function ChartScreen({
   initialDoses,
   canPrescribe,
   canAdminister,
+  canPickMedicine = false,
 }: {
   admission: Admission;
   initialOrders: Page<MedicationOrder>;
   initialDoses: Page<Dose>;
   canPrescribe: boolean;
   canAdminister: boolean;
+  /** Offer the medicine list when prescribing (`medicine:read`). */
+  canPickMedicine?: boolean;
 }) {
   const t = useTranslations("chart");
   const common = useTranslations("common");
@@ -196,6 +206,7 @@ export function ChartScreen({
                       {order.instructions}
                     </div>
                   ) : null}
+                  <BillingLine order={order} />
                   {!order.is_active ? (
                     <div className="text-muted-foreground mt-0.5 text-xs">
                       {t("stopped", { reason: order.stop_reason ?? "" })}
@@ -244,6 +255,7 @@ export function ChartScreen({
 
       <PrescribeDialog
         admissionId={admission.id}
+        canPickMedicine={canPickMedicine}
         open={prescribing}
         onOpenChange={setPrescribing}
         onDone={refresh}
@@ -266,19 +278,49 @@ export function ChartScreen({
   );
 }
 
+/** "₹85.00 a vial · 1 vial a dose", or "Not billed" for a free-typed drug. */
+function BillingLine({ order }: { order: MedicationOrder }) {
+  const t = useTranslations("chart");
+  if (!order.item_code) {
+    return (
+      <div className="text-muted-foreground mt-0.5 text-xs" data-testid="billing-line">
+        {t("notBilled")}
+      </div>
+    );
+  }
+  const units = Number(order.units_per_dose);
+  return (
+    <div className="text-muted-foreground tabular mt-0.5 text-xs" data-testid="billing-line">
+      {order.unit_price !== null && order.unit_price !== undefined
+        ? t("billedPerDose", {
+            price: formatMoney(order.unit_price),
+            unit: order.unit ?? "",
+            units: Number.isInteger(units) ? String(units) : order.units_per_dose,
+          })
+        : t("billedUnpriced")}
+    </div>
+  );
+}
+
 function PrescribeDialog({
   admissionId,
+  canPickMedicine,
   open,
   onOpenChange,
   onDone,
 }: {
   admissionId: string;
+  canPickMedicine: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDone: () => void;
 }) {
   const t = useTranslations("chart");
   const common = useTranslations("common");
+
+  // Picked from the medicine list: fills the fields in, and bills each dose.
+  const [item, setItem] = useState<MedicineItem | null>(null);
+  const [unitsPerDose, setUnitsPerDose] = useState("1");
 
   const [drug, setDrug] = useState("");
   const [dose, setDose] = useState("");
@@ -304,9 +346,13 @@ function PrescribeDialog({
         prn_indication: isPrn ? prnIndication.trim() : null,
         drug_schedule: schedule,
         instructions: instructions.trim() || null,
+        medicine_item_id: item?.id ?? null,
+        units_per_dose: item ? unitsPerDose.trim() || "1" : "1",
       }),
     onSuccess: (order) => {
       toast.success(t("prescribed", { drug: order.drug_name }));
+      setItem(null);
+      setUnitsPerDose("1");
       setDrug("");
       setDose("");
       setInstructions("");
@@ -317,10 +363,22 @@ function PrescribeDialog({
     onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
   });
 
+  const pick = (next: MedicineItem | null) => {
+    setItem(next);
+    if (!next) return;
+    setDrug(next.name);
+    if (next.dose) setDose(next.dose);
+    if (next.route) setRoute(next.route);
+    setSchedule(next.drug_schedule);
+    setUnitsPerDose("1");
+  };
+
+  const unitsValid = !item || (Number(unitsPerDose) > 0 && Number(unitsPerDose) <= 100);
   const valid =
     drug.trim() &&
     dose.trim() &&
     frequency.trim() &&
+    unitsValid &&
     (isPrn ? prnIndication.trim().length > 0 : Number(timesPerDay) >= 1);
 
   return (
@@ -331,7 +389,35 @@ function PrescribeDialog({
           <DialogDescription>{t("prescribeHint")}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 text-left">
+        <div className="max-h-[65vh] space-y-3 overflow-y-auto text-left">
+          {canPickMedicine ? (
+            <div className="space-y-2">
+              <MedicinePicker
+                label={t("fromMedicineList")}
+                value={item}
+                onChange={pick}
+                autoFocus
+              />
+              {item ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="drug-units">
+                    {t("unitsPerDose", { unit: item.unit })}
+                  </Label>
+                  <Input
+                    id="drug-units"
+                    value={unitsPerDose}
+                    onChange={(event) => setUnitsPerDose(event.target.value)}
+                    inputMode="decimal"
+                    className="h-tap tabular w-28"
+                  />
+                  <p className="text-muted-foreground text-xs">{t("unitsPerDoseHint")}</p>
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-xs">{t("freeTypedHint")}</p>
+              )}
+            </div>
+          ) : null}
+
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="drug-name">{t("drug")}</Label>
@@ -340,7 +426,7 @@ function PrescribeDialog({
                 value={drug}
                 onChange={(event) => setDrug(event.target.value)}
                 className="h-tap"
-                autoFocus
+                autoFocus={!canPickMedicine}
               />
             </div>
             <div className="space-y-1.5">

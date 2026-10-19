@@ -18,6 +18,16 @@ administrative act of ending the stay and freeing the bed; `summary:sign` is a
 clinical signature with a registration number attached. The first can be done by
 the ward clerk once the doctor has done the second.
 
+**Pricing the medicine list is not administering from it.** `medicine:manage`
+adds items to the list and sets what they cost; `medicine:issue` records an
+item used on a patient, which puts it on their bill. The admission desk holds
+both — it is where a hospital sets up "IV fluid, ₹X" and where the stay's
+paperwork lives. Nurses hold only the second: they record the cannula they
+used, and they do not decide what it costs. This is a deliberately narrow
+exception to billing's rule that pricing belongs to administration
+(`ratecard:manage`): it covers the medicine list's own items and nothing else
+on the rate card, and every change is audited with the old and new price.
+
 **Cleaning a bed is somebody's actual job.** `bed:clean` belongs to
 `HOUSEKEEPING`, a role added to the seed set for exactly this rung of the bed
 lifecycle. Nursing keeps it as well, because a small hospital at 3am has no
@@ -64,6 +74,13 @@ class IpdPermissions:
     # The nurse at the bedside, signing for a dose.
     MEDICATION_ADMINISTER = "medication:administer"
 
+    # The medicine list: presets with a dose and a price.
+    MEDICINE_READ = "medicine:read"
+    # Add items to the list and set their price.
+    MEDICINE_MANAGE = "medicine:manage"
+    # Record an item used on an inpatient — it goes on their bill.
+    MEDICINE_ISSUE = "medicine:issue"
+
     SUMMARY_READ = "summary:read"
     SUMMARY_WRITE = "summary:write"
     # The clinical signature. Deliberately not held by whoever can edit the text.
@@ -93,6 +110,17 @@ PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
     PermissionDef(IpdPermissions.MEDICATION_READ, MODULE, "View the medication chart."),
     PermissionDef(IpdPermissions.MEDICATION_PRESCRIBE, MODULE, "Prescribe or stop a drug."),
     PermissionDef(IpdPermissions.MEDICATION_ADMINISTER, MODULE, "Record a dose given or withheld."),
+    PermissionDef(IpdPermissions.MEDICINE_READ, MODULE, "View the medicine list and its prices."),
+    PermissionDef(
+        IpdPermissions.MEDICINE_MANAGE,
+        MODULE,
+        "Add items to the medicine list and set their price.",
+    ),
+    PermissionDef(
+        IpdPermissions.MEDICINE_ISSUE,
+        MODULE,
+        "Record medicines and supplies used on an inpatient; they go on the bill.",
+    ),
     PermissionDef(IpdPermissions.SUMMARY_READ, MODULE, "Read discharge summaries."),
     PermissionDef(IpdPermissions.SUMMARY_WRITE, MODULE, "Compile or edit a discharge summary."),
     PermissionDef(IpdPermissions.SUMMARY_SIGN, MODULE, "Sign and release a discharge summary."),
@@ -106,6 +134,7 @@ _READ = (
     IpdPermissions.ADMISSION_READ,
     IpdPermissions.MEDICATION_READ,
     IpdPermissions.SUMMARY_READ,
+    IpdPermissions.MEDICINE_READ,
 )
 
 # The ward: everything at the bedside, and nothing that changes what the hospital
@@ -118,6 +147,8 @@ _NURSE = (
     IpdPermissions.ADMISSION_UPDATE,
     IpdPermissions.MEDICATION_ADMINISTER,
     IpdPermissions.SUMMARY_WRITE,
+    # The cannula and the IV set used at the bedside. Not their price.
+    IpdPermissions.MEDICINE_ISSUE,
 )
 
 # The consultant: prescribes, writes up, signs. Does not run the bed board —
@@ -148,9 +179,10 @@ _RECEPTION = (
     IpdPermissions.ADMISSION_REQUEST,
 )
 
-# The admission counter: the patients sent from OPD, a bed, the paperwork.
-# Not discharge, not the medication chart — the stay belongs to the ward once
-# the patient is in a bed.
+# The admission counter: the patients sent from OPD, a bed, the paperwork, and
+# the medicine list — what an inpatient stay can be charged for, and what it
+# used. Not discharge, not the medication chart: the clinical side of the stay
+# belongs to the ward once the patient is in a bed.
 _ADMISSION_DESK = (
     IpdPermissions.WARD_READ,
     IpdPermissions.BED_READ,
@@ -160,6 +192,9 @@ _ADMISSION_DESK = (
     IpdPermissions.ADMISSION_UPDATE,
     IpdPermissions.ADMISSION_REQUEST,
     IpdPermissions.ADMISSION_DESK,
+    IpdPermissions.MEDICINE_READ,
+    IpdPermissions.MEDICINE_MANAGE,
+    IpdPermissions.MEDICINE_ISSUE,
 )
 
 MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
@@ -174,17 +209,23 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
         IpdPermissions.WARD_READ,
         IpdPermissions.BED_READ,
         IpdPermissions.ADMISSION_READ,
+        IpdPermissions.MEDICINE_READ,
     ),
     Roles.BILLING_STAFF: (
         IpdPermissions.WARD_READ,
         IpdPermissions.BED_READ,
         IpdPermissions.ADMISSION_READ,
+        IpdPermissions.MEDICINE_READ,
     ),
     # The pharmacy reads the chart to dispense against it, and does not sign for
-    # a dose given at the bedside.
+    # a dose given at the bedside. It keeps the medicine list — the formulary is
+    # the pharmacy's in any hospital that has one — and issues from it.
     Roles.PHARMACIST: (
         IpdPermissions.ADMISSION_READ,
         IpdPermissions.MEDICATION_READ,
+        IpdPermissions.MEDICINE_READ,
+        IpdPermissions.MEDICINE_MANAGE,
+        IpdPermissions.MEDICINE_ISSUE,
     ),
     # The lab and radiology need to know which ward to send a report to.
     Roles.LAB_TECH: (IpdPermissions.WARD_READ, IpdPermissions.ADMISSION_READ),

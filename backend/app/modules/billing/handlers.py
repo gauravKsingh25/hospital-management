@@ -23,10 +23,10 @@ order a blood test.
 Two things deliberately do **not** capture a charge here:
 
 * **Pharmacy orders.** A prescription's price depends on what is actually
-  dispensed and in what quantity, which is not known at ordering time. The
-  charge belongs to the dispensing event, and the pharmacy module lands in
-  Phase 9. Capturing at order time would bill patients for drugs they never
-  collected.
+  dispensed and in what quantity, which is not known at ordering time.
+  Capturing at order time would bill patients for drugs they never collected.
+  On a ward the equivalent act is a dose *given*, and that is what is charged
+  (`capture_dose`, below) — one dose, from the medicine list, at its price.
 * **Referral orders.** Writing a referral letter is not a billable act in
   itself; any ambulance or procedure attached to it is charged on its own.
 """
@@ -50,11 +50,23 @@ from app.modules.clinical.events import (
     OrderPlaced,
 )
 from app.modules.clinical.models import Encounter, EncounterType, OrderType
-from app.modules.ipd.events import BedDayAccrued
+from app.modules.ipd.events import (
+    BedDayAccrued,
+    MedicationAdministered,
+    MedicineIssued,
+    MedicineIssueReversed,
+)
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["capture_bed_day", "outstanding_balance", "register_handlers"]
+__all__ = [
+    "capture_bed_day",
+    "capture_dose",
+    "capture_medicine_issue",
+    "outstanding_balance",
+    "register_handlers",
+    "reverse_medicine_issue",
+]
 
 # Which clinical order types produce a charge the moment they are placed.
 # Pharmacy and referral are absent on purpose — see the module docstring.
@@ -155,6 +167,83 @@ async def capture_bed_day(event: BedDayAccrued, session: AsyncSession) -> None:
     )
 
 
+async def capture_dose(event: MedicationAdministered, session: AsyncSession) -> None:
+    """Charge one dose the nurse signed as given.
+
+    Per dose given rather than per course prescribed, because a stay is billed
+    for what the patient received: a course stopped on day two, a dose refused
+    or held, is not a cost. Keyed on the administration, so a re-delivered
+    event cannot charge one dose twice.
+
+    Only drugs picked from the medicine list carry an `item_code`. A drug typed
+    free-hand has no price to charge, and inventing one — the first pharmacy
+    item on file — would put a wrong number on a patient's bill, so it is left
+    off; the chart shows the gap beside the drug instead.
+    """
+    if event.item_code is None or event.hospital_id is None:
+        return
+
+    await service.capture_charge(
+        session,
+        hospital_id=event.hospital_id,
+        encounter_id=event.encounter_id,
+        patient_id=event.patient_id,
+        source_module="ipd",
+        source_type="dose",
+        source_id=event.administration_id,
+        description=f"{event.drug_name} {event.dose}".strip(),
+        category=ChargeCategory.PHARMACY,
+        item_code=event.item_code,
+        quantity=event.quantity,
+        actor_id=event.actor_id,
+        fallback_to_category_default=False,
+    )
+
+
+async def capture_medicine_issue(event: MedicineIssued, session: AsyncSession) -> None:
+    """Charge an item used on an inpatient outside the chart — an IV set, a cannula."""
+    if event.hospital_id is None:
+        return
+
+    await service.capture_charge(
+        session,
+        hospital_id=event.hospital_id,
+        encounter_id=event.encounter_id,
+        patient_id=event.patient_id,
+        source_module="ipd",
+        source_type="issue",
+        source_id=event.issue_id,
+        description=event.item_name,
+        category=ChargeCategory.PHARMACY,
+        item_code=event.item_code,
+        quantity=Decimal(event.quantity),
+        actor_id=event.actor_id,
+        fallback_to_category_default=False,
+    )
+
+
+async def reverse_medicine_issue(event: MedicineIssueReversed, session: AsyncSession) -> None:
+    """Take a reversed issue off the bill — or refuse the reversal.
+
+    Refusing is the point. Once the line is on an issued invoice the patient
+    may be holding a printout of it, and letting the ward's record say "not
+    used" while the invoice says "charged" would leave two documents telling
+    different stories. The error propagates, the reversal rolls back, and the
+    remedy — a credit note — is billing's.
+    """
+    if event.hospital_id is None:
+        return
+
+    await service.reverse_charge_for_source(
+        session,
+        hospital_id=event.hospital_id,
+        source_module="ipd",
+        source_type="issue",
+        source_id=event.issue_id,
+        reason=event.reason,
+    )
+
+
 async def void_cancelled_order(event: OrderCancelled, session: AsyncSession) -> None:
     """Take the charge off the bill when the order is called off.
 
@@ -239,6 +328,9 @@ def register_handlers() -> None:
     event_bus.subscribe_transactional(OrderPlaced, capture_order)
     event_bus.subscribe_transactional(OrderCancelled, void_cancelled_order)
     event_bus.subscribe_transactional(BedDayAccrued, capture_bed_day)
+    event_bus.subscribe_transactional(MedicationAdministered, capture_dose)
+    event_bus.subscribe_transactional(MedicineIssued, capture_medicine_issue)
+    event_bus.subscribe_transactional(MedicineIssueReversed, reverse_medicine_issue)
     event_bus.subscribe_transactional(EncounterClosed, settle_closed_visit)
 
     clinical_service.register_pending_provider("BILLING", outstanding_balance)

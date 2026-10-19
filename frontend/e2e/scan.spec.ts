@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { ACCOUNTS, registerAndReadSlip, signIn, signOut } from "./support";
+import { ACCOUNTS, registerAndReadSlip, signIn } from "./support";
 
 /**
  * QR-based patient lookup (CLAUDE.md §7b).
@@ -129,7 +129,7 @@ test.describe("scan anywhere", () => {
   test("a scan from a plain screen opens the patient", async ({ page }) => {
     const { name, uhid } = await registerAndReadSlip(page);
 
-    await page.goto("/queue");
+    await page.goto("/reception");
     // Wait for a row, not the heading. Rows arrive from a client query, so
     // seeing one proves React has hydrated and the key listener is attached —
     // whereas the heading is server-rendered and present before any of that.
@@ -147,7 +147,7 @@ test.describe("scan anywhere", () => {
     // A scan that silently fails is the worst outcome: the receptionist scans
     // again, harder, and concludes the software is broken.
     await signIn(page, ACCOUNTS.reception);
-    await page.goto("/queue");
+    await page.goto("/reception");
     await expect(page.getByTestId("queue-row").first()).toBeVisible({ timeout: 45_000 });
     await page.keyboard.type("NOPE-99-000001", { delay: SCANNER_DELAY });
     await page.keyboard.press("Enter");
@@ -155,34 +155,28 @@ test.describe("scan anywhere", () => {
     await expect(page.getByText("No patient has that card.")).toBeVisible({ timeout: 45_000 });
   });
 
-  test("it cannot eat a clinical note", async ({ page }) => {
+  test("it cannot eat what somebody is typing", async ({ page }) => {
     /**
      * The risk that made this the last thing built. A global key handler that
-     * misfires while a doctor is writing costs a sentence of a clinical note,
-     * which is worse than the typing this saves.
+     * misfires while somebody is typing costs them what they typed, which is
+     * worse than the typing this saves.
      *
      * The guard is absolute rather than statistical: the handler is inert
-     * whenever a text control has focus. So a burst typed *into the note* has
-     * to land in the note, in full, and navigate nowhere.
+     * whenever a text control has focus. So a burst typed *into a field* has
+     * to land in the field, in full, and navigate nowhere.
      */
-    const { name, uhid } = await registerAndReadSlip(page);
-    await signOut(page);
+    const { uhid } = await registerAndReadSlip(page);
 
-    await signIn(page, ACCOUNTS.doctor);
-    const row = page.getByTestId("queue-row").filter({ hasText: name });
-    await expect(row).toBeVisible({ timeout: 45_000 });
-    await row.getByRole("link", { name: /Start consultation/ }).click();
-    await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-    await page.getByRole("button", { name: "Start consultation" }).click();
+    // Any text field will do; this is the one reception types into most.
+    await page.goto("/reception/register");
+    const field = page.getByLabel("Full name", { exact: true });
+    await expect(field).toBeVisible({ timeout: 45_000 });
+    await field.click();
+    await field.type(uhid, { delay: SCANNER_DELAY });
 
-    const note = page.getByRole("textbox", { name: "Clinical note" });
-    await expect(note).toBeEnabled({ timeout: 45_000 });
-    await note.click();
-    await note.type(uhid, { delay: SCANNER_DELAY });
-
-    // Every character still there, and the doctor is still on the chart.
-    await expect(note).toHaveValue(uhid);
-    await expect(page).toHaveURL(/\/consultation\//);
+    // Every character still there, and still on the form.
+    await expect(field).toHaveValue(uhid);
+    await expect(page).toHaveURL(/\/reception\/register/);
   });
 });
 

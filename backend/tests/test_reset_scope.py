@@ -47,6 +47,7 @@ CONFIGURATION_TABLES = frozenset(
         "service_items",
         "service_prices",
         "test_catalogue_items",
+        "medicine_items",
         "test_analytes",
         "reference_ranges",
         "note_templates",

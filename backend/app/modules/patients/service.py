@@ -6,7 +6,7 @@ import logging
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 from sqlalchemy import ColumnElement, case, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from app.modules.patients.matching import normalize_name, normalize_phone
 from app.modules.patients.models import (
     AlertSeverity,
     ConsentType,
+    Gender,
     Patient,
     PatientAlert,
     PatientConsent,
@@ -31,6 +32,7 @@ from app.modules.patients.schemas import (
     ConsentCreate,
     IdentifierCreate,
     PatientRegister,
+    PatientSort,
     PatientUpdate,
 )
 from app.modules.tenancy import service as tenancy_service
@@ -50,6 +52,8 @@ __all__ = [
     "merge_patients",
     "record_alert",
     "record_consent",
+    "record_ids",
+    "record_ids_by_patient",
     "register_patient",
     "resolve_alert",
     "search_patients",
@@ -446,13 +450,76 @@ async def get_patients_by_ids(
     return {patient.id: patient for patient in rows}
 
 
+# A merge chain longer than this is a data problem, not a history to walk.
+_MAX_MERGE_DEPTH = 10
+
+
+async def record_ids_by_patient(
+    session: AsyncSession, patient_ids: Collection[uuid.UUID], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """For each record, every patient id whose history belongs to it — itself first.
+
+    A merge keeps the duplicate row and points it at the survivor (see
+    `merge_patients`), so the duplicate's visits, reports and invoices still
+    carry the duplicate's id. A history that read only the survivor's id would
+    quietly lose them — the split medical record a merge exists to repair.
+
+    Walked level by level because merges chain: B folded into A, then A into C,
+    leaves B's visits two pointers from C. One query per level for the whole
+    batch, and real chains are one level deep.
+    """
+    groups: dict[uuid.UUID, list[uuid.UUID]] = {pid: [pid] for pid in patient_ids}
+    root_of: dict[uuid.UUID, uuid.UUID] = {pid: pid for pid in patient_ids}
+    frontier = list(groups)
+    for _ in range(_MAX_MERGE_DEPTH):
+        if not frontier:
+            break
+        rows = (
+            await session.execute(
+                select(Patient.id, Patient.merged_into_id).where(
+                    col(Patient.merged_into_id).in_(frontier),
+                    col(Patient.hospital_id) == hospital_id,
+                    col(Patient.deleted_at).is_(None),
+                )
+            )
+        ).all()
+        frontier = []
+        for child, parent in rows:
+            if child in root_of or parent is None:
+                continue
+            root = root_of[parent]
+            root_of[child] = root
+            groups[root].append(child)
+            frontier.append(child)
+    return groups
+
+
+async def record_ids(
+    session: AsyncSession, patient_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Every patient id whose history belongs to this one record, itself first."""
+    return (await record_ids_by_patient(session, [patient_id], hospital_id=hospital_id))[patient_id]
+
+
 async def list_patients(
     session: AsyncSession,
     params: PageParams,
     *,
     hospital_id: uuid.UUID,
     include_inactive: bool = False,
+    gender: Gender | None = None,
+    deceased: bool | None = None,
+    registered_from: date | None = None,
+    registered_to: date | None = None,
+    sort: PatientSort = PatientSort.RECENT,
 ) -> tuple[list[Patient], int]:
+    """The patient directory: every record the hospital holds, filterable.
+
+    Registration dates are the hospital's calendar days, not UTC ones — "who
+    registered on the 5th" must not lose the evening after 18:30 IST to the
+    6th. Merged duplicates never appear: the surviving record carries their
+    history, and listing both is the split record the merge removed.
+    """
     filters: list[ColumnElement[bool]] = [
         col(Patient.hospital_id) == hospital_id,
         col(Patient.deleted_at).is_(None),
@@ -460,6 +527,27 @@ async def list_patients(
     ]
     if not include_inactive:
         filters.append(col(Patient.is_active).is_(True))
+    if gender is not None:
+        filters.append(col(Patient.gender) == gender)
+    if deceased is not None:
+        filters.append(col(Patient.is_deceased).is_(deceased))
+    if registered_from is not None or registered_to is not None:
+        zone = await tenancy_service.local_zone(session, hospital_id)
+        if registered_from is not None:
+            filters.append(
+                col(Patient.registered_at) >= datetime.combine(registered_from, time.min, zone)
+            )
+        if registered_to is not None:
+            next_day = datetime.combine(registered_to + timedelta(days=1), time.min, zone)
+            filters.append(col(Patient.registered_at) < next_day)
+
+    # A unique tiebreaker on every ordering, so paging never skips or repeats
+    # a row that shares a name or a registration instant with its neighbour.
+    order_by = {
+        PatientSort.RECENT: (col(Patient.registered_at).desc(), col(Patient.id)),
+        PatientSort.NAME: (func.lower(col(Patient.full_name)), col(Patient.id)),
+        PatientSort.UHID: (col(Patient.uhid), col(Patient.id)),
+    }[sort]
 
     total = (
         await session.execute(select(func.count()).select_from(Patient).where(*filters))
@@ -469,7 +557,7 @@ async def list_patients(
             await session.execute(
                 select(Patient)
                 .where(*filters)
-                .order_by(col(Patient.registered_at).desc())
+                .order_by(*order_by)
                 .limit(params.limit)
                 .offset(params.offset)
             )

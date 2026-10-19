@@ -14,5 +14,5 @@ export default async function PatientsPage() {
   const user = await getCurrentUser();
   if (!can(user, "patient:read")) return <NoPermission />;
 
-  return <PatientIndex />;
+  return <PatientIndex canSeeVisits={can(user, "encounter:read")} />;
 }

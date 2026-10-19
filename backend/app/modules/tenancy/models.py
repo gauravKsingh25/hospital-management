@@ -58,6 +58,9 @@ class Hospital(IdentifiedModel, SoftDeleteMixin, table=True):
     email: str | None = Field(default=None, max_length=255)
 
     gstin: str | None = Field(default=None, max_length=15, description="GST identifier.")
+    # Where the reception counter's UPI QR sends money (CLAUDE.md §9,
+    # UPI-first). Per tenant: two hospitals on one deployment are two payees.
+    upi_vpa: str | None = Field(default=None, max_length=100, description="UPI ID, e.g. name@bank.")
 
     # IANA name. Stored per tenant because a multi-hospital deployment may
     # eventually span timezones; all timestamps stay UTC in the database and

@@ -1,7 +1,10 @@
-"""FastAPI application factory and router registration.
+"""FastAPI application factory, health probes and router registration.
 
-Module routers are mounted in `_register_routers` as each module lands
-(Phase 2 onwards). Phase 0 exposes health endpoints only.
+Reading order for newcomers:
+    lifespan()          startup/shutdown (logging, DB warm-up, RLS guard)
+    health_router       /health, /health/db, /health/redis, /health/ready
+    _register_routers() every module's routes, under API_V1_PREFIX
+    create_app()        middleware + exception handlers + routers
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from app.core.database import (
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.redis import check_redis, close_redis
+from app.core.request_id import REQUEST_ID_HEADER, RequestIdMiddleware
 from app.modules.billing import router as billing_router
 from app.modules.clinical import router as clinical_router
 from app.modules.diagnostics import router as diagnostics_router
@@ -171,9 +175,8 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(ipd_router.chart_router, prefix=prefix)
     app.include_router(ipd_router.summaries_router, prefix=prefix)
     app.include_router(ipd_router.admission_requests_router, prefix=prefix)
+    app.include_router(ipd_router.medicines_router, prefix=prefix)
     app.include_router(reporting_router.router, prefix=prefix)
-
-    # Further module routers mount here as they are built (CLAUDE.md §13).
 
 
 def create_app() -> FastAPI:
@@ -197,7 +200,13 @@ def create_app() -> FastAPI:
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
+            # Lets the browser read the ID, so an error screen can show it.
+            expose_headers=[REQUEST_ID_HEADER],
         )
+
+    # Added last so it is the outermost user middleware: the ID is assigned
+    # before anything else (CORS included) runs or logs.
+    app.add_middleware(RequestIdMiddleware)
 
     register_exception_handlers(app)
     _register_routers(app)

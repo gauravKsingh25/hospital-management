@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import date, datetime
 from typing import Annotated, Self
@@ -29,8 +30,22 @@ __all__ = [
     "PatientMergeRequest",
     "PatientRead",
     "PatientRegister",
+    "PatientSort",
     "PatientUpdate",
 ]
+
+
+class PatientSort(enum.StrEnum):
+    """Orders the directory can be read in.
+
+    Newest registration first is the default because "the woman who came in
+    yesterday" is the question the directory answers most; by name for a
+    printed list; by UHID for reconciling against paper files.
+    """
+
+    RECENT = "RECENT"
+    NAME = "NAME"
+    UHID = "UHID"
 
 
 class PatientRegister(BaseModel):

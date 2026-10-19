@@ -11,13 +11,18 @@ import { ApiError, apiErrorFromResponse } from "@/lib/api/error";
  * enforceable rather than aspirational.
  */
 
+type QueryScalar = string | number | boolean | null | undefined;
+
 export type ApiRequest = {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   /** Serialised as JSON. Use `rawBody` to forward an untouched payload. */
   body?: unknown;
   rawBody?: BodyInit;
-  /** `undefined` and `null` entries are dropped rather than sent as "null". */
-  query?: Record<string, string | number | boolean | null | undefined>;
+  /**
+   * `undefined` and `null` entries are dropped rather than sent as "null". An
+   * array repeats the key (`?id=a&id=b`), which FastAPI reads as a list.
+   */
+  query?: Record<string, QueryScalar | readonly QueryScalar[]>;
   accessToken?: string | null;
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -34,8 +39,10 @@ export function buildUrl(path: string, query?: ApiRequest["query"]): string {
     path.startsWith("/") ? `${env.API_BASE_URL}${path}` : `${env.API_BASE_URL}/${path}`,
   );
   for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined && value !== null && value !== "") {
-      url.searchParams.set(key, String(value));
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item !== undefined && item !== null && item !== "") {
+        url.searchParams.append(key, String(item));
+      }
     }
   }
   return url.toString();

@@ -214,10 +214,14 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     # Dispensing safely means seeing why the drug was prescribed — and it is
     # what the Schedule H/H1/X validation in Phase 9 will read.
     Roles.PHARMACIST: (*_TECH, ClinicalPermissions.DIAGNOSIS_READ),
-    # The visit being admitted and what it was for — not the notes.
+    # The visit being admitted and what it was for — not the notes. And the
+    # vitals: the desk takes the patient's set at the counter before they go
+    # up, since the doctor's screen (where a nurse used to) no longer exists.
     Roles.ADMISSION_DESK: (
         ClinicalPermissions.ENCOUNTER_READ,
         ClinicalPermissions.DIAGNOSIS_READ,
+        ClinicalPermissions.VITALS_READ,
+        ClinicalPermissions.VITALS_RECORD,
     ),
     Roles.AUDITOR: _CHART_READ,
 }

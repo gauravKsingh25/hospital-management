@@ -84,7 +84,7 @@ test.describe("the content security policy", () => {
     const readViolations = await watchViolations(page);
     await signIn(page, ACCOUNTS.reception);
 
-    for (const path of ["/reception", "/queue", "/patients"]) {
+    for (const path of ["/reception", "/patients"]) {
       await page.goto(path);
       await page.waitForTimeout(1_500);
     }
@@ -155,7 +155,7 @@ test.describe("a link that looks like a button", () => {
      */
     await signIn(page, ACCOUNTS.reception);
 
-    for (const path of ["/reception", "/queue", "/patients", "/wards"]) {
+    for (const path of ["/reception", "/patients", "/wards"]) {
       await page.goto(path);
       await page.waitForTimeout(1_000);
 

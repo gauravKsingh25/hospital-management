@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -272,6 +273,12 @@ class QueueBoardEntry(QueueEntryRead):
     # round trip between the click and anything appearing.
     encounter_id: uuid.UUID | None = None
     encounter_number: str | None = None
+
+    # The visit's money, for reception's payment strip. Filled on the board
+    # only, and only for a caller who may read charges; null means "not
+    # shown", which is different from "0.00 owed".
+    balance_due: Decimal | None = None
+    amount_paid: Decimal | None = None
 
 
 # ---------------------------------------------------------------------------

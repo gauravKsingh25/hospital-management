@@ -1195,7 +1195,7 @@
         "type": "object"
       },
       "AdmitFromRequest": {
-        "description": "`AdmissionCreate` without the visit — the request already names it.",
+        "description": "`AdmissionCreate` without the visit — the request already names it.\n\n`vitals` are the admission desk's set, taken at the counter before the\npatient goes up. Recorded on the stay's visit in the same transaction as\nthe admission, so a stay never starts with vitals that failed to save.\nOptional, like every vitals field: a desk that could not measure something\nleaves it out rather than typing a zero.",
         "properties": {
           "admission_notes": {
             "anyOf": [
@@ -1298,6 +1298,16 @@
               }
             ],
             "title": "Provisional Diagnosis"
+          },
+          "vitals": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VitalsCreate"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3595,6 +3605,86 @@
         "title": "ClaimUpdate",
         "type": "object"
       },
+      "CollectPayment": {
+        "description": "Take everything a visit owes, in one tap at the reception counter.\n\nNo amount: the server decides it, from the same balance the row showed.\nA counter that types the amount is a counter that can type it wrong.\n`expected_amount` is what the screen (and the UPI QR) showed; if the bill\nhas moved since, the request is refused rather than collecting the new sum.",
+        "properties": {
+          "expected_amount": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Amount"
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod",
+            "default": "UPI"
+          },
+          "payer_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payer Name"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          }
+        },
+        "title": "CollectPayment",
+        "type": "object"
+      },
+      "CollectPaymentResult": {
+        "description": "One receipt per invoice settled — usually exactly one.",
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "balance_due": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Balance Due",
+            "type": "string"
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentRead"
+            },
+            "title": "Receipts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "receipts",
+          "amount",
+          "balance_due"
+        ],
+        "title": "CollectPaymentResult",
+        "type": "object"
+      },
       "CollectRequest": {
         "properties": {
           "collected_at": {
@@ -3775,6 +3865,81 @@
         ],
         "title": "ConsentType",
         "type": "string"
+      },
+      "CostBreakdown": {
+        "description": "What a visit has cost so far, grouped. Pending and invoiced charges both\ncount; cancelled and waived ones do not.",
+        "properties": {
+          "encounter_id": {
+            "format": "uuid",
+            "title": "Encounter Id",
+            "type": "string"
+          },
+          "has_unpriced_items": {
+            "title": "Has Unpriced Items",
+            "type": "boolean"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/CostLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "encounter_id",
+          "lines",
+          "total",
+          "has_unpriced_items"
+        ],
+        "title": "CostBreakdown",
+        "type": "object"
+      },
+      "CostLine": {
+        "description": "One line of a stay's cost: twelve doses of one drug, three nights in one bed.",
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/ChargeCategory"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "needs_pricing": {
+            "title": "Needs Pricing",
+            "type": "boolean"
+          },
+          "quantity": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "total_amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Amount",
+            "type": "string"
+          },
+          "unit_price": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Unit Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "description",
+          "quantity",
+          "unit_price",
+          "total_amount",
+          "needs_pricing"
+        ],
+        "title": "CostLine",
+        "type": "object"
       },
       "CriticalCallback": {
         "description": "Recording the phone call a panic value demands.\n\n\"Called the ward\" is not a record. NABH wants to know who was told.",
@@ -6500,6 +6665,18 @@
             "maxLength": 64,
             "title": "Timezone",
             "type": "string"
+          },
+          "upi_vpa": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upi Vpa"
           }
         },
         "required": [
@@ -6672,6 +6849,18 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "upi_vpa": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upi Vpa"
           }
         },
         "required": [
@@ -6845,6 +7034,18 @@
               }
             ],
             "title": "Timezone"
+          },
+          "upi_vpa": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upi Vpa"
           }
         },
         "title": "HospitalUpdate",
@@ -7558,6 +7759,18 @@
             "title": "Is Prn",
             "type": "boolean"
           },
+          "medicine_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medicine Item Id"
+          },
           "prn_indication": {
             "anyOf": [
               {
@@ -7592,6 +7805,21 @@
             "minimum": 0.0,
             "title": "Times Per Day",
             "type": "integer"
+          },
+          "units_per_dose": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,7}|(?=[\\d.]{1,10}0*$)\\d{0,7}\\.\\d{0,2}0*$)",
+                "type": "string"
+              }
+            ],
+            "default": "1",
+            "title": "Units Per Dose"
           }
         },
         "required": [
@@ -7667,6 +7895,29 @@
             "title": "Is Prn",
             "type": "boolean"
           },
+          "item_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Code"
+          },
+          "medicine_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medicine Item Id"
+          },
           "patient_id": {
             "format": "uuid",
             "title": "Patient Id",
@@ -7729,6 +7980,35 @@
           "times_per_day": {
             "title": "Times Per Day",
             "type": "integer"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price"
+          },
+          "units_per_dose": {
+            "default": "1",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Units Per Dose",
+            "type": "string"
           }
         },
         "required": [
@@ -7784,6 +8064,430 @@
           "reason"
         ],
         "title": "MedicationStop",
+        "type": "object"
+      },
+      "MedicineForm": {
+        "description": "What an item on the medicine list physically is.\n\nDrives the defaults the list offers — an injection is given IV by the vial,\na tablet by mouth — and lets the list be filtered the way a ward asks for\nthings (\"which IV fluids do we stock?\"). `CONSUMABLE` is not a drug at all:\na cannula, an IV set, a pair of gloves. It lives on the same list because\nit is issued and billed the same way.",
+        "enum": [
+          "INJECTION",
+          "IV_FLUID",
+          "TABLET",
+          "CAPSULE",
+          "SYRUP",
+          "OINTMENT",
+          "DROPS",
+          "INHALER",
+          "CONSUMABLE",
+          "OTHER"
+        ],
+        "title": "MedicineForm",
+        "type": "string"
+      },
+      "MedicineIssueCreate": {
+        "properties": {
+          "medicine_item_id": {
+            "format": "uuid",
+            "title": "Medicine Item Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "quantity": {
+            "default": 1,
+            "maximum": 999.0,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "medicine_item_id"
+        ],
+        "title": "MedicineIssueCreate",
+        "type": "object"
+      },
+      "MedicineIssueRead": {
+        "properties": {
+          "admission_id": {
+            "format": "uuid",
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "issued_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued By Name"
+          },
+          "item_code": {
+            "title": "Item Code",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "medicine_item_id": {
+            "format": "uuid",
+            "title": "Medicine Item Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "reversal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversal Reason"
+          },
+          "reversed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversed At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MedicineIssueStatus"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "admission_id",
+          "medicine_item_id",
+          "item_code",
+          "item_name",
+          "unit",
+          "quantity",
+          "note",
+          "status",
+          "issued_at",
+          "issued_by_name",
+          "reversed_at",
+          "reversal_reason"
+        ],
+        "title": "MedicineIssueRead",
+        "type": "object"
+      },
+      "MedicineIssueReverse": {
+        "properties": {
+          "reason": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "MedicineIssueReverse",
+        "type": "object"
+      },
+      "MedicineIssueStatus": {
+        "enum": [
+          "ISSUED",
+          "REVERSED"
+        ],
+        "title": "MedicineIssueStatus",
+        "type": "string"
+      },
+      "MedicineItemCreate": {
+        "description": "A preset for the medicine list: what it is, how it is given, what it costs.\n\nOnly the name, the form, the unit and the price are required. The price is\nrequired because an item on this list exists to be charged for; one with\nno price would charge the patient nothing and look as if it worked.",
+        "properties": {
+          "dose": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dose"
+          },
+          "drug_schedule": {
+            "$ref": "#/components/schemas/DrugSchedule",
+            "default": "NONE"
+          },
+          "form": {
+            "$ref": "#/components/schemas/MedicineForm"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Price"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MedicationRoute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "maxLength": 24,
+            "minLength": 1,
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "form",
+          "unit",
+          "price"
+        ],
+        "title": "MedicineItemCreate",
+        "type": "object"
+      },
+      "MedicineItemRead": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "dose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dose"
+          },
+          "drug_schedule": {
+            "$ref": "#/components/schemas/DrugSchedule"
+          },
+          "form": {
+            "$ref": "#/components/schemas/MedicineForm"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MedicationRoute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "form",
+          "dose",
+          "route",
+          "unit",
+          "drug_schedule",
+          "is_active"
+        ],
+        "title": "MedicineItemRead",
+        "type": "object"
+      },
+      "MedicineItemUpdate": {
+        "description": "Every field optional; `price` changes the default rate card's price.",
+        "properties": {
+          "dose": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dose"
+          },
+          "drug_schedule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DrugSchedule"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "form": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MedicineForm"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MedicationRoute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "title": "MedicineItemUpdate",
         "type": "object"
       },
       "MessageTemplateCreate": {
@@ -9792,6 +10496,84 @@
         "title": "Page[MedicationOrderRead]",
         "type": "object"
       },
+      "Page_MedicineIssueRead_": {
+        "properties": {
+          "has_more": {
+            "description": "True when another page follows this one.",
+            "readOnly": true,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MedicineIssueRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows matching the filter, ignoring paging.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "Page[MedicineIssueRead]",
+        "type": "object"
+      },
+      "Page_MedicineItemRead_": {
+        "properties": {
+          "has_more": {
+            "description": "True when another page follows this one.",
+            "readOnly": true,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MedicineItemRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows matching the filter, ignoring paging.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "Page[MedicineItemRead]",
+        "type": "object"
+      },
       "Page_MessageTemplateRead_": {
         "properties": {
           "has_more": {
@@ -9946,6 +10728,45 @@
           "has_more"
         ],
         "title": "Page[PatientRead]",
+        "type": "object"
+      },
+      "Page_PatientVisit_": {
+        "properties": {
+          "has_more": {
+            "description": "True when another page follows this one.",
+            "readOnly": true,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PatientVisit"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows matching the filter, ignoring paging.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "Page[PatientVisit]",
         "type": "object"
       },
       "Page_PaymentRead_": {
@@ -10425,6 +11246,128 @@
           "created_at"
         ],
         "title": "PatientAlertRead",
+        "type": "object"
+      },
+      "PatientClinicalSummary": {
+        "description": "The top of the patient record, in one call.",
+        "properties": {
+          "emergency_visits": {
+            "title": "Emergency Visits",
+            "type": "integer"
+          },
+          "first_visit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Visit At"
+          },
+          "inpatient_visits": {
+            "title": "Inpatient Visits",
+            "type": "integer"
+          },
+          "last_visit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Visit At"
+          },
+          "latest_vitals": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VitalsRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_follow_up_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Follow Up Date"
+          },
+          "next_follow_up_encounter_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Follow Up Encounter Id"
+          },
+          "opd_visits": {
+            "title": "Opd Visits",
+            "type": "integer"
+          },
+          "open_visit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EncounterSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "patient_id": {
+            "format": "uuid",
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "problems": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ProblemEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problems"
+          },
+          "total_visits": {
+            "title": "Total Visits",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "patient_id",
+          "total_visits",
+          "opd_visits",
+          "emergency_visits",
+          "inpatient_visits",
+          "first_visit_at",
+          "last_visit_at",
+          "open_visit",
+          "next_follow_up_date",
+          "next_follow_up_encounter_id"
+        ],
+        "title": "PatientClinicalSummary",
         "type": "object"
       },
       "PatientConsentRead": {
@@ -11175,6 +12118,16 @@
         "title": "PatientRegister",
         "type": "object"
       },
+      "PatientSort": {
+        "description": "Orders the directory can be read in.\n\nNewest registration first is the default because \"the woman who came in\nyesterday\" is the question the directory answers most; by name for a\nprinted list; by UHID for reconciling against paper files.",
+        "enum": [
+          "RECENT",
+          "NAME",
+          "UHID"
+        ],
+        "title": "PatientSort",
+        "type": "string"
+      },
       "PatientUpdate": {
         "description": "Everything optional. Name and phone are here too, but changing either\nre-checks the identity constraint — see `service.update_patient`.",
         "properties": {
@@ -11443,6 +12396,241 @@
           }
         },
         "title": "PatientUpdate",
+        "type": "object"
+      },
+      "PatientVisit": {
+        "description": "One visit as the history shows it: who, where, why, and what for.",
+        "properties": {
+          "chief_complaint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chief Complaint"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "consultation_completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consultation Completed At"
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "department_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Name"
+          },
+          "diagnoses": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/VisitDiagnosis"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnoses"
+          },
+          "doctor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doctor Id"
+          },
+          "doctor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doctor Name"
+          },
+          "encounter_number": {
+            "title": "Encounter Number",
+            "type": "string"
+          },
+          "encounter_type": {
+            "$ref": "#/components/schemas/EncounterType"
+          },
+          "follow_up_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Follow Up Date"
+          },
+          "follow_up_instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Follow Up Instructions"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "orders": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/VisitOrder"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orders"
+          },
+          "patient_id": {
+            "format": "uuid",
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EncounterStatus"
+          },
+          "visit_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visit Number"
+          }
+        },
+        "required": [
+          "id",
+          "encounter_number",
+          "visit_number",
+          "patient_id",
+          "encounter_type",
+          "status",
+          "chief_complaint",
+          "started_at",
+          "consultation_completed_at",
+          "closed_at",
+          "doctor_id",
+          "department_id",
+          "follow_up_date",
+          "follow_up_instructions"
+        ],
+        "title": "PatientVisit",
+        "type": "object"
+      },
+      "PatientVisitStats": {
+        "description": "The directory row's visit columns — counts only, nothing clinical.",
+        "properties": {
+          "last_visit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Visit At"
+          },
+          "last_visit_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EncounterStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "patient_id": {
+            "format": "uuid",
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "total_visits": {
+            "title": "Total Visits",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "patient_id",
+          "total_visits",
+          "last_visit_at",
+          "last_visit_status"
+        ],
+        "title": "PatientVisitStats",
         "type": "object"
       },
       "PayerType": {
@@ -11731,9 +12919,68 @@
         "title": "PermissionRead",
         "type": "object"
       },
+      "ProblemEntry": {
+        "description": "One condition across every visit it was recorded on.\n\nGrouped by ICD code where there is one, otherwise by the wording — the\nsame \"Type 2 diabetes\" written on six visits is one problem seen six times,\nnot six problems.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "diagnosis_type": {
+            "$ref": "#/components/schemas/DiagnosisType"
+          },
+          "first_recorded_at": {
+            "format": "date-time",
+            "title": "First Recorded At",
+            "type": "string"
+          },
+          "last_recorded_at": {
+            "format": "date-time",
+            "title": "Last Recorded At",
+            "type": "string"
+          },
+          "visit_count": {
+            "title": "Visit Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "description",
+          "code",
+          "diagnosis_type",
+          "visit_count",
+          "first_recorded_at",
+          "last_recorded_at"
+        ],
+        "title": "ProblemEntry",
+        "type": "object"
+      },
       "QueueBoardEntry": {
         "description": "A queue row with enough about the patient to render a worklist.\n\n`QueueEntryRead` carries identifiers, which is the right shape for the\nqueue's own logic and the wrong shape for a screen. A doctor's worklist\nshowing `a3f9c2e1…` instead of a name is not a worklist, and the\nalternative — the frontend fetching each patient in turn — is one request\nper row on the screen staff refresh most often.\n\nSo the router joins the two, once, through `patients.service` rather than\na raw query across the module boundary (CLAUDE.md §2).\n\nThe fields are optional because a queue row outlives nothing: a patient\nrecord that has been soft-deleted since check-in leaves the row intact and\nthe name absent, which is more honest than failing the whole board.\n\nNote this is a *staff* view. A public waiting-room display showing token\nnumbers only is a different endpoint, unauthenticated, and deliberately\nnot this one — patient names must not be on a screen the waiting area can\nread.",
         "properties": {
+          "amount_paid": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Paid"
+          },
           "appointment_id": {
             "anyOf": [
               {
@@ -11745,6 +12992,18 @@
               }
             ],
             "title": "Appointment Id"
+          },
+          "balance_due": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Balance Due"
           },
           "called_at": {
             "anyOf": [
@@ -16160,6 +17419,17 @@
             "title": "Patient Name",
             "type": "string"
           },
+          "payee_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payee Name"
+          },
           "pending_charges": {
             "items": {
               "$ref": "#/components/schemas/ChargeRead"
@@ -16175,6 +17445,17 @@
           "uhid": {
             "title": "Uhid",
             "type": "string"
+          },
+          "upi_vpa": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upi Vpa"
           }
         },
         "required": [
@@ -16193,6 +17474,61 @@
           "has_unpriced_items"
         ],
         "title": "VisitAccount",
+        "type": "object"
+      },
+      "VisitDiagnosis": {
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "diagnosis_type": {
+            "$ref": "#/components/schemas/DiagnosisType"
+          },
+          "is_primary": {
+            "title": "Is Primary",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "description",
+          "code",
+          "diagnosis_type",
+          "is_primary"
+        ],
+        "title": "VisitDiagnosis",
+        "type": "object"
+      },
+      "VisitOrder": {
+        "properties": {
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "order_type": {
+            "$ref": "#/components/schemas/OrderType"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus"
+          }
+        },
+        "required": [
+          "order_type",
+          "item_name",
+          "status"
+        ],
+        "title": "VisitOrder",
         "type": "object"
       },
       "VitalsCreate": {
@@ -18013,6 +19349,114 @@
           }
         ],
         "summary": "A visit's account",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/{encounter_id}/collect": {
+      "post": {
+        "description": "Reception's \"Get payment\" and \"Paid\": assemble, issue and pay in one\ntransaction. The amount is the server's balance, never a typed number.",
+        "operationId": "collect_api_v1_billing_accounts__encounter_id__collect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectPayment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectPaymentResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Take everything a visit owes, in one step",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/{encounter_id}/costs": {
+      "get": {
+        "description": "The running cost of a visit, grouped — the admission page's \"cost so far\".\n\nSeparate from the account above because it answers a different question.\nThe account is the counter's: what is pending, what is invoiced, what is\npaid. This is everyone else's: what has the stay cost, and on what.",
+        "operationId": "visit_costs_api_v1_billing_accounts__encounter_id__costs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostBreakdown"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "What a visit has cost so far",
         "tags": [
           "billing"
         ]
@@ -22321,6 +23765,55 @@
         ]
       }
     },
+    "/api/v1/encounters/patient/{patient_id}/summary": {
+      "get": {
+        "description": "Visit counts, the visit in progress, the next follow-up — and, for the\nroles that read the chart, the problem list and the latest vitals.\n\nOne permission opens the route and the finer ones decide what is in it, so\nreception and a doctor open the same record and see what their role may.",
+        "operationId": "get_patient_summary_api_v1_encounters_patient__patient_id__summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientClinicalSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The patient's history at a glance",
+        "tags": [
+          "clinical"
+        ]
+      }
+    },
     "/api/v1/encounters/patient/{patient_id}/timeline": {
       "get": {
         "description": "Registration -> OPD -> lab -> admission -> discharge -> follow-up.\n\nDeclared before `/{encounter_id}` so the literal segment wins the match.",
@@ -22388,6 +23881,135 @@
           }
         ],
         "summary": "The patient's whole timeline",
+        "tags": [
+          "clinical"
+        ]
+      }
+    },
+    "/api/v1/encounters/patient/{patient_id}/visits": {
+      "get": {
+        "operationId": "list_patient_visits_api_v1_encounters_patient__patient_id__visits_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PatientVisit_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Every visit, numbered, with what it was for",
+        "tags": [
+          "clinical"
+        ]
+      }
+    },
+    "/api/v1/encounters/visit-stats": {
+      "get": {
+        "description": "Bounded by the page size: the directory asks for the rows it shows.",
+        "operationId": "get_visit_stats_api_v1_encounters_visit_stats_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "items": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "maxItems": 200,
+              "minItems": 1,
+              "title": "Patient Id",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PatientVisitStats"
+                  },
+                  "title": "Response Get Visit Stats Api V1 Encounters Visit Stats Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Visit counts for a page of the patient directory",
         "tags": [
           "clinical"
         ]
@@ -24617,6 +26239,134 @@
         ]
       }
     },
+    "/api/v1/ipd/admissions/{admission_id}/medicine-issues": {
+      "get": {
+        "operationId": "list_medicine_issues_api_v1_ipd_admissions__admission_id__medicine_issues_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "admission_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Admission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MedicineIssueRead_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Items used on this stay",
+        "tags": [
+          "ipd"
+        ]
+      },
+      "post": {
+        "description": "An IV set, a cannula, a STAT injection. Goes on the bill in the same\ntransaction — `billing` charges it before this commits.",
+        "operationId": "issue_medicine_api_v1_ipd_admissions__admission_id__medicine_issues_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "admission_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Admission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MedicineIssueCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MedicineIssueRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record an item used on this stay",
+        "tags": [
+          "ipd"
+        ]
+      }
+    },
     "/api/v1/ipd/admissions/{admission_id}/transfer": {
       "post": {
         "operationId": "transfer_api_v1_ipd_admissions__admission_id__transfer_post",
@@ -25397,6 +27147,318 @@
           }
         ],
         "summary": "Stop a drug",
+        "tags": [
+          "ipd"
+        ]
+      }
+    },
+    "/api/v1/ipd/medicine-issues/{issue_id}/reverse": {
+      "post": {
+        "description": "Takes the charge off the bill too — or refuses, with `charge_invoiced`,\nonce the charge is on an issued invoice.",
+        "operationId": "reverse_medicine_issue_api_v1_ipd_medicine_issues__issue_id__reverse_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "issue_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Issue Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MedicineIssueReverse"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MedicineIssueRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reverse an item recorded in error",
+        "tags": [
+          "ipd"
+        ]
+      }
+    },
+    "/api/v1/ipd/medicines": {
+      "get": {
+        "operationId": "list_medicines_api_v1_ipd_medicines_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "form",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MedicineForm"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Form"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_inactive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Inactive",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MedicineItemRead_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The medicine list",
+        "tags": [
+          "ipd"
+        ]
+      },
+      "post": {
+        "operationId": "create_medicine_api_v1_ipd_medicines_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MedicineItemCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MedicineItemRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add an item to the medicine list",
+        "tags": [
+          "ipd"
+        ]
+      }
+    },
+    "/api/v1/ipd/medicines/{item_id}": {
+      "get": {
+        "operationId": "get_medicine_api_v1_ipd_medicines__item_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MedicineItemRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "One item",
+        "tags": [
+          "ipd"
+        ]
+      },
+      "patch": {
+        "description": "Edit an item, or its price. Audited with before and after: a price is\nthe one field here that changes what patients are charged.",
+        "operationId": "update_medicine_api_v1_ipd_medicines__item_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MedicineItemUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MedicineItemRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit an item",
         "tags": [
           "ipd"
         ]
@@ -27396,6 +29458,81 @@
           },
           {
             "in": "query",
+            "name": "gender",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Gender"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Gender"
+            }
+          },
+          {
+            "in": "query",
+            "name": "deceased",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Deceased"
+            }
+          },
+          {
+            "in": "query",
+            "name": "registered_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Registered From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "registered_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Registered To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PatientSort",
+              "default": "RECENT"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
@@ -27445,7 +29582,7 @@
             "HTTPBearer": []
           }
         ],
-        "summary": "List patients",
+        "summary": "The patient directory",
         "tags": [
           "patients"
         ]

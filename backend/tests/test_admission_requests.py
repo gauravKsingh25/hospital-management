@@ -206,6 +206,70 @@ class TestTheDeskAdmits:
         assert request.admission_id == admission.id
         assert request.handled_by_id == desk_user.id
 
+    async def test_the_desk_records_vitals_as_it_admits(
+        self,
+        session: AsyncSession,
+        tenant: Hospital,
+        seen_visit: Encounter,
+        desk_user: User,
+        bed_id: str,
+    ) -> None:
+        """Taken at the counter, saved with the admission, on the stay's visit."""
+        import uuid
+        from decimal import Decimal
+
+        from app.modules.clinical.schemas import VitalsCreate
+
+        request = await service.request_admission(
+            session, hospital_id=tenant.id, encounter_id=seen_visit.id
+        )
+        admission = await service.admit_from_request(
+            session,
+            request,
+            AdmitFromRequest(
+                bed_id=uuid.UUID(bed_id),
+                vitals=VitalsCreate(
+                    systolic_bp=150,
+                    diastolic_bp=95,
+                    pulse_bpm=104,
+                    spo2_percent=93,
+                    temperature_c=Decimal("38.4"),
+                    weight_kg=Decimal("72"),
+                ),
+            ),
+            actor=desk_user,
+        )
+        await session.commit()
+
+        [vitals] = await clinical_service.list_vitals(session, admission.encounter_id)
+        assert (vitals.systolic_bp, vitals.diastolic_bp, vitals.spo2_percent) == (150, 95, 93)
+        assert vitals.recorded_by_id == desk_user.id
+
+    async def test_empty_vitals_record_nothing(
+        self,
+        session: AsyncSession,
+        tenant: Hospital,
+        seen_visit: Encounter,
+        desk_user: User,
+        bed_id: str,
+    ) -> None:
+        """A desk that measured nothing leaves no empty row behind."""
+        import uuid
+
+        from app.modules.clinical.schemas import VitalsCreate
+
+        request = await service.request_admission(
+            session, hospital_id=tenant.id, encounter_id=seen_visit.id
+        )
+        admission = await service.admit_from_request(
+            session,
+            request,
+            AdmitFromRequest(bed_id=uuid.UUID(bed_id), vitals=VitalsCreate()),
+            actor=desk_user,
+        )
+        await session.commit()
+        assert await clinical_service.list_vitals(session, admission.encounter_id) == []
+
     async def test_a_visit_the_doctor_already_closed_opens_a_new_ipd_visit(
         self,
         session: AsyncSession,

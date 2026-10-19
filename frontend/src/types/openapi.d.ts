@@ -254,6 +254,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/accounts/{encounter_id}/collect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take everything a visit owes, in one step
+         * @description Reception's "Get payment" and "Paid": assemble, issue and pay in one
+         *     transaction. The amount is the server's balance, never a typed number.
+         */
+        post: operations["collect_api_v1_billing_accounts__encounter_id__collect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/accounts/{encounter_id}/costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a visit has cost so far
+         * @description The running cost of a visit, grouped — the admission page's "cost so far".
+         *
+         *     Separate from the account above because it answers a different question.
+         *     The account is the counter's: what is pending, what is invoiced, what is
+         *     paid. This is everyone else's: what has the stay cost, and on what.
+         */
+        get: operations["visit_costs_api_v1_billing_accounts__encounter_id__costs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing/charges": {
         parameters: {
             query?: never;
@@ -1215,6 +1260,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/encounters/patient/{patient_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The patient's history at a glance
+         * @description Visit counts, the visit in progress, the next follow-up — and, for the
+         *     roles that read the chart, the problem list and the latest vitals.
+         *
+         *     One permission opens the route and the finer ones decide what is in it, so
+         *     reception and a doctor open the same record and see what their role may.
+         */
+        get: operations["get_patient_summary_api_v1_encounters_patient__patient_id__summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/encounters/patient/{patient_id}/timeline": {
         parameters: {
             query?: never;
@@ -1229,6 +1298,43 @@ export interface paths {
          *     Declared before `/{encounter_id}` so the literal segment wins the match.
          */
         get: operations["get_patient_timeline_api_v1_encounters_patient__patient_id__timeline_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/encounters/patient/{patient_id}/visits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every visit, numbered, with what it was for */
+        get: operations["list_patient_visits_api_v1_encounters_patient__patient_id__visits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/encounters/visit-stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Visit counts for a page of the patient directory
+         * @description Bounded by the page size: the directory asks for the rows it shows.
+         */
+        get: operations["get_visit_stats_api_v1_encounters_visit_stats_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1764,6 +1870,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ipd/admissions/{admission_id}/medicine-issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Items used on this stay */
+        get: operations["list_medicine_issues_api_v1_ipd_admissions__admission_id__medicine_issues_get"];
+        put?: never;
+        /**
+         * Record an item used on this stay
+         * @description An IV set, a cannula, a STAT injection. Goes on the bill in the same
+         *     transaction — `billing` charges it before this commits.
+         */
+        post: operations["issue_medicine_api_v1_ipd_admissions__admission_id__medicine_issues_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ipd/admissions/{admission_id}/transfer": {
         parameters: {
             query?: never;
@@ -1947,6 +2075,67 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ipd/medicine-issues/{issue_id}/reverse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reverse an item recorded in error
+         * @description Takes the charge off the bill too — or refuses, with `charge_invoiced`,
+         *     once the charge is on an issued invoice.
+         */
+        post: operations["reverse_medicine_issue_api_v1_ipd_medicine_issues__issue_id__reverse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ipd/medicines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The medicine list */
+        get: operations["list_medicines_api_v1_ipd_medicines_get"];
+        put?: never;
+        /** Add an item to the medicine list */
+        post: operations["create_medicine_api_v1_ipd_medicines_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ipd/medicines/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One item */
+        get: operations["get_medicine_api_v1_ipd_medicines__item_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit an item
+         * @description Edit an item, or its price. Audited with before and after: a price is
+         *     the one field here that changes what patients are charged.
+         */
+        patch: operations["update_medicine_api_v1_ipd_medicines__item_id__patch"];
         trace?: never;
     };
     "/api/v1/ipd/summaries": {
@@ -2455,7 +2644,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List patients */
+        /** The patient directory */
         get: operations["list_patients_api_v1_patients_get"];
         put?: never;
         /** Register a patient (4 required fields) */
@@ -3605,6 +3794,12 @@ export interface components {
         /**
          * AdmitFromRequest
          * @description `AdmissionCreate` without the visit — the request already names it.
+         *
+         *     `vitals` are the admission desk's set, taken at the counter before the
+         *     patient goes up. Recorded on the stay's visit in the same transaction as
+         *     the admission, so a stay never starts with vitals that failed to save.
+         *     Optional, like every vitals field: a desk that could not measure something
+         *     leaves it out rather than typing a zero.
          */
         AdmitFromRequest: {
             /** Admission Notes */
@@ -3628,6 +3823,7 @@ export interface components {
             expected_stay_days?: number | null;
             /** Provisional Diagnosis */
             provisional_diagnosis?: string | null;
+            vitals?: components["schemas"]["VitalsCreate"] | null;
         };
         /** AdmitRequest */
         AdmitRequest: {
@@ -4394,6 +4590,37 @@ export interface components {
             settled_amount?: number | string | null;
             status: components["schemas"]["ClaimStatus"];
         };
+        /**
+         * CollectPayment
+         * @description Take everything a visit owes, in one tap at the reception counter.
+         *
+         *     No amount: the server decides it, from the same balance the row showed.
+         *     A counter that types the amount is a counter that can type it wrong.
+         *     `expected_amount` is what the screen (and the UPI QR) showed; if the bill
+         *     has moved since, the request is refused rather than collecting the new sum.
+         */
+        CollectPayment: {
+            /** Expected Amount */
+            expected_amount?: number | string | null;
+            /** @default UPI */
+            method: components["schemas"]["PaymentMethod"];
+            /** Payer Name */
+            payer_name?: string | null;
+            /** Reference */
+            reference?: string | null;
+        };
+        /**
+         * CollectPaymentResult
+         * @description One receipt per invoice settled — usually exactly one.
+         */
+        CollectPaymentResult: {
+            /** Amount */
+            amount: string;
+            /** Balance Due */
+            balance_due: string;
+            /** Receipts */
+            receipts: components["schemas"]["PaymentRead"][];
+        };
         /** CollectRequest */
         CollectRequest: {
             /** Collected At */
@@ -4454,6 +4681,41 @@ export interface components {
          * @enum {string}
          */
         ConsentType: "TREATMENT" | "DATA_PROCESSING" | "DATA_SHARING" | "ABHA_LINKAGE" | "RESEARCH" | "MARKETING";
+        /**
+         * CostBreakdown
+         * @description What a visit has cost so far, grouped. Pending and invoiced charges both
+         *     count; cancelled and waived ones do not.
+         */
+        CostBreakdown: {
+            /**
+             * Encounter Id
+             * Format: uuid
+             */
+            encounter_id: string;
+            /** Has Unpriced Items */
+            has_unpriced_items: boolean;
+            /** Lines */
+            lines: components["schemas"]["CostLine"][];
+            /** Total */
+            total: string;
+        };
+        /**
+         * CostLine
+         * @description One line of a stay's cost: twelve doses of one drug, three nights in one bed.
+         */
+        CostLine: {
+            category: components["schemas"]["ChargeCategory"];
+            /** Description */
+            description: string;
+            /** Needs Pricing */
+            needs_pricing: boolean;
+            /** Quantity */
+            quantity: string;
+            /** Total Amount */
+            total_amount: string;
+            /** Unit Price */
+            unit_price: string;
+        };
         /**
          * CriticalCallback
          * @description Recording the phone call a panic value demands.
@@ -5461,6 +5723,8 @@ export interface components {
              * @default Asia/Kolkata
              */
             timezone: string;
+            /** Upi Vpa */
+            upi_vpa?: string | null;
         };
         /** HospitalRead */
         HospitalRead: {
@@ -5515,6 +5779,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Upi Vpa */
+            upi_vpa?: string | null;
         };
         /**
          * HospitalUpdate
@@ -5550,6 +5816,8 @@ export interface components {
             state?: string | null;
             /** Timezone */
             timezone?: string | null;
+            /** Upi Vpa */
+            upi_vpa?: string | null;
         };
         /** IdentifierCreate */
         IdentifierCreate: {
@@ -5811,6 +6079,8 @@ export interface components {
              * @default false
              */
             is_prn: boolean;
+            /** Medicine Item Id */
+            medicine_item_id?: string | null;
             /** Prn Indication */
             prn_indication?: string | null;
             /** @default ORAL */
@@ -5822,6 +6092,11 @@ export interface components {
              * @default 1
              */
             times_per_day: number;
+            /**
+             * Units Per Dose
+             * @default 1
+             */
+            units_per_dose: number | string;
         };
         /** MedicationOrderRead */
         MedicationOrderRead: {
@@ -5852,6 +6127,10 @@ export interface components {
             is_active: boolean;
             /** Is Prn */
             is_prn: boolean;
+            /** Item Code */
+            item_code?: string | null;
+            /** Medicine Item Id */
+            medicine_item_id?: string | null;
             /**
              * Patient Id
              * Format: uuid
@@ -5873,6 +6152,15 @@ export interface components {
             stopped_at: string | null;
             /** Times Per Day */
             times_per_day: number;
+            /** Unit */
+            unit?: string | null;
+            /** Unit Price */
+            unit_price?: string | null;
+            /**
+             * Units Per Dose
+             * @default 1
+             */
+            units_per_dose: string;
         };
         /**
          * MedicationRoute
@@ -5883,6 +6171,147 @@ export interface components {
         MedicationStop: {
             /** Reason */
             reason: string;
+        };
+        /**
+         * MedicineForm
+         * @description What an item on the medicine list physically is.
+         *
+         *     Drives the defaults the list offers — an injection is given IV by the vial,
+         *     a tablet by mouth — and lets the list be filtered the way a ward asks for
+         *     things ("which IV fluids do we stock?"). `CONSUMABLE` is not a drug at all:
+         *     a cannula, an IV set, a pair of gloves. It lives on the same list because
+         *     it is issued and billed the same way.
+         * @enum {string}
+         */
+        MedicineForm: "INJECTION" | "IV_FLUID" | "TABLET" | "CAPSULE" | "SYRUP" | "OINTMENT" | "DROPS" | "INHALER" | "CONSUMABLE" | "OTHER";
+        /** MedicineIssueCreate */
+        MedicineIssueCreate: {
+            /**
+             * Medicine Item Id
+             * Format: uuid
+             */
+            medicine_item_id: string;
+            /** Note */
+            note?: string | null;
+            /**
+             * Quantity
+             * @default 1
+             */
+            quantity: number;
+        };
+        /** MedicineIssueRead */
+        MedicineIssueRead: {
+            /**
+             * Admission Id
+             * Format: uuid
+             */
+            admission_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Issued At
+             * Format: date-time
+             */
+            issued_at: string;
+            /** Issued By Name */
+            issued_by_name: string | null;
+            /** Item Code */
+            item_code: string;
+            /** Item Name */
+            item_name: string;
+            /**
+             * Medicine Item Id
+             * Format: uuid
+             */
+            medicine_item_id: string;
+            /** Note */
+            note: string | null;
+            /** Quantity */
+            quantity: number;
+            /** Reversal Reason */
+            reversal_reason: string | null;
+            /** Reversed At */
+            reversed_at: string | null;
+            status: components["schemas"]["MedicineIssueStatus"];
+            /** Unit */
+            unit: string;
+        };
+        /** MedicineIssueReverse */
+        MedicineIssueReverse: {
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * MedicineIssueStatus
+         * @enum {string}
+         */
+        MedicineIssueStatus: "ISSUED" | "REVERSED";
+        /**
+         * MedicineItemCreate
+         * @description A preset for the medicine list: what it is, how it is given, what it costs.
+         *
+         *     Only the name, the form, the unit and the price are required. The price is
+         *     required because an item on this list exists to be charged for; one with
+         *     no price would charge the patient nothing and look as if it worked.
+         */
+        MedicineItemCreate: {
+            /** Dose */
+            dose?: string | null;
+            /** @default NONE */
+            drug_schedule: components["schemas"]["DrugSchedule"];
+            form: components["schemas"]["MedicineForm"];
+            /** Name */
+            name: string;
+            /** Price */
+            price: number | string;
+            route?: components["schemas"]["MedicationRoute"] | null;
+            /** Unit */
+            unit: string;
+        };
+        /** MedicineItemRead */
+        MedicineItemRead: {
+            /** Code */
+            code: string;
+            /** Dose */
+            dose: string | null;
+            drug_schedule: components["schemas"]["DrugSchedule"];
+            form: components["schemas"]["MedicineForm"];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Name */
+            name: string;
+            /** Price */
+            price?: string | null;
+            route: components["schemas"]["MedicationRoute"] | null;
+            /** Unit */
+            unit: string;
+        };
+        /**
+         * MedicineItemUpdate
+         * @description Every field optional; `price` changes the default rate card's price.
+         */
+        MedicineItemUpdate: {
+            /** Dose */
+            dose?: string | null;
+            drug_schedule?: components["schemas"]["DrugSchedule"] | null;
+            form?: components["schemas"]["MedicineForm"] | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            /** Name */
+            name?: string | null;
+            /** Price */
+            price?: number | string | null;
+            route?: components["schemas"]["MedicationRoute"] | null;
+            /** Unit */
+            unit?: string | null;
         };
         /** MessageTemplateCreate */
         MessageTemplateCreate: {
@@ -6681,6 +7110,44 @@ export interface components {
              */
             total: number;
         };
+        /** Page[MedicineIssueRead] */
+        Page_MedicineIssueRead_: {
+            /**
+             * Has More
+             * @description True when another page follows this one.
+             */
+            readonly has_more: boolean;
+            /** Items */
+            items: components["schemas"]["MedicineIssueRead"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /**
+             * Total
+             * @description Total rows matching the filter, ignoring paging.
+             */
+            total: number;
+        };
+        /** Page[MedicineItemRead] */
+        Page_MedicineItemRead_: {
+            /**
+             * Has More
+             * @description True when another page follows this one.
+             */
+            readonly has_more: boolean;
+            /** Items */
+            items: components["schemas"]["MedicineItemRead"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /**
+             * Total
+             * @description Total rows matching the filter, ignoring paging.
+             */
+            total: number;
+        };
         /** Page[MessageTemplateRead] */
         Page_MessageTemplateRead_: {
             /**
@@ -6747,6 +7214,25 @@ export interface components {
             readonly has_more: boolean;
             /** Items */
             items: components["schemas"]["PatientRead"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /**
+             * Total
+             * @description Total rows matching the filter, ignoring paging.
+             */
+            total: number;
+        };
+        /** Page[PatientVisit] */
+        Page_PatientVisit_: {
+            /**
+             * Has More
+             * @description True when another page follows this one.
+             */
+            readonly has_more: boolean;
+            /** Items */
+            items: components["schemas"]["PatientVisit"][];
             /** Limit */
             limit: number;
             /** Offset */
@@ -6987,6 +7473,37 @@ export interface components {
             label: string;
             severity: components["schemas"]["AlertSeverity"];
         };
+        /**
+         * PatientClinicalSummary
+         * @description The top of the patient record, in one call.
+         */
+        PatientClinicalSummary: {
+            /** Emergency Visits */
+            emergency_visits: number;
+            /** First Visit At */
+            first_visit_at: string | null;
+            /** Inpatient Visits */
+            inpatient_visits: number;
+            /** Last Visit At */
+            last_visit_at: string | null;
+            latest_vitals?: components["schemas"]["VitalsRead"] | null;
+            /** Next Follow Up Date */
+            next_follow_up_date: string | null;
+            /** Next Follow Up Encounter Id */
+            next_follow_up_encounter_id: string | null;
+            /** Opd Visits */
+            opd_visits: number;
+            open_visit: components["schemas"]["EncounterSummary"] | null;
+            /**
+             * Patient Id
+             * Format: uuid
+             */
+            patient_id: string;
+            /** Problems */
+            problems?: components["schemas"]["ProblemEntry"][] | null;
+            /** Total Visits */
+            total_visits: number;
+        };
         /** PatientConsentRead */
         PatientConsentRead: {
             consent_type: components["schemas"]["ConsentType"];
@@ -7217,6 +7734,16 @@ export interface components {
             state?: string | null;
         };
         /**
+         * PatientSort
+         * @description Orders the directory can be read in.
+         *
+         *     Newest registration first is the default because "the woman who came in
+         *     yesterday" is the question the directory answers most; by name for a
+         *     printed list; by UHID for reconciling against paper files.
+         * @enum {string}
+         */
+        PatientSort: "RECENT" | "NAME" | "UHID";
+        /**
          * PatientUpdate
          * @description Everything optional. Name and phone are here too, but changing either
          *     re-checks the identity constraint — see `service.update_patient`.
@@ -7264,6 +7791,71 @@ export interface components {
             preferred_language?: string | null;
             /** State */
             state?: string | null;
+        };
+        /**
+         * PatientVisit
+         * @description One visit as the history shows it: who, where, why, and what for.
+         */
+        PatientVisit: {
+            /** Chief Complaint */
+            chief_complaint: string | null;
+            /** Closed At */
+            closed_at: string | null;
+            /** Consultation Completed At */
+            consultation_completed_at: string | null;
+            /** Department Id */
+            department_id: string | null;
+            /** Department Name */
+            department_name?: string | null;
+            /** Diagnoses */
+            diagnoses?: components["schemas"]["VisitDiagnosis"][] | null;
+            /** Doctor Id */
+            doctor_id: string | null;
+            /** Doctor Name */
+            doctor_name?: string | null;
+            /** Encounter Number */
+            encounter_number: string;
+            encounter_type: components["schemas"]["EncounterType"];
+            /** Follow Up Date */
+            follow_up_date: string | null;
+            /** Follow Up Instructions */
+            follow_up_instructions: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Orders */
+            orders?: components["schemas"]["VisitOrder"][] | null;
+            /**
+             * Patient Id
+             * Format: uuid
+             */
+            patient_id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            status: components["schemas"]["EncounterStatus"];
+            /** Visit Number */
+            visit_number: number | null;
+        };
+        /**
+         * PatientVisitStats
+         * @description The directory row's visit columns — counts only, nothing clinical.
+         */
+        PatientVisitStats: {
+            /** Last Visit At */
+            last_visit_at: string | null;
+            last_visit_status: components["schemas"]["EncounterStatus"] | null;
+            /**
+             * Patient Id
+             * Format: uuid
+             */
+            patient_id: string;
+            /** Total Visits */
+            total_visits: number;
         };
         /**
          * PayerType
@@ -7368,6 +7960,33 @@ export interface components {
             module: string;
         };
         /**
+         * ProblemEntry
+         * @description One condition across every visit it was recorded on.
+         *
+         *     Grouped by ICD code where there is one, otherwise by the wording — the
+         *     same "Type 2 diabetes" written on six visits is one problem seen six times,
+         *     not six problems.
+         */
+        ProblemEntry: {
+            /** Code */
+            code: string | null;
+            /** Description */
+            description: string;
+            diagnosis_type: components["schemas"]["DiagnosisType"];
+            /**
+             * First Recorded At
+             * Format: date-time
+             */
+            first_recorded_at: string;
+            /**
+             * Last Recorded At
+             * Format: date-time
+             */
+            last_recorded_at: string;
+            /** Visit Count */
+            visit_count: number;
+        };
+        /**
          * QueueBoardEntry
          * @description A queue row with enough about the patient to render a worklist.
          *
@@ -7390,8 +8009,12 @@ export interface components {
          *     read.
          */
         QueueBoardEntry: {
+            /** Amount Paid */
+            amount_paid?: string | null;
             /** Appointment Id */
             appointment_id: string | null;
+            /** Balance Due */
+            balance_due?: string | null;
             /** Called At */
             called_at: string | null;
             /**
@@ -8879,12 +9502,33 @@ export interface components {
             patient_id: string;
             /** Patient Name */
             patient_name: string;
+            /** Payee Name */
+            payee_name?: string | null;
             /** Pending Charges */
             pending_charges: components["schemas"]["ChargeRead"][];
             /** Pending Total */
             pending_total: string;
             /** Uhid */
             uhid: string;
+            /** Upi Vpa */
+            upi_vpa?: string | null;
+        };
+        /** VisitDiagnosis */
+        VisitDiagnosis: {
+            /** Code */
+            code: string | null;
+            /** Description */
+            description: string;
+            diagnosis_type: components["schemas"]["DiagnosisType"];
+            /** Is Primary */
+            is_primary: boolean;
+        };
+        /** VisitOrder */
+        VisitOrder: {
+            /** Item Name */
+            item_name: string;
+            order_type: components["schemas"]["OrderType"];
+            status: components["schemas"]["OrderStatus"];
         };
         /**
          * VitalsCreate
@@ -9667,6 +10311,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VisitAccount"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    collect_api_v1_billing_accounts__encounter_id__collect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                encounter_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CollectPayment"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectPaymentResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    visit_costs_api_v1_billing_accounts__encounter_id__costs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                encounter_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostBreakdown"];
                 };
             };
             /** @description Validation Error */
@@ -11965,6 +12675,37 @@ export interface operations {
             };
         };
     };
+    get_patient_summary_api_v1_encounters_patient__patient_id__summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                patient_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatientClinicalSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_patient_timeline_api_v1_encounters_patient__patient_id__timeline_get: {
         parameters: {
             query?: {
@@ -11986,6 +12727,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_EncounterEventRead_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_patient_visits_api_v1_encounters_patient__patient_id__visits_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                patient_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_PatientVisit_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_visit_stats_api_v1_encounters_visit_stats_get: {
+        parameters: {
+            query: {
+                patient_id: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatientVisitStats"][];
                 };
             };
             /** @description Validation Error */
@@ -13272,6 +14078,75 @@ export interface operations {
             };
         };
     };
+    list_medicine_issues_api_v1_ipd_admissions__admission_id__medicine_issues_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_MedicineIssueRead_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_medicine_api_v1_ipd_admissions__admission_id__medicine_issues_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MedicineIssueCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MedicineIssueRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     transfer_api_v1_ipd_admissions__admission_id__transfer_post: {
         parameters: {
             query?: never;
@@ -13667,6 +14542,175 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MedicationOrderRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reverse_medicine_issue_api_v1_ipd_medicine_issues__issue_id__reverse_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MedicineIssueReverse"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MedicineIssueRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_medicines_api_v1_ipd_medicines_get: {
+        parameters: {
+            query?: {
+                search?: string | null;
+                form?: components["schemas"]["MedicineForm"] | null;
+                include_inactive?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_MedicineItemRead_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_medicine_api_v1_ipd_medicines_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MedicineItemCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MedicineItemRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_medicine_api_v1_ipd_medicines__item_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MedicineItemRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_medicine_api_v1_ipd_medicines__item_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MedicineItemUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MedicineItemRead"];
                 };
             };
             /** @description Validation Error */
@@ -14728,6 +15772,11 @@ export interface operations {
         parameters: {
             query?: {
                 include_inactive?: boolean;
+                gender?: components["schemas"]["Gender"] | null;
+                deceased?: boolean | null;
+                registered_from?: string | null;
+                registered_to?: string | null;
+                sort?: components["schemas"]["PatientSort"];
                 limit?: number;
                 offset?: number;
             };

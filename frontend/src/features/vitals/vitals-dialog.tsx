@@ -3,7 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { useForm, useWatch } from "react-hook-form";
+import { useForm, useWatch, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
 
 import { FieldError } from "@/components/field-error";
@@ -144,34 +144,7 @@ export function VitalsDialog({
         </DialogHeader>
 
         <form onSubmit={form.handleSubmit((payload) => record.mutate(payload))} noValidate>
-          <div className="grid grid-cols-2 gap-3 text-left">
-            {FIELDS.map((field) => {
-              const message = form.formState.errors[field.key]?.message;
-              return (
-                <div key={field.key} className="space-y-1.5">
-                  <Label htmlFor={`vitals-${field.key}`}>
-                    {t(field.labelKey as "temperature")}
-                    {field.unit ? (
-                      <span className="text-muted-foreground"> ({field.unit})</span>
-                    ) : null}
-                  </Label>
-                  <Input
-                    id={`vitals-${field.key}`}
-                    inputMode={field.inputMode}
-                    className="h-tap tabular"
-                    aria-invalid={Boolean(message)}
-                    aria-describedby={message ? `vitals-${field.key}-error` : undefined}
-                    {...form.register(field.key)}
-                  />
-                  <FieldError
-                    id={`vitals-${field.key}-error`}
-                    message={message}
-                    translate={t as (key: string) => string}
-                  />
-                </div>
-              );
-            })}
-          </div>
+          <VitalsFields form={form} />
 
           {!bothOrNeitherBp ? (
             <p role="alert" className="text-caution-foreground mt-3 text-sm">
@@ -203,5 +176,53 @@ export function VitalsDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * The vitals inputs on their own, bound to a form the caller owns.
+ *
+ * Shared by the queue's quick-action dialog and the admission desk's admit
+ * dialog, so the fields, their order, units and inline validation are one
+ * thing rather than two that drift.
+ */
+export function VitalsFields({
+  form,
+  idPrefix = "vitals",
+  className = "grid grid-cols-2 gap-3 text-left",
+}: {
+  form: UseFormReturn<VitalsForm>;
+  idPrefix?: string;
+  className?: string;
+}) {
+  const t = useTranslations("vitals");
+  return (
+    <div className={className}>
+      {FIELDS.map((field) => {
+        const message = form.formState.errors[field.key]?.message;
+        const id = `${idPrefix}-${field.key}`;
+        return (
+          <div key={field.key} className="space-y-1.5">
+            <Label htmlFor={id}>
+              {t(field.labelKey as "temperature")}
+              {field.unit ? <span className="text-muted-foreground"> ({field.unit})</span> : null}
+            </Label>
+            <Input
+              id={id}
+              inputMode={field.inputMode}
+              className="h-tap tabular"
+              aria-invalid={Boolean(message)}
+              aria-describedby={message ? `${id}-error` : undefined}
+              {...form.register(field.key)}
+            />
+            <FieldError
+              id={`${id}-error`}
+              message={message}
+              translate={t as (key: string) => string}
+            />
+          </div>
+        );
+      })}
+    </div>
   );
 }

@@ -5,6 +5,7 @@ import {
   FlaskConical,
   IndianRupee,
   MessageSquareText,
+  QrCode,
   Stethoscope,
   Users,
 } from "lucide-react";
@@ -81,6 +82,13 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     titleKey: "templatesTitle",
     descriptionKey: "templatesCard",
     permissions: ["notification_template:read"],
+  },
+  {
+    href: "/admin/payments",
+    icon: QrCode,
+    titleKey: "paymentsTitle",
+    descriptionKey: "paymentsCard",
+    permissions: ["hospital:update"],
   },
 ];
 

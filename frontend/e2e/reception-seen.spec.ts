@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, chooseGender, signIn, uniquePatient } from "./support";
+import { ACCOUNTS, chooseGender, signIn, signOut, uniquePatient } from "./support";
 
 /**
  * Reception's "Seen" button (CLAUDE.md §7b).
@@ -79,7 +79,10 @@ test.describe("marking a patient as seen", () => {
         .filter({ hasText: name }),
     ).toBeVisible({ timeout: 30_000 });
 
-    // And gone from the nurse's live queue.
+    // And gone from the nurse's live queue — looked at as the nurse, since
+    // reception no longer has that screen.
+    await signOut(page);
+    await signIn(page, ACCOUNTS.nurse);
     await page.goto("/queue");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expect(page.getByTestId("queue-row").filter({ hasText: name })).toHaveCount(0);

@@ -1,6 +1,6 @@
 """Inpatient HTTP routes. Thin — logic lives in `service.py`.
 
-Four surfaces, because four different people use them:
+Five surfaces, because five different people use them:
 
 * **wards / beds** — set up once by an administrator, then read constantly by
   everybody as the bed board.
@@ -8,6 +8,8 @@ Four surfaces, because four different people use them:
 * **the chart** — doctors prescribe, nurses sign for doses. The busiest surface
   in the building, and the one held to §7b's 15-second target.
 * **summaries** — compiled by the system, reviewed and signed by a doctor.
+* **the medicine list** — presets with a dose and a price, kept by the admission
+  desk or pharmacy, picked from on the chart and recorded against a stay.
 """
 
 from __future__ import annotations
@@ -34,6 +36,10 @@ from app.modules.ipd.models import (
     BedStatus,
     DoseStatus,
     MedicationAdministration,
+    MedicationOrder,
+    MedicineForm,
+    MedicineIssue,
+    MedicineItem,
     SummaryStatus,
 )
 from app.modules.ipd.rbac import SIGNING_ROLES, IpdPermissions
@@ -57,6 +63,12 @@ from app.modules.ipd.schemas import (
     MedicationOrderCreate,
     MedicationOrderRead,
     MedicationStop,
+    MedicineIssueCreate,
+    MedicineIssueRead,
+    MedicineIssueReverse,
+    MedicineItemCreate,
+    MedicineItemRead,
+    MedicineItemUpdate,
     OccupancyStats,
     OutOfServiceRequest,
     ReserveRequest,
@@ -77,6 +89,7 @@ admissions_router = APIRouter(prefix="/ipd/admissions", tags=["ipd"])
 chart_router = APIRouter(prefix="/ipd", tags=["ipd"])
 summaries_router = APIRouter(prefix="/ipd/summaries", tags=["ipd"])
 admission_requests_router = APIRouter(prefix="/ipd/admission-requests", tags=["ipd"])
+medicines_router = APIRouter(prefix="/ipd/medicines", tags=["ipd"])
 
 CanReadWard = Annotated[AuthContext, Depends(require(IpdPermissions.WARD_READ))]
 CanManageWard = Annotated[AuthContext, Depends(require(IpdPermissions.WARD_MANAGE))]
@@ -97,6 +110,9 @@ CanWriteSummary = Annotated[AuthContext, Depends(require(IpdPermissions.SUMMARY_
 CanSignSummary = Annotated[AuthContext, Depends(require(IpdPermissions.SUMMARY_SIGN))]
 CanRequestAdmission = Annotated[AuthContext, Depends(require(IpdPermissions.ADMISSION_REQUEST))]
 CanWorkDesk = Annotated[AuthContext, Depends(require(IpdPermissions.ADMISSION_DESK))]
+CanReadMedicines = Annotated[AuthContext, Depends(require(IpdPermissions.MEDICINE_READ))]
+CanManageMedicines = Annotated[AuthContext, Depends(require(IpdPermissions.MEDICINE_MANAGE))]
+CanIssueMedicine = Annotated[AuthContext, Depends(require(IpdPermissions.MEDICINE_ISSUE))]
 # Either side of the hand-off: the counter that sent the patient needs to see
 # what became of them, and either may withdraw a request sent in error.
 CanSeeAdmissionRequests = Annotated[
@@ -618,6 +634,34 @@ async def cancel(
     return await _render_admission(session, updated, hospital_id=tenant_id)
 
 
+async def _render_orders(
+    session: SessionDep, orders: Sequence[MedicationOrder], *, hospital_id: uuid.UUID
+) -> list[MedicationOrderRead]:
+    """Drugs on the chart, each with what one unit costs and what the unit is.
+
+    So the chart can say "₹85 a vial, 1 vial a dose" beside a billed drug, and
+    "not billed" beside one typed free-hand — the gap made visible where the
+    person who can close it is looking.
+    """
+    items = await service.get_medicine_items_by_ids(
+        session,
+        {order.medicine_item_id for order in orders if order.medicine_item_id},
+        hospital_id=hospital_id,
+    )
+    prices = await service.medicine_prices(
+        session, {order.item_code for order in orders if order.item_code}, hospital_id=hospital_id
+    )
+    rendered: list[MedicationOrderRead] = []
+    for order in orders:
+        view = MedicationOrderRead.model_validate(order)
+        if order.item_code:
+            view.unit_price = prices.get(order.item_code)
+            item = items.get(order.medicine_item_id) if order.medicine_item_id else None
+            view.unit = item.unit if item else None
+        rendered.append(view)
+    return rendered
+
+
 # ---------------------------------------------------------------------------
 # The medication chart
 # ---------------------------------------------------------------------------
@@ -649,11 +693,13 @@ async def prescribe(
             "dose": order.dose,
             "frequency": order.frequency,
             "schedule": order.drug_schedule.value,
+            "item_code": order.item_code,
+            "units_per_dose": str(order.units_per_dose),
         },
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return MedicationOrderRead.model_validate(order)
+    return (await _render_orders(session, [order], hospital_id=tenant_id))[0]
 
 
 @chart_router.get(
@@ -677,7 +723,7 @@ async def list_medications(
         active_only=active_only,
     )
     return Page.build(
-        [MedicationOrderRead.model_validate(row) for row in rows], total=total, params=params
+        await _render_orders(session, rows, hospital_id=tenant_id), total=total, params=params
     )
 
 
@@ -707,7 +753,7 @@ async def stop_medication(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return MedicationOrderRead.model_validate(updated)
+    return (await _render_orders(session, [updated], hospital_id=tenant_id))[0]
 
 
 @chart_router.get("/doses", response_model=Page[DoseRead], summary="Doses due")
@@ -770,6 +816,227 @@ async def record_dose(
     )
     await session.commit()
     return (await _render_doses(session, [updated], hospital_id=tenant_id))[0]
+
+
+# ---------------------------------------------------------------------------
+# The medicine list
+# ---------------------------------------------------------------------------
+async def _render_items(
+    session: SessionDep, items: Sequence[MedicineItem], *, hospital_id: uuid.UUID
+) -> list[MedicineItemRead]:
+    """Items with their price from billing's default rate card, in one query."""
+    prices = await service.medicine_prices(
+        session, {item.code for item in items}, hospital_id=hospital_id
+    )
+    rendered: list[MedicineItemRead] = []
+    for item in items:
+        view = MedicineItemRead.model_validate(item)
+        view.price = prices.get(item.code)
+        rendered.append(view)
+    return rendered
+
+
+def _item_snapshot(view: MedicineItemRead) -> dict[str, str | bool | None]:
+    """What the audit log records about an item: enough to answer "who changed
+    the price of saline, and from what"."""
+    return {
+        "name": view.name,
+        "form": view.form.value,
+        "dose": view.dose,
+        "route": view.route.value if view.route else None,
+        "unit": view.unit,
+        "price": str(view.price) if view.price is not None else None,
+        "is_active": view.is_active,
+    }
+
+
+@medicines_router.get("", response_model=Page[MedicineItemRead], summary="The medicine list")
+async def list_medicines(
+    session: SessionDep,
+    context: CanReadMedicines,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    form: MedicineForm | None = None,
+    include_inactive: bool = False,
+) -> Page[MedicineItemRead]:
+    rows, total = await service.list_medicine_items(
+        session,
+        params,
+        hospital_id=tenant_id,
+        search=search,
+        form=form,
+        include_inactive=include_inactive,
+    )
+    return Page.build(
+        await _render_items(session, rows, hospital_id=tenant_id), total=total, params=params
+    )
+
+
+@medicines_router.post(
+    "",
+    response_model=MedicineItemRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add an item to the medicine list",
+)
+async def create_medicine(
+    payload: MedicineItemCreate,
+    request: Request,
+    session: SessionDep,
+    context: CanManageMedicines,
+    tenant_id: TenantId,
+) -> MedicineItemRead:
+    item = await service.create_medicine_item(session, payload, hospital_id=tenant_id)
+    view = (await _render_items(session, [item], hospital_id=tenant_id))[0]
+    await identity_service.record_audit(
+        session,
+        action="medicine.create",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="medicine_item",
+        resource_id=item.id,
+        changes={"code": item.code, **_item_snapshot(view)},
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return view
+
+
+@medicines_router.get("/{item_id}", response_model=MedicineItemRead, summary="One item")
+async def get_medicine(
+    item_id: uuid.UUID, session: SessionDep, context: CanReadMedicines, tenant_id: TenantId
+) -> MedicineItemRead:
+    item = await service.get_medicine_item(session, item_id, hospital_id=tenant_id)
+    return (await _render_items(session, [item], hospital_id=tenant_id))[0]
+
+
+@medicines_router.patch("/{item_id}", response_model=MedicineItemRead, summary="Edit an item")
+async def update_medicine(
+    item_id: uuid.UUID,
+    payload: MedicineItemUpdate,
+    request: Request,
+    session: SessionDep,
+    context: CanManageMedicines,
+    tenant_id: TenantId,
+) -> MedicineItemRead:
+    """Edit an item, or its price. Audited with before and after: a price is
+    the one field here that changes what patients are charged."""
+    item = await service.get_medicine_item(session, item_id, hospital_id=tenant_id)
+    before = _item_snapshot((await _render_items(session, [item], hospital_id=tenant_id))[0])
+    updated = await service.update_medicine_item(session, item, payload)
+    view = (await _render_items(session, [updated], hospital_id=tenant_id))[0]
+    await identity_service.record_audit(
+        session,
+        action="medicine.update",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="medicine_item",
+        resource_id=item.id,
+        changes={"before": before, "after": _item_snapshot(view)},
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return view
+
+
+# ---------------------------------------------------------------------------
+# What a stay used from the list
+# ---------------------------------------------------------------------------
+@admissions_router.get(
+    "/{admission_id}/medicine-issues",
+    response_model=Page[MedicineIssueRead],
+    summary="Items used on this stay",
+)
+async def list_medicine_issues(
+    admission_id: uuid.UUID,
+    session: SessionDep,
+    context: CanReadAdmission,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+) -> Page[MedicineIssueRead]:
+    admission = await service.get_admission(session, admission_id, hospital_id=tenant_id)
+    rows, total = await service.list_medicine_issues(
+        session, params, hospital_id=tenant_id, admission_id=admission.id
+    )
+    return Page.build(
+        [MedicineIssueRead.model_validate(row) for row in rows], total=total, params=params
+    )
+
+
+@admissions_router.post(
+    "/{admission_id}/medicine-issues",
+    response_model=MedicineIssueRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record an item used on this stay",
+)
+async def issue_medicine(
+    admission_id: uuid.UUID,
+    payload: MedicineIssueCreate,
+    request: Request,
+    session: SessionDep,
+    context: CanIssueMedicine,
+    tenant_id: TenantId,
+) -> MedicineIssueRead:
+    """An IV set, a cannula, a STAT injection. Goes on the bill in the same
+    transaction — `billing` charges it before this commits."""
+    admission = await service.get_admission(session, admission_id, hospital_id=tenant_id)
+    issue: MedicineIssue = await service.issue_medicine(
+        session, admission, payload, actor=context.user
+    )
+    await identity_service.record_audit(
+        session,
+        action="medicine.issue",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="medicine_issue",
+        resource_id=issue.id,
+        changes={
+            "admission_id": str(admission.id),
+            "item": issue.item_name,
+            "code": issue.item_code,
+            "quantity": issue.quantity,
+        },
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return MedicineIssueRead.model_validate(issue)
+
+
+@chart_router.post(
+    "/medicine-issues/{issue_id}/reverse",
+    response_model=MedicineIssueRead,
+    summary="Reverse an item recorded in error",
+)
+async def reverse_medicine_issue(
+    issue_id: uuid.UUID,
+    payload: MedicineIssueReverse,
+    request: Request,
+    session: SessionDep,
+    context: CanIssueMedicine,
+    tenant_id: TenantId,
+) -> MedicineIssueRead:
+    """Takes the charge off the bill too — or refuses, with `charge_invoiced`,
+    once the charge is on an issued invoice."""
+    issue = await service.get_medicine_issue(session, issue_id, hospital_id=tenant_id)
+    reversed_issue = await service.reverse_medicine_issue(
+        session, issue, reason=payload.reason, actor=context.user
+    )
+    await identity_service.record_audit(
+        session,
+        action="medicine.issue_reverse",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="medicine_issue",
+        resource_id=issue.id,
+        changes={
+            "item": issue.item_name,
+            "quantity": issue.quantity,
+            "reason": payload.reason,
+        },
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return MedicineIssueRead.model_validate(reversed_issue)
 
 
 # ---------------------------------------------------------------------------

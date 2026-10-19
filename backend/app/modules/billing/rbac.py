@@ -145,4 +145,7 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.RADIOLOGIST: (BillingPermissions.SERVICE_READ, BillingPermissions.RATECARD_READ),
     Roles.RECORDS_OFFICER: (BillingPermissions.INVOICE_READ, BillingPermissions.CHARGE_READ),
     Roles.AUDITOR: (*_READ, BillingPermissions.CLAIM_READ),
+    # The cost of a stay, on the admission page. Reading it only: the desk
+    # records what was used (`medicine:issue`) and billing does the charging.
+    Roles.ADMISSION_DESK: (BillingPermissions.CHARGE_READ,),
 }

@@ -8,10 +8,18 @@
 #   DATABASE_URL="postgresql://hospital:hospital@postgres:5432/hospital"
 #   DIRECT_URL="postgresql://hospital:hospital@postgres:5432/hospital"
 
+# The api, worker and web services are in the `app` profile, so a bare
+# `docker compose up -d` starts only postgres and redis — what day-to-day
+# development needs, with the api and web run on the host. .env holds
+# host-machine values (`localhost:5432`), which inside a container point at the
+# container itself: started that way the api answers every login with a 500.
+# Run the containerised app only with a service-network .env, using
+# `docker compose --profile app up --build`.
 name: hospital-management
 
 services:
   api:
+    profiles: ["app"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -43,6 +51,7 @@ services:
     restart: unless-stopped
 
   worker:
+    profiles: ["app"]
     # Its own process, not a thread inside the api. A background job sharing
     # the web process competes with request handling for the event loop, and
     # the first thing that suffers is the latency of the screen a receptionist
@@ -65,6 +74,7 @@ services:
     restart: unless-stopped
 
   web:
+    profiles: ["app"]
     build:
       context: ./frontend
       dockerfile: Dockerfile

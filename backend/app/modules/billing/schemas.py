@@ -257,13 +257,12 @@ class InvoiceIssueRequest(BaseModel):
     notes: Annotated[str | None, Field(max_length=500)] = None
 
 
-class PaymentRequest(BaseModel):
-    amount: Annotated[Decimal, Field(gt=0, max_digits=12, decimal_places=2)]
+class _HowPaid(BaseModel):
+    """The method and its reference — shared by every way money is taken."""
+
     method: PaymentMethod = PaymentMethod.UPI
     reference: Annotated[str | None, Field(max_length=120)] = None
     payer_name: Annotated[str | None, Field(max_length=200)] = None
-    received_at: datetime | None = None
-    notes: Annotated[str | None, Field(max_length=500)] = None
 
     @model_validator(mode="after")
     def _digital_needs_a_reference(self) -> Self:
@@ -280,6 +279,24 @@ class PaymentRequest(BaseModel):
         if self.method in needs_reference and not self.reference:
             raise ValueError(f"A {self.method.value.lower()} payment needs a reference number.")
         return self
+
+
+class PaymentRequest(_HowPaid):
+    amount: Annotated[Decimal, Field(gt=0, max_digits=12, decimal_places=2)]
+    received_at: datetime | None = None
+    notes: Annotated[str | None, Field(max_length=500)] = None
+
+
+class CollectPayment(_HowPaid):
+    """Take everything a visit owes, in one tap at the reception counter.
+
+    No amount: the server decides it, from the same balance the row showed.
+    A counter that types the amount is a counter that can type it wrong.
+    `expected_amount` is what the screen (and the UPI QR) showed; if the bill
+    has moved since, the request is refused rather than collecting the new sum.
+    """
+
+    expected_amount: Annotated[Decimal | None, Field(gt=0, max_digits=12, decimal_places=2)] = None
 
 
 class ReversalRequest(BaseModel):
@@ -302,6 +319,14 @@ class PaymentRead(BaseModel):
     received_by_id: uuid.UUID | None
     reversed_at: datetime | None
     reversal_reason: str | None
+
+
+class CollectPaymentResult(BaseModel):
+    """One receipt per invoice settled — usually exactly one."""
+
+    receipts: list[PaymentRead]
+    amount: Decimal
+    balance_due: Decimal
 
 
 class InvoiceSummary(BaseModel):
@@ -420,6 +445,32 @@ class VisitAccount(BaseModel):
     balance_due: Decimal
     # True when something on this visit could not be priced. Shown to the
     # cashier, because they are the last person who can catch it.
+    has_unpriced_items: bool
+
+    # Where a UPI QR for this bill pays: the hospital's own UPI ID, or null
+    # when the administrator has not set one (the dialog then says so).
+    upi_vpa: str | None = None
+    payee_name: str | None = None
+
+
+class CostLine(BaseModel):
+    """One line of a stay's cost: twelve doses of one drug, three nights in one bed."""
+
+    category: ChargeCategory
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    total_amount: Decimal
+    needs_pricing: bool
+
+
+class CostBreakdown(BaseModel):
+    """What a visit has cost so far, grouped. Pending and invoiced charges both
+    count; cancelled and waived ones do not."""
+
+    encounter_id: uuid.UUID
+    lines: list[CostLine]
+    total: Decimal
     has_unpriced_items: bool
 
 

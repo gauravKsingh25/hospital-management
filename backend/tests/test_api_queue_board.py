@@ -613,3 +613,62 @@ class TestComputedFieldsActuallySerialise:
             PATIENTS, params={"limit": 200, "offset": 0}, headers=auth(reception_token)
         )
         assert rest.json()["has_more"] is False
+
+
+class TestReceptionSeesWhatEachPatientOwes:
+    """The row's payment strip reads its numbers from the board itself — one
+    bulk billing lookup, not a request per row."""
+
+    @pytest.fixture
+    async def consultation_fee(self, api: AsyncClient, admin_token: str) -> None:
+        card = await api.post(
+            "/api/v1/billing/rate-cards",
+            json={"code": "CASH", "name": "Cash", "payer_type": "CASH", "is_default": True},
+            headers=auth(admin_token),
+        )
+        assert card.status_code == 201, card.text
+        item = await api.post(
+            "/api/v1/billing/services",
+            json={"code": "OPD-CONSULT", "name": "OPD consultation", "category": "CONSULTATION"},
+            headers=auth(admin_token),
+        )
+        assert item.status_code == 201, item.text
+        priced = await api.put(
+            f"/api/v1/billing/services/{item.json()['id']}/prices",
+            json={"rate_card_id": card.json()["id"], "price": "500.00"},
+            headers=auth(admin_token),
+        )
+        assert priced.status_code == 200, priced.text
+
+    async def test_a_row_shows_the_balance_until_it_is_collected(
+        self,
+        api: AsyncClient,
+        reception_token: str,
+        doctor_id: str,
+        consultation_fee: None,
+    ) -> None:
+        patient_id = await _register(
+            api, reception_token, name="Sunita Devi", phone="9876543210", age=34
+        )
+        await _queue_patient(api, reception_token, patient_id=patient_id, doctor_id=doctor_id)
+
+        def row_of(columns: list[dict]) -> dict:
+            [column] = [column for column in columns if column["doctor_id"] == doctor_id]
+            [row] = column["entries"]
+            return row
+
+        board = await api.get(f"{QUEUE}/board", headers=auth(reception_token))
+        row = row_of(board.json())
+        assert row["balance_due"] == "500.00"
+        assert row["amount_paid"] == "0.00"
+
+        collected = await api.post(
+            f"/api/v1/billing/accounts/{row['encounter_id']}/collect",
+            json={"method": "UPI", "reference": "4821"},
+            headers=auth(reception_token),
+        )
+        assert collected.status_code == 200, collected.text
+
+        row = row_of((await api.get(f"{QUEUE}/board", headers=auth(reception_token))).json())
+        assert row["balance_due"] == "0.00"
+        assert row["amount_paid"] == "500.00"

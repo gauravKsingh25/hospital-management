@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, registerAndQueue, signIn, signOut } from "./support";
+import { ACCOUNTS, openPatient, registerAndQueue, signIn, signOut } from "./support";
 
 /**
  * The three unplanned endings: death, referral out, and leaving against
@@ -18,15 +18,15 @@ import { ACCOUNTS, registerAndQueue, signIn, signOut } from "./support";
  * somebody asks for them later.
  */
 
-/** Open a fresh visit as the doctor and return the consultation URL. */
+/**
+ * A fresh open visit, with the doctor on the patient's page — where a death,
+ * a referral or a LAMA is recorded now the consultation screen is gone.
+ */
 async function consultingRoom(page: Page): Promise<{ name: string; url: string }> {
   const name = await registerAndQueue(page);
 
   await signIn(page, ACCOUNTS.doctor);
-  const row = page.getByTestId("queue-row").filter({ hasText: name });
-  await row.getByRole("link", { name: /Start consultation/ }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-
+  await openPatient(page, name);
   return { name, url: page.url() };
 }
 
@@ -185,7 +185,7 @@ test.describe("the queue empties", () => {
     await dialog.getByTestId("confirm-outcome").click();
     await expect(page.getByTestId("outcome-summary")).toBeVisible({ timeout: 45_000 });
 
-    await page.goto("/queue");
+    await page.goto("/reception");
     await expect(page.getByTestId("queue-row").filter({ hasText: name })).toHaveCount(0, {
       timeout: 45_000,
     });
@@ -193,7 +193,7 @@ test.describe("the queue empties", () => {
 });
 
 test.describe("who may record one", () => {
-  test("a nurse reads the chart and is not offered the outcomes", async ({ page }) => {
+  test("a nurse reads the record and is not offered the outcomes", async ({ page }) => {
     /**
      * Three permissions rather than one (§8), and a nurse holds none of them.
      * They still get the whole chart — a nurse who cannot read the visit

@@ -4,8 +4,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 
+import { LoadError } from "@/components/load-error";
 import { Pager } from "@/components/pager";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { MessageDetail } from "@/features/messages/message-detail";
 import { MessageStatusChip } from "@/features/messages/message-status";
 import { api } from "@/lib/api/client";
@@ -97,7 +99,15 @@ export function Outbox({
         ))}
       </div>
 
-      {rows.length === 0 ? (
+      {outbox.isPending ? (
+        <div className="space-y-2" aria-busy="true">
+          {[0, 1, 2].map((row) => (
+            <Skeleton key={row} className="h-14 w-full rounded-lg" />
+          ))}
+        </div>
+      ) : outbox.isError && !outbox.data ? (
+        <LoadError onRetry={() => outbox.refetch()} />
+      ) : rows.length === 0 ? (
         <p className="text-muted-foreground rounded-lg border border-dashed py-12 text-center text-sm">
           {t("empty")}
         </p>

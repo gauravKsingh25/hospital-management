@@ -26,6 +26,7 @@ import { QueueStatusChip } from "@/components/status-chip";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SendToAdmissionDialog } from "@/features/admissions/send-to-admission-dialog";
+import { CollectStrip } from "@/features/billing/collect-strip";
 import { useTodaysAdmissionRequests } from "@/features/admissions/use-admission-requests";
 import { ReassignDialog } from "@/features/queue/reassign-dialog";
 import { useMarkSeen, useQueueBoard, useReorderEntry } from "@/features/queue/use-queue-board";
@@ -59,6 +60,10 @@ import type { AdmissionRequest, DoctorQueue, QueueBoardEntry } from "@/types/api
  *   work; the handle is the only drag surface so the row's text and buttons
  *   still behave like text and buttons.
  *
+ * - **Get payment / Paid** — the money line under each row, for a user who
+ *   can take payments. It stays on seen rows too: the test the doctor ordered
+ *   is paid for after the consultation, not before.
+ *
  * Dragging is confined to one column. Dropping a patient on another doctor
  * is a reassignment with consequences (a new token, a different chart), and
  * that deserves the dialog's confirmation rather than a slip of the wrist.
@@ -66,10 +71,13 @@ import type { AdmissionRequest, DoctorQueue, QueueBoardEntry } from "@/types/api
 export function DoctorQueues({
   canManage = false,
   canRequestAdmission = false,
+  canCollect = false,
 }: {
   canManage?: boolean;
   /** Offer "Send to admission" on seen patients (`admission:request`). */
   canRequestAdmission?: boolean;
+  /** Offer "Get payment" / "Paid" on rows that owe money. */
+  canCollect?: boolean;
 }) {
   const t = useTranslations("queue");
   const [dragging, setDragging] = useState(false);
@@ -133,6 +141,7 @@ export function DoctorQueues({
             canManage={canManage}
             onDragStateChange={setDragging}
             canRequestAdmission={canRequestAdmission}
+            canCollect={canCollect}
             requestByVisit={requestByVisit}
             pendingSeen={seen.pending}
             onMarkSeen={seen.mark}
@@ -162,6 +171,7 @@ function DoctorColumn({
   columns,
   canManage,
   canRequestAdmission,
+  canCollect,
   requestByVisit,
   onDragStateChange,
   pendingSeen,
@@ -172,6 +182,7 @@ function DoctorColumn({
   columns: DoctorQueue[];
   canManage: boolean;
   canRequestAdmission: boolean;
+  canCollect: boolean;
   requestByVisit: ReadonlyMap<string, AdmissionRequest>;
   onDragStateChange: (dragging: boolean) => void;
   pendingSeen: ReadonlySet<string>;
@@ -337,6 +348,7 @@ function DoctorColumn({
                     place={places.get(entry.id) ?? null}
                     columns={columns}
                     canManage={canManage}
+                    canCollect={canCollect}
                     draggable={canManage && !marking && RANKABLE.has(entry.status)}
                     marking={marking}
                     onMarkSeen={() => onMarkSeen(entry.id)}
@@ -360,6 +372,7 @@ function DoctorColumn({
                 key={entry.id}
                 entry={entry}
                 canRequestAdmission={canRequestAdmission}
+                canCollect={canCollect}
                 request={
                   entry.encounter_id ? (requestByVisit.get(entry.encounter_id) ?? null) : null
                 }
@@ -393,10 +406,12 @@ function DoctorColumn({
 function SeenRow({
   entry,
   canRequestAdmission,
+  canCollect,
   request,
 }: {
   entry: QueueBoardEntry;
   canRequestAdmission: boolean;
+  canCollect: boolean;
   /** The latest admission request for this visit today, if any. */
   request: AdmissionRequest | null;
 }) {
@@ -468,6 +483,8 @@ function SeenRow({
           />
         </>
       ) : null}
+
+      {canCollect ? <CollectStrip entry={entry} className="basis-full" /> : null}
     </li>
   );
 }
@@ -477,6 +494,7 @@ function ColumnRow({
   place,
   columns,
   canManage,
+  canCollect,
   draggable,
   marking,
   onMarkSeen,
@@ -487,6 +505,7 @@ function ColumnRow({
   place: number | null;
   columns: DoctorQueue[];
   canManage: boolean;
+  canCollect: boolean;
   draggable: boolean;
   /** "Seen" was clicked and the undo window is still open. */
   marking: boolean;
@@ -521,7 +540,7 @@ function ColumnRow({
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={cn(
-        "bg-background flex items-center gap-2 px-2 py-2",
+        "bg-background px-2 py-2",
         overdue && "bg-caution/10",
         // Lifted above its neighbours while in the air, so it reads as the
         // thing being carried rather than sliding under the others.
@@ -529,108 +548,115 @@ function ColumnRow({
       )}
       data-testid="queue-row"
     >
-      {draggable ? (
-        <button
-          ref={setActivatorNodeRef}
-          type="button"
-          className="text-muted-foreground hover:text-foreground h-tap -ml-1 flex w-8 shrink-0 cursor-grab touch-none items-center justify-center rounded active:cursor-grabbing"
-          aria-label={t("dragAria", { name })}
-          data-testid="drag-handle"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical aria-hidden className="size-4" />
-        </button>
-      ) : (
-        // Keep the columns aligned whether or not the row has a handle.
-        <span aria-hidden className="w-8 shrink-0" />
-      )}
+      <div className="flex items-center gap-2">
+        {draggable ? (
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            className="text-muted-foreground hover:text-foreground h-tap -ml-1 flex w-8 shrink-0 cursor-grab touch-none items-center justify-center rounded active:cursor-grabbing"
+            aria-label={t("dragAria", { name })}
+            data-testid="drag-handle"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical aria-hidden className="size-4" />
+          </button>
+        ) : (
+          // Keep the columns aligned whether or not the row has a handle.
+          <span aria-hidden className="w-8 shrink-0" />
+        )}
 
-      <span className="tabular w-7 shrink-0 text-lg font-semibold" data-testid="place">
-        {place !== null ? (
-          <>
-            <span className="sr-only">{t("placeInLine")} </span>
-            {place}
-          </>
-        ) : null}
-      </span>
-
-      <div className="min-w-0 flex-1">
-        {/* Wraps to two lines rather than truncating: with two buttons on
-            the row the column is narrow, and "Ramesh Chandra G…" is not a
-            name anyone can call out. */}
-        <div
-          className={cn(
-            "line-clamp-2 text-sm font-medium break-words",
-            marking && "text-muted-foreground line-through",
-          )}
-          data-testid="patient-name"
-        >
-          {name}
-        </div>
-        <div className="text-muted-foreground tabular flex flex-wrap items-center gap-x-2 text-xs">
-          {/* Still shown: it is on the patient's slip and it is what gets
-              called out across the waiting room. */}
-          <span className="text-foreground font-medium" data-testid="token">
-            {t("token")} {entry.token_number}
-          </span>
-          <span className={cn(overdue && "text-caution-foreground font-medium")}>
-            {t("minutes", { count: elapsed })}
-          </span>
-          <QueueStatusChip status={entry.status} />
-          {prioritised ? (
-            <span className="bg-caution/20 text-caution-foreground rounded px-1.5 py-0.5 text-[10px] font-medium">
-              {entry.priority_reason ?? t("runningLate")}
-            </span>
+        <span className="tabular w-7 shrink-0 text-lg font-semibold" data-testid="place">
+          {place !== null ? (
+            <>
+              <span className="sr-only">{t("placeInLine")} </span>
+              {place}
+            </>
           ) : null}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          {/* Wraps to two lines rather than truncating: with two buttons on
+              the row the column is narrow, and "Ramesh Chandra G…" is not a
+              name anyone can call out. */}
+          <div
+            className={cn(
+              "line-clamp-2 text-sm font-medium break-words",
+              marking && "text-muted-foreground line-through",
+            )}
+            data-testid="patient-name"
+          >
+            {name}
+          </div>
+          <div className="text-muted-foreground tabular flex flex-wrap items-center gap-x-2 text-xs">
+            {/* Still shown: it is on the patient's slip and it is what gets
+                called out across the waiting room. */}
+            <span className="text-foreground font-medium" data-testid="token">
+              {t("token")} {entry.token_number}
+            </span>
+            <span className={cn(overdue && "text-caution-foreground font-medium")}>
+              {t("minutes", { count: elapsed })}
+            </span>
+            <QueueStatusChip status={entry.status} />
+            {prioritised ? (
+              <span className="bg-caution/20 text-caution-foreground rounded px-1.5 py-0.5 text-[10px] font-medium">
+                {entry.priority_reason ?? t("runningLate")}
+              </span>
+            ) : null}
+          </div>
         </div>
-      </div>
 
-      {canManage && marking ? (
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-tap shrink-0"
-          onClick={onUndoSeen}
-          aria-label={t("undoSeenAria", { name })}
-        >
-          <Undo2 aria-hidden className="size-4" />
-          {t("undo")}
-        </Button>
-      ) : null}
-
-      {canManage && !marking ? (
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-tap shrink-0"
-          onClick={onMarkSeen}
-          aria-label={t("markSeenAria", { name })}
-          data-testid="mark-seen"
-        >
-          <Check aria-hidden className="size-4" />
-          {t("markSeen")}
-        </Button>
-      ) : null}
-
-      {movable ? (
-        <>
-          {/* Icon only: the row now carries two actions, and the name needs
-              the width more than the word "Move" does. The label is still
-              there for screen readers and on hover. */}
+        {canManage && marking ? (
           <Button
             size="sm"
             variant="outline"
             className="h-tap shrink-0"
-            onClick={() => setMoving(true)}
-            aria-label={t("moveAria", { name })}
-            title={t("moveTitle")}
+            onClick={onUndoSeen}
+            aria-label={t("undoSeenAria", { name })}
           >
-            <ArrowRightLeft aria-hidden className="size-4" />
+            <Undo2 aria-hidden className="size-4" />
+            {t("undo")}
           </Button>
-          <ReassignDialog entry={entry} columns={columns} open={moving} onOpenChange={setMoving} />
-        </>
-      ) : null}
+        ) : null}
+
+        {canManage && !marking ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-tap shrink-0"
+            onClick={onMarkSeen}
+            aria-label={t("markSeenAria", { name })}
+            data-testid="mark-seen"
+          >
+            <Check aria-hidden className="size-4" />
+            {t("markSeen")}
+          </Button>
+        ) : null}
+
+        {movable ? (
+          <>
+            {/* Icon only: the row now carries two actions, and the name needs
+                the width more than the word "Move" does. The label is still
+                there for screen readers and on hover. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-tap shrink-0"
+              onClick={() => setMoving(true)}
+              aria-label={t("moveAria", { name })}
+              title={t("moveTitle")}
+            >
+              <ArrowRightLeft aria-hidden className="size-4" />
+            </Button>
+            <ReassignDialog entry={entry} columns={columns} open={moving} onOpenChange={setMoving} />
+          </>
+        ) : null}
+      </div>
+
+      {/* Its own line, full width: the row above already carries a name and
+          two buttons, and on a tablet column there is no room for two more
+          without cutting the name off. */}
+      {canCollect && !marking ? <CollectStrip entry={entry} className="mt-2" /> : null}
     </li>
   );
 }

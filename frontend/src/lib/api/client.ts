@@ -12,13 +12,17 @@ import { ApiError, apiErrorFromResponse } from "@/lib/api/error";
 
 const BFF_PREFIX = "/bff";
 
-export type QueryValue = string | number | boolean | null | undefined;
+type Scalar = string | number | boolean | null | undefined;
+/** An array repeats the key — `?patient_id=a&patient_id=b` — which FastAPI reads as a list. */
+export type QueryValue = Scalar | readonly Scalar[];
 
 function buildPath(path: string, query?: Record<string, QueryValue>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined && value !== null && value !== "") {
-      search.set(key, String(value));
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item !== undefined && item !== null && item !== "") {
+        search.append(key, String(item));
+      }
     }
   }
   const suffix = search.toString();

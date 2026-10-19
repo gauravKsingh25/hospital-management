@@ -37,7 +37,8 @@ export function KeyboardShortcuts({ permissions }: { permissions: readonly strin
   const held = new Set(permissions);
   const available = DEFAULT_SHORTCUTS.filter(
     (shortcut) =>
-      !shortcut.permissions || shortcut.permissions.some((permission) => held.has(permission)),
+      (!shortcut.permissions || shortcut.permissions.some((permission) => held.has(permission))) &&
+      !shortcut.hiddenWith?.some((permission) => held.has(permission)),
   );
 
   useEffect(() => {

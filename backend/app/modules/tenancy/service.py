@@ -43,6 +43,7 @@ __all__ = [
     "list_departments",
     "list_hospitals",
     "local_today",
+    "local_zone",
     "set_hospital_active",
     "update_department",
     "update_hospital",
@@ -65,6 +66,15 @@ async def local_today(session: AsyncSession | SAAsyncSession, hospital_id: uuid.
     checked in after half past six in the evening was filed under yesterday's
     queue, where the live board could not see them.
     """
+    return datetime.now(await local_zone(session, hospital_id)).date()
+
+
+async def local_zone(
+    session: AsyncSession | SAAsyncSession, hospital_id: uuid.UUID
+) -> zoneinfo.ZoneInfo:
+    """The hospital's timezone, for anything that needs its midnight rather than
+    just its date — the bed census counts who is in a bed at the hospital's
+    midnight, not the server's."""
     hospital = await get_hospital(session, hospital_id)
     try:
         zone = zoneinfo.ZoneInfo(hospital.timezone)
@@ -77,7 +87,7 @@ async def local_today(session: AsyncSession | SAAsyncSession, hospital_id: uuid.
             hospital.timezone,
         )
         zone = zoneinfo.ZoneInfo("UTC")
-    return datetime.now(zone).date()
+    return zone
 
 
 async def create_hospital(

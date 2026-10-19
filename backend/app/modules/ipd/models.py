@@ -14,8 +14,9 @@ rounds, discharge summary auto-compile."* Two of those six are deliberately
   table.
 
 What is genuinely new is everything below: physical capacity, who is in which
-bed and when, what drugs are due and whether they were actually given, and the
-document that has to exist before a patient can leave.
+bed and when, what drugs are due and whether they were actually given, what the
+stay used from the hospital's medicine list, and the document that has to exist
+before a patient can leave.
 
 ---------------------------------------------------------------------------
 The two decisions worth arguing about
@@ -44,7 +45,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, Column, Date, DateTime, Index, text
+from sqlalchemy import JSON, Column, Date, DateTime, Index, Numeric, text
 from sqlmodel import Field
 
 from app.core.models import AuditedTenantModel, TenantModel
@@ -66,6 +67,10 @@ __all__ = [
     "MedicationAdministration",
     "MedicationOrder",
     "MedicationRoute",
+    "MedicineForm",
+    "MedicineIssue",
+    "MedicineIssueStatus",
+    "MedicineItem",
     "SummaryStatus",
     "Ward",
 ]
@@ -203,6 +208,36 @@ class DoseStatus(enum.StrEnum):
     HELD = "HELD"
     # The order was stopped or the patient left before this slot came round.
     CANCELLED = "CANCELLED"
+
+
+class MedicineForm(enum.StrEnum):
+    """What an item on the medicine list physically is.
+
+    Drives the defaults the list offers — an injection is given IV by the vial,
+    a tablet by mouth — and lets the list be filtered the way a ward asks for
+    things ("which IV fluids do we stock?"). `CONSUMABLE` is not a drug at all:
+    a cannula, an IV set, a pair of gloves. It lives on the same list because
+    it is issued and billed the same way.
+    """
+
+    INJECTION = "INJECTION"
+    IV_FLUID = "IV_FLUID"
+    TABLET = "TABLET"
+    CAPSULE = "CAPSULE"
+    SYRUP = "SYRUP"
+    OINTMENT = "OINTMENT"
+    DROPS = "DROPS"
+    INHALER = "INHALER"
+    CONSUMABLE = "CONSUMABLE"
+    OTHER = "OTHER"
+
+
+class MedicineIssueStatus(enum.StrEnum):
+    ISSUED = "ISSUED"
+    # Recorded in error and taken back off the bill. The row stays, with who
+    # reversed it and why: "we charged for it and then didn't" is a fact the
+    # bill has to be able to explain.
+    REVERSED = "REVERSED"
 
 
 class SummaryStatus(enum.StrEnum):
@@ -568,6 +603,103 @@ class BedAssignment(AuditedTenantModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# The medicine list
+# ---------------------------------------------------------------------------
+class MedicineItem(AuditedTenantModel, table=True):
+    """One preset on the hospital's medicine list: "Ceftriaxone 1 g", "NS 500 ml".
+
+    What it is and how it is usually given live here; **what it costs does
+    not.** The price is a `billing.ServicePrice` on the service item with the
+    same `code`, the link every other catalogue in the system uses (a lab test
+    code `CBC` prices against the service `CBC`). Keeping one home for prices
+    means the rate cards, GST and the administrator's price list all cover
+    medicines without a second copy of any of them to drift. The service layer
+    writes both halves in one transaction, so the list never shows an item the
+    bill cannot price.
+
+    The dose, route and schedule are *defaults*. A doctor picking the item on
+    the chart gets them filled in and can change them; the chart snapshots what
+    was actually prescribed.
+    """
+
+    __tablename__ = "medicine_items"
+    __table_args__ = (
+        Index(
+            "uq_medicine_items_code_live",
+            "hospital_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_medicine_items_hospital_id_form", "hospital_id", "form"),
+    )
+
+    # Generated from the name and never typed: the only readers are the bill
+    # and the price list, and a code somebody has to invent is a code somebody
+    # gets wrong.
+    code: str = Field(max_length=32, index=True)
+    name: str = Field(max_length=200, index=True)
+    form: MedicineForm = Field(default=MedicineForm.OTHER, index=True)
+    # Free text for the same reason as the chart's `dose`: "1 g", "500 ml",
+    # "10 units". Empty for a consumable.
+    dose: str | None = Field(default=None, max_length=60)
+    route: MedicationRoute | None = Field(default=None)
+    # What one unit of the price buys: "vial", "bottle", "tablet", "piece".
+    unit: str = Field(default="unit", max_length=24)
+    drug_schedule: DrugSchedule = Field(default=DrugSchedule.NONE)
+    is_active: bool = Field(default=True, index=True)
+
+
+class MedicineIssue(AuditedTenantModel, table=True):
+    """Something from the medicine list used on an inpatient, outside the chart.
+
+    An IV set, a cannula, a STAT injection given before anyone wrote a chart.
+    The chart bills the doses it records; this is everything else, and it is
+    what lets the cost of a stay be complete rather than "the drugs, plus
+    whatever somebody remembered to tell billing about".
+
+    Never edited: a wrong entry is reversed with a reason and a new one
+    recorded, so the bill and this list always agree about what happened.
+    """
+
+    __tablename__ = "medicine_issues"
+    __table_args__ = (Index("ix_medicine_issues_admission_id_status", "admission_id", "status"),)
+
+    admission_id: uuid.UUID = Field(foreign_key="admissions.id", ondelete="RESTRICT", index=True)
+    encounter_id: uuid.UUID = Field(foreign_key="encounters.id", ondelete="RESTRICT", index=True)
+    patient_id: uuid.UUID = Field(foreign_key="patients.id", ondelete="RESTRICT", index=True)
+    medicine_item_id: uuid.UUID = Field(
+        foreign_key="medicine_items.id", ondelete="RESTRICT", index=True
+    )
+
+    # Snapshotted: an item renamed next month must not rewrite this stay.
+    item_code: str = Field(max_length=32)
+    item_name: str = Field(max_length=200)
+    unit: str = Field(max_length=24)
+    quantity: int = Field(ge=1)
+    note: str | None = Field(default=None, max_length=255)
+
+    status: MedicineIssueStatus = Field(default=MedicineIssueStatus.ISSUED, index=True)
+    issued_at: datetime = Field(
+        sa_type=DateTime(timezone=True),  # type: ignore[call-overload]
+        index=True,
+    )
+    issued_by_id: uuid.UUID | None = Field(
+        default=None, foreign_key="users.id", ondelete="SET NULL", nullable=True
+    )
+    issued_by_name: str | None = Field(default=None, max_length=200)
+
+    reversed_at: datetime | None = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),  # type: ignore[call-overload]
+    )
+    reversed_by_id: uuid.UUID | None = Field(
+        default=None, foreign_key="users.id", ondelete="SET NULL", nullable=True
+    )
+    reversal_reason: str | None = Field(default=None, max_length=255)
+
+
+# ---------------------------------------------------------------------------
 # The medication chart
 # ---------------------------------------------------------------------------
 class MedicationOrder(AuditedTenantModel, table=True):
@@ -618,6 +750,23 @@ class MedicationOrder(AuditedTenantModel, table=True):
         index=True,
         description="Drugs and Cosmetics Rules schedule (CLAUDE.md §9).",
     )
+
+    # --- billing -----------------------------------------------------------
+    # Set when the drug was picked from the medicine list. Every dose signed as
+    # given is then charged: `units_per_dose` of `item_code` at the list price.
+    # A drug typed free-hand has no price, so it is not billed — the chart says
+    # so beside it rather than letting the gap go unnoticed.
+    medicine_item_id: uuid.UUID | None = Field(
+        default=None,
+        foreign_key="medicine_items.id",
+        ondelete="SET NULL",
+        nullable=True,
+        index=True,
+    )
+    item_code: str | None = Field(default=None, max_length=32)
+    # Two vials for a 2 g dose of a 1 g vial. Numeric, because half a tablet is
+    # a real prescription.
+    units_per_dose: Decimal = Field(default=Decimal("1.00"), sa_type=Numeric(9, 2))  # type: ignore[call-overload]
 
     starts_at: datetime = Field(
         sa_type=DateTime(timezone=True),  # type: ignore[call-overload]

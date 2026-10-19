@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
 from app.core.exceptions import NotFoundError, ValidationError
-from app.core.pagination import Page, PageParams, page_params
+from app.core.pagination import MAX_PAGE_SIZE, Page, PageParams, page_params
 from app.modules.clinical import service
 from app.modules.clinical.models import (
     Encounter,
@@ -48,6 +48,9 @@ from app.modules.clinical.schemas import (
     OrderCancelRequest,
     OrderCreate,
     OrderRead,
+    PatientClinicalSummary,
+    PatientVisit,
+    PatientVisitStats,
     PendingItems,
     ReferralRecord,
     VitalsCreate,
@@ -55,6 +58,8 @@ from app.modules.clinical.schemas import (
 )
 from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
+from app.modules.scheduling import service as scheduling_service
+from app.modules.tenancy import service as tenancy_service
 
 encounters_router = APIRouter(prefix="/encounters", tags=["clinical"])
 orders_router = APIRouter(prefix="/orders", tags=["clinical"])
@@ -210,6 +215,129 @@ async def get_patient_timeline(
     return Page.build(
         [EncounterEventRead.model_validate(event) for event in events], total=total, params=params
     )
+
+
+async def _name_visits(
+    session: SessionDep, visits: list[PatientVisit], *, hospital_id: uuid.UUID
+) -> list[PatientVisit]:
+    """Put the doctor's and department's names on a page of history.
+
+    Here rather than in the service because the names belong to `scheduling`
+    and `tenancy`, asked through their service interfaces (CLAUDE.md §2) — two
+    queries for the page, never one per row.
+    """
+    doctors = await scheduling_service.get_doctors_by_ids(
+        session,
+        {visit.doctor_id for visit in visits if visit.doctor_id is not None},
+        hospital_id=hospital_id,
+    )
+    departments = {
+        department.id: department
+        for department in await tenancy_service.get_departments_by_ids(
+            session,
+            {visit.department_id for visit in visits if visit.department_id is not None},
+            hospital_id=hospital_id,
+        )
+    }
+    for visit in visits:
+        if visit.doctor_id in doctors:
+            visit.doctor_name = doctors[visit.doctor_id].display_name
+        if visit.department_id in departments:
+            visit.department_name = departments[visit.department_id].name
+    return visits
+
+
+@encounters_router.get(
+    "/patient/{patient_id}/summary",
+    response_model=PatientClinicalSummary,
+    summary="The patient's history at a glance",
+)
+async def get_patient_summary(
+    patient_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    context: CanReadEncounter,
+    tenant_id: TenantId,
+) -> PatientClinicalSummary:
+    """Visit counts, the visit in progress, the next follow-up — and, for the
+    roles that read the chart, the problem list and the latest vitals.
+
+    One permission opens the route and the finer ones decide what is in it, so
+    reception and a doctor open the same record and see what their role may.
+    """
+    summary = await service.build_patient_summary(
+        session,
+        patient_id,
+        hospital_id=tenant_id,
+        today=await tenancy_service.local_today(session, tenant_id),
+        include_problems=context.has_permission(ClinicalPermissions.DIAGNOSIS_READ),
+        include_vitals=context.has_permission(ClinicalPermissions.VITALS_READ),
+    )
+    # A history is a read of personal health data: traceable, like the record.
+    await identity_service.record_audit(
+        session,
+        action="patient.history.view",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="patient",
+        resource_id=summary.patient_id,
+        changes={"part": "summary"},
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return summary
+
+
+@encounters_router.get(
+    "/patient/{patient_id}/visits",
+    response_model=Page[PatientVisit],
+    summary="Every visit, numbered, with what it was for",
+)
+async def list_patient_visits(
+    patient_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    context: CanReadEncounter,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+) -> Page[PatientVisit]:
+    visits, total = await service.list_patient_visits(
+        session,
+        params,
+        patient_id,
+        hospital_id=tenant_id,
+        include_diagnoses=context.has_permission(ClinicalPermissions.DIAGNOSIS_READ),
+        include_orders=context.has_permission(ClinicalPermissions.ORDER_READ),
+    )
+    await identity_service.record_audit(
+        session,
+        action="patient.history.view",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="patient",
+        resource_id=patient_id,
+        changes={"part": "visits", "offset": params.offset},
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return Page.build(
+        await _name_visits(session, visits, hospital_id=tenant_id), total=total, params=params
+    )
+
+
+@encounters_router.get(
+    "/visit-stats",
+    response_model=list[PatientVisitStats],
+    summary="Visit counts for a page of the patient directory",
+)
+async def get_visit_stats(
+    session: SessionDep,
+    context: CanReadEncounter,
+    tenant_id: TenantId,
+    patient_id: Annotated[list[uuid.UUID], Query(min_length=1, max_length=MAX_PAGE_SIZE)],
+) -> list[PatientVisitStats]:
+    """Bounded by the page size: the directory asks for the rows it shows."""
+    return await service.visit_stats_for_patients(session, patient_id, hospital_id=tenant_id)
 
 
 @encounters_router.get("/{encounter_id}", response_model=EncounterRead, summary="Get a visit")

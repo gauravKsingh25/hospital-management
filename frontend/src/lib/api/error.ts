@@ -30,6 +30,11 @@ export class ApiError extends Error {
   readonly code: string;
   readonly fields: FieldError[];
   readonly details: Record<string, unknown> | undefined;
+  /**
+   * The backend's correlation ID for the failed request, when it sent one.
+   * Quote it to support: it finds every server log line the request wrote.
+   */
+  readonly requestId: string | undefined;
 
   constructor(options: {
     status: number;
@@ -37,6 +42,7 @@ export class ApiError extends Error {
     message: string;
     fields?: FieldError[];
     details?: Record<string, unknown>;
+    requestId?: string;
   }) {
     super(options.message);
     this.name = "ApiError";
@@ -44,6 +50,7 @@ export class ApiError extends Error {
     this.code = options.code;
     this.fields = options.fields ?? [];
     this.details = options.details;
+    this.requestId = options.requestId;
   }
 
   /** The session is gone or was never there. */
@@ -89,6 +96,7 @@ export async function apiErrorFromResponse(response: Response): Promise<ApiError
     message: envelope.error?.message ?? defaultMessage(response.status),
     fields: Array.isArray(rawFields) ? (rawFields as FieldError[]) : [],
     details,
+    requestId: response.headers.get("x-request-id") ?? undefined,
   });
 }
 

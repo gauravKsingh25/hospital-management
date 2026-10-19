@@ -12,6 +12,8 @@ from app.core.deps import SessionDep, TenantId, get_client_ip, require
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.models import utc_now
 from app.core.pagination import Page, PageParams, page_params
+from app.modules.billing import service as billing_service
+from app.modules.billing.rbac import BillingPermissions
 from app.modules.clinical import service as clinical_service
 from app.modules.clinical.models import Encounter
 from app.modules.clinical.rbac import ClinicalPermissions
@@ -743,6 +745,20 @@ async def queue_board(
     ]
     # One identity lookup for the line and the seen list together.
     rows = {row.id: row for row in await _to_board(session, shown, hospital_id=tenant_id)}
+
+    # And one billing lookup, for reception's payment strip — through
+    # `billing.service`, the same way identity comes through `patients`.
+    if context.has_permission(BillingPermissions.CHARGE_READ):
+        balances = await billing_service.balances_for(
+            session,
+            [row.encounter_id for row in rows.values() if row.encounter_id is not None],
+            hospital_id=tenant_id,
+        )
+        for board_row in rows.values():
+            balance = balances.get(board_row.encounter_id) if board_row.encounter_id else None
+            if balance is not None:
+                board_row.balance_due = balance.balance_due
+                board_row.amount_paid = balance.amount_paid
 
     department_ids = {doctor.department_id for doctor in doctors if doctor.department_id}
     departments = {

@@ -46,6 +46,13 @@ export default async function AdmissionPage({
       // edit — the backend gates transfer on `bed:assign`.
       canTransfer={can(user, "bed:assign")}
       canDischarge={can(user, "admission:discharge")}
+      canIssue={can(user, "medicine:issue")}
+      canSeeCost={can(user, "charge:read")}
+      canRecordDeath={can(user, "encounter:record_death")}
+      canRecordReferral={can(user, "encounter:record_referral")}
+      canRecordLama={can(user, "encounter:record_lama")}
+      canReadVitals={can(user, "vitals:read")}
+      canRecordVitals={can(user, "vitals:record")}
     />
   );
 }

@@ -225,6 +225,7 @@ async def clean_database(request: pytest.FixtureRequest) -> AsyncIterator[None]:
                     "notification_attempts, notifications, notification_suppressions, "
                     "notification_templates, "
                     "medication_administrations, medication_orders, discharge_summaries, "
+                    "medicine_issues, medicine_items, admission_requests, "
                     "bed_assignments, admissions, beds, wards, admission_sequences, "
                     "insurance_claims, payments, charges, invoices, service_prices, "
                     "service_items, rate_cards, invoice_sequences, "

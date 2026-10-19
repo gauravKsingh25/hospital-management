@@ -10,18 +10,19 @@ the audit table outgrowing the data it describes.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Request, status
 from pydantic import Field
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import Page, PageParams, page_params
 from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
 from app.modules.patients import service
-from app.modules.patients.models import Patient
+from app.modules.patients.models import Gender, Patient
 from app.modules.patients.rbac import PatientPermissions
 from app.modules.patients.schemas import (
     AlertCreate,
@@ -35,6 +36,7 @@ from app.modules.patients.schemas import (
     PatientMergeRequest,
     PatientRead,
     PatientRegister,
+    PatientSort,
     PatientUpdate,
 )
 
@@ -195,16 +197,31 @@ async def search_patients(
     )
 
 
-@router.get("", response_model=Page[PatientRead], summary="List patients")
+@router.get("", response_model=Page[PatientRead], summary="The patient directory")
 async def list_patients(
     session: SessionDep,
     context: CanRead,
     tenant_id: TenantId,
     params: Annotated[PageParams, Depends(page_params)],
     include_inactive: bool = False,
+    gender: Gender | None = None,
+    deceased: bool | None = None,
+    registered_from: date | None = None,
+    registered_to: date | None = None,
+    sort: PatientSort = PatientSort.RECENT,
 ) -> Page[PatientRead]:
+    if registered_from and registered_to and registered_from > registered_to:
+        raise ValidationError("The start date is after the end date.", code="invalid_date_range")
     patients, total = await service.list_patients(
-        session, params, hospital_id=tenant_id, include_inactive=include_inactive
+        session,
+        params,
+        hospital_id=tenant_id,
+        include_inactive=include_inactive,
+        gender=gender,
+        deceased=deceased,
+        registered_from=registered_from,
+        registered_to=registered_to,
+        sort=sort,
     )
     return Page.build(
         [PatientRead.model_validate(patient) for patient in patients],

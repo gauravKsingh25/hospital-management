@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, status
@@ -39,6 +40,10 @@ from app.modules.billing.schemas import (
     ClaimCreate,
     ClaimRead,
     ClaimUpdate,
+    CollectPayment,
+    CollectPaymentResult,
+    CostBreakdown,
+    CostLine,
     DiscountRequest,
     InvoiceDraftRequest,
     InvoiceIssueRequest,
@@ -63,6 +68,7 @@ from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
 from app.modules.patients import service as patients_service
 from app.modules.patients.schemas import PatientRead
+from app.modules.tenancy import service as tenancy_service
 
 rate_cards_router = APIRouter(prefix="/billing/rate-cards", tags=["billing"])
 services_router = APIRouter(prefix="/billing/services", tags=["billing"])
@@ -485,6 +491,7 @@ async def visit_account(
     """Everything the cash counter needs about one visit, in one round trip."""
     encounter = await clinical_service.get_encounter(session, encounter_id, hospital_id=tenant_id)
     account = await service.visit_account(session, encounter, hospital_id=tenant_id)
+    hospital = await tenancy_service.get_hospital(session, tenant_id)
     return VisitAccount(
         encounter_id=account.encounter_id,
         patient_id=account.patient_id,
@@ -499,6 +506,95 @@ async def visit_account(
         paid_total=account.paid_total,
         balance_due=account.balance_due,
         has_unpriced_items=account.has_unpriced_items,
+        upi_vpa=hospital.upi_vpa,
+        payee_name=hospital.name,
+    )
+
+
+@accounts_router.get(
+    "/{encounter_id}/costs", response_model=CostBreakdown, summary="What a visit has cost so far"
+)
+async def visit_costs(
+    encounter_id: uuid.UUID, session: SessionDep, context: CanReadCharge, tenant_id: TenantId
+) -> CostBreakdown:
+    """The running cost of a visit, grouped — the admission page's "cost so far".
+
+    Separate from the account above because it answers a different question.
+    The account is the counter's: what is pending, what is invoiced, what is
+    paid. This is everyone else's: what has the stay cost, and on what.
+    """
+    encounter = await clinical_service.get_encounter(session, encounter_id, hospital_id=tenant_id)
+    breakdown = await service.cost_breakdown(session, encounter.id, hospital_id=tenant_id)
+    return CostBreakdown(
+        encounter_id=breakdown.encounter_id,
+        lines=[
+            CostLine(
+                category=line.category,
+                description=line.description,
+                quantity=line.quantity,
+                unit_price=line.unit_price,
+                total_amount=line.total_amount,
+                needs_pricing=line.needs_pricing,
+            )
+            for line in breakdown.lines
+        ],
+        total=breakdown.total,
+        has_unpriced_items=breakdown.has_unpriced_items,
+    )
+
+
+@accounts_router.post(
+    "/{encounter_id}/collect",
+    response_model=CollectPaymentResult,
+    summary="Take everything a visit owes, in one step",
+    # Collecting issues the invoice on the way, so it needs both powers. A
+    # pharmacy counter may take money but does not issue the hospital's bills.
+    dependencies=[Depends(require(BillingPermissions.INVOICE_ISSUE))],
+)
+async def collect(
+    encounter_id: uuid.UUID,
+    payload: CollectPayment,
+    session: SessionDep,
+    request: Request,
+    context: CanRecordPayment,
+    tenant_id: TenantId,
+) -> CollectPaymentResult:
+    """Reception's "Get payment" and "Paid": assemble, issue and pay in one
+    transaction. The amount is the server's balance, never a typed number."""
+    encounter = await clinical_service.get_encounter(session, encounter_id, hospital_id=tenant_id)
+    payments = await service.collect_balance(
+        session,
+        encounter,
+        method=payload.method,
+        reference=payload.reference,
+        payer_name=payload.payer_name,
+        expected_amount=payload.expected_amount,
+        actor=context.user,
+        hospital_id=tenant_id,
+    )
+    ip_address = await get_client_ip(request)
+    for payment in payments:
+        await identity_service.record_audit(
+            session,
+            action="billing.payment.record",
+            actor=context.user,
+            hospital_id=tenant_id,
+            resource_type="payment",
+            resource_id=payment.id,
+            changes={
+                "receipt_number": payment.receipt_number,
+                "amount": str(payment.amount),
+                "method": payment.method.value,
+                "reference": payment.reference,
+                "via": "collect",
+            },
+            ip_address=ip_address,
+        )
+    await session.commit()
+    return CollectPaymentResult(
+        receipts=[PaymentRead.model_validate(payment) for payment in payments],
+        amount=sum((payment.amount for payment in payments), start=Decimal("0.00")),
+        balance_due=await service.open_balance(session, encounter_id),
     )
 
 
@@ -686,7 +782,7 @@ async def record_payment(
 ) -> PaymentRead:
     """UPI first (CLAUDE.md §9). Clearing the last balance closes the visit by
     itself, exactly as verifying the last lab report does."""
-    invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id)
+    invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id, for_update=True)
     payment, _ = await service.record_payment(
         session,
         invoice,

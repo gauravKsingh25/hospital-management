@@ -1,6 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, findOnBoard, registerAndQueue, signIn, signOut } from "./support";
+import {
+  ACCOUNTS,
+  doctorFinishesVisit,
+  findOnBoard,
+  registerAndQueue,
+  signIn,
+  signOut,
+} from "./support";
 
 /**
  * The clearance desks, and the loop they close (CLAUDE.md §6).
@@ -17,30 +24,10 @@ import { ACCOUNTS, findOnBoard, registerAndQueue, signIn, signOut } from "./supp
  * closes the visit by itself.
  */
 
-/** Put a patient in front of the doctor, order a blood test, finish the visit. */
+/** A patient the doctor saw, ordered a blood test for, and finished with. */
 async function consultAndOrderBloods(page: Page): Promise<string> {
   const name = await registerAndQueue(page);
-
-  await signIn(page, ACCOUNTS.doctor);
-  const row = page.getByTestId("queue-row").filter({ hasText: name });
-  await row.getByRole("link", { name: /Start consultation/ }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-
-  await page.getByRole("button", { name: "Start consultation" }).click();
-  const note = page.getByRole("textbox", { name: "Clinical note" });
-  await expect(note).toBeEnabled({ timeout: 45_000 });
-  await note.fill("Tired for a month. Pale conjunctivae. Query anaemia.");
-  await note.press("Control+Enter");
-
-  await page.getByRole("textbox", { name: "Item" }).fill("CBC");
-  await page.getByRole("button", { name: "Place order" }).click();
-  const orders = page.getByRole("region", { name: "Orders" });
-  await expect(orders.getByText("CBC", { exact: true })).toBeVisible({ timeout: 45_000 });
-
-  await page.getByTestId("complete-visit").click();
-  await expect(page).toHaveURL(/\/doctor/, { timeout: 45_000 });
-
-  await signOut(page);
+  await doctorFinishesVisit(page, name, { order: "CBC" });
   return name;
 }
 
@@ -88,19 +75,7 @@ test.describe("the diagnostics bench", () => {
   test("the report screen shows the age and sex its ranges depend on", async ({ page }) => {
     const name = await registerAndQueue(page, "62");
 
-    await signIn(page, ACCOUNTS.doctor);
-    const queued = page.getByTestId("queue-row").filter({ hasText: name });
-    await queued.getByRole("link", { name: /Start consultation/ }).click();
-    await page.getByRole("button", { name: "Start consultation" }).click();
-    const note = page.getByRole("textbox", { name: "Clinical note" });
-    await expect(note).toBeEnabled({ timeout: 45_000 });
-    await note.fill("Routine bloods.");
-    await note.press("Control+Enter");
-    await page.getByRole("textbox", { name: "Item" }).fill("CBC");
-    await page.getByRole("button", { name: "Place order" }).click();
-    await page.getByTestId("complete-visit").click();
-    await expect(page).toHaveURL(/\/doctor/, { timeout: 45_000 });
-    await signOut(page);
+    await doctorFinishesVisit(page, name, { order: "CBC" });
 
     await signIn(page, ACCOUNTS.lab);
     await findOnBoard(page, "worklist-row", name);

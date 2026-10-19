@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.modules.clinical.schemas import VitalsCreate
 from app.modules.ipd.models import (
     AdmissionRequestStatus,
     AdmissionStatus,
@@ -17,6 +19,8 @@ from app.modules.ipd.models import (
     DoseStatus,
     DrugSchedule,
     MedicationRoute,
+    MedicineForm,
+    MedicineIssueStatus,
     SummaryStatus,
 )
 
@@ -40,6 +44,12 @@ __all__ = [
     "MedicationOrderCreate",
     "MedicationOrderRead",
     "MedicationStop",
+    "MedicineIssueCreate",
+    "MedicineIssueRead",
+    "MedicineIssueReverse",
+    "MedicineItemCreate",
+    "MedicineItemRead",
+    "MedicineItemUpdate",
     "OccupancyStats",
     "OutOfServiceRequest",
     "ReserveRequest",
@@ -53,6 +63,9 @@ __all__ = [
 ]
 
 _TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+# Rupees and paise, never a float — the same shape as billing's `Money`.
+Price = Annotated[Decimal, Field(ge=0, max_digits=12, decimal_places=2)]
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +230,14 @@ class AdmissionRequestCancel(BaseModel):
 
 
 class AdmitFromRequest(BaseModel):
-    """`AdmissionCreate` without the visit — the request already names it."""
+    """`AdmissionCreate` without the visit — the request already names it.
+
+    `vitals` are the admission desk's set, taken at the counter before the
+    patient goes up. Recorded on the stay's visit in the same transaction as
+    the admission, so a stay never starts with vitals that failed to save.
+    Optional, like every vitals field: a desk that could not measure something
+    leaves it out rather than typing a zero.
+    """
 
     bed_id: uuid.UUID
     attending_doctor_id: uuid.UUID | None = None
@@ -228,6 +248,7 @@ class AdmitFromRequest(BaseModel):
     attendant_name: Annotated[str | None, Field(max_length=200)] = None
     attendant_phone: Annotated[str | None, Field(max_length=15)] = None
     attendant_relation: Annotated[str | None, Field(max_length=50)] = None
+    vitals: VitalsCreate | None = None
 
 
 class AdmissionRequestRead(BaseModel):
@@ -391,6 +412,87 @@ class AdmissionRead(BaseModel):
 # ---------------------------------------------------------------------------
 # The medication chart
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The medicine list
+# ---------------------------------------------------------------------------
+class MedicineItemCreate(BaseModel):
+    """A preset for the medicine list: what it is, how it is given, what it costs.
+
+    Only the name, the form, the unit and the price are required. The price is
+    required because an item on this list exists to be charged for; one with
+    no price would charge the patient nothing and look as if it worked.
+    """
+
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+    form: MedicineForm
+    dose: Annotated[str | None, Field(max_length=60)] = None
+    route: MedicationRoute | None = None
+    unit: Annotated[str, Field(min_length=1, max_length=24)]
+    drug_schedule: DrugSchedule = DrugSchedule.NONE
+    price: Price
+
+
+class MedicineItemUpdate(BaseModel):
+    """Every field optional; `price` changes the default rate card's price."""
+
+    name: Annotated[str | None, Field(min_length=1, max_length=200)] = None
+    form: MedicineForm | None = None
+    dose: Annotated[str | None, Field(max_length=60)] = None
+    route: MedicationRoute | None = None
+    unit: Annotated[str | None, Field(min_length=1, max_length=24)] = None
+    drug_schedule: DrugSchedule | None = None
+    price: Price | None = None
+    is_active: bool | None = None
+
+
+class MedicineItemRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    name: str
+    form: MedicineForm
+    dose: str | None
+    route: MedicationRoute | None
+    unit: str
+    drug_schedule: DrugSchedule
+    is_active: bool
+    # From billing's default rate card, attached by the router. None means the
+    # item has no price there — shown as "not priced", never as zero.
+    price: Decimal | None = None
+
+
+class MedicineIssueCreate(BaseModel):
+    medicine_item_id: uuid.UUID
+    quantity: Annotated[int, Field(ge=1, le=999)] = 1
+    note: Annotated[str | None, Field(max_length=255)] = None
+
+
+class MedicineIssueReverse(BaseModel):
+    reason: Annotated[str, Field(min_length=1, max_length=255)]
+
+
+class MedicineIssueRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    admission_id: uuid.UUID
+    medicine_item_id: uuid.UUID
+    item_code: str
+    item_name: str
+    unit: str
+    quantity: int
+    note: str | None
+    status: MedicineIssueStatus
+    issued_at: datetime
+    issued_by_name: str | None
+    reversed_at: datetime | None
+    reversal_reason: str | None
+
+
+# ---------------------------------------------------------------------------
+# The medication chart
+# ---------------------------------------------------------------------------
 class MedicationOrderCreate(BaseModel):
     drug_name: Annotated[str, Field(min_length=1, max_length=200)]
     dose: Annotated[str, Field(min_length=1, max_length=60)]
@@ -404,6 +506,12 @@ class MedicationOrderCreate(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     instructions: Annotated[str | None, Field(max_length=500)] = None
+    # Picked from the medicine list: every dose given is then billed as
+    # `units_per_dose` of that item. Left out, the drug is charted but not billed.
+    medicine_item_id: uuid.UUID | None = None
+    units_per_dose: Annotated[Decimal, Field(gt=0, le=100, max_digits=9, decimal_places=2)] = (
+        Decimal("1")
+    )
 
     @model_validator(mode="after")
     def _schedule_must_be_chartable(self) -> Self:
@@ -449,6 +557,14 @@ class MedicationOrderRead(BaseModel):
     is_active: bool
     stopped_at: datetime | None
     stop_reason: str | None
+    medicine_item_id: uuid.UUID | None = None
+    item_code: str | None = None
+    units_per_dose: Decimal = Decimal("1")
+    # What one unit costs and what the unit is, attached by the router from the
+    # medicine list, so the chart can say "₹85 a vial, 1 vial a dose" beside
+    # the drug. Both None for a drug that is not billed.
+    unit_price: Decimal | None = None
+    unit: str | None = None
 
 
 class DoseRecord(BaseModel):

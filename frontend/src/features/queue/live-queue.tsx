@@ -7,7 +7,6 @@ import { Activity, Users } from "lucide-react";
 
 import { QueueStatusChip } from "@/components/status-chip";
 import { Button } from "@/components/ui/button";
-import { LinkButton } from "@/components/ui/link-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { VitalsDialog } from "@/features/vitals/vitals-dialog";
 import { api } from "@/lib/api/client";
@@ -33,13 +32,10 @@ import type { QueueBoardEntry } from "@/types/api";
  */
 export function LiveQueue({
   mine = false,
-  showConsultLink = false,
   canRecordVitals = false,
 }: {
   /** Use `/queue/mine` — the signed-in doctor's own list. */
   mine?: boolean;
-  /** Render a link into the consultation screen on each row. */
-  showConsultLink?: boolean;
   /** Offer the nurse's one-click vitals action on each row (CLAUDE.md §7b). */
   canRecordVitals?: boolean;
 }) {
@@ -105,7 +101,6 @@ export function LiveQueue({
             <QueueRow
               key={entry.id}
               entry={entry}
-              showConsultLink={showConsultLink}
               canRecordVitals={canRecordVitals}
             />
           ))}
@@ -117,11 +112,9 @@ export function LiveQueue({
 
 function QueueRow({
   entry,
-  showConsultLink,
   canRecordVitals,
 }: {
   entry: QueueBoardEntry;
-  showConsultLink: boolean;
   canRecordVitals: boolean;
 }) {
   const t = useTranslations("queue");
@@ -191,11 +184,6 @@ function QueueRow({
             </>
           ) : null}
 
-          {showConsultLink && entry.encounter_id ? (
-            <LinkButton size="sm" className="h-tap" href={`/consultation/${entry.encounter_id}`}>
-              {entry.status === "IN_CONSULTATION" ? t("resume") : t("startConsultation")}
-            </LinkButton>
-          ) : null}
         </div>
       </td>
     </tr>

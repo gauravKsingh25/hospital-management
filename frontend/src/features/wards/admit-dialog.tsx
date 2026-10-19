@@ -1,9 +1,11 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
+import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -18,13 +20,21 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  emptyVitals,
+  hasAnyVital,
+  toVitalsPayload,
+  vitalsSchema,
+  type VitalsForm,
+} from "@/features/vitals/schema";
+import { VitalsFields } from "@/features/vitals/vitals-dialog";
 import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
 import type { Admission, BoardWard } from "@/types/api";
 
 /**
- * Admitting a patient from the consultation screen.
+ * Admitting a patient: picking the bed, and the paperwork that goes with it.
  *
  * Posts to `/ipd/admissions`, not to the encounter's own `admit` transition.
  * The two are not interchangeable: the IPD endpoint takes the bed *and* moves
@@ -43,8 +53,9 @@ import type { Admission, BoardWard } from "@/types/api";
  * an expected length of stay is a form somebody works around.
  */
 /**
- * What is being admitted: a visit (the doctor's consultation screen), or a
- * patient the OPD sent to the admission desk. The desk's route resolves the
+ * What is being admitted: a visit, or a patient the OPD sent to the
+ * admission desk. The desk also takes the patient's vitals here, at the
+ * counter, before they go up — sent with the admission and saved with it. The desk's route resolves the
  * visit itself — including opening a new IPD visit when the OPD one has
  * already closed — so the dialog never has to know which case it is in.
  */
@@ -74,6 +85,17 @@ export function AdmitDialog({
   const [attendantName, setAttendantName] = useState("");
   const [attendantPhone, setAttendantPhone] = useState("");
 
+  // The desk's vitals. Every field optional, validated inline like the
+  // queue's vitals dialog — they are the same fields (`VitalsFields`).
+  const takesVitals = Boolean(requestId);
+  const vitalsForm = useForm<VitalsForm>({
+    resolver: zodResolver(vitalsSchema),
+    mode: "onBlur",
+    defaultValues: emptyVitals,
+  });
+  const vitals = useWatch({ control: vitalsForm.control, defaultValue: emptyVitals }) as VitalsForm;
+  const bothOrNeitherBp = (vitals.systolic_bp.trim() === "") === (vitals.diastolic_bp.trim() === "");
+
   const board = useQuery({
     queryKey: ["ipd", "board"],
     queryFn: ({ signal }) => api.get<BoardWard[]>("/ipd/wards/board", { signal }),
@@ -83,7 +105,7 @@ export function AdmitDialog({
   });
 
   const admit = useMutation({
-    mutationFn: () => {
+    mutationFn: (taken: VitalsForm | null) => {
       const details = {
         bed_id: bedId,
         provisional_diagnosis: diagnosis.trim() || null,
@@ -91,7 +113,10 @@ export function AdmitDialog({
         attendant_phone: attendantPhone.trim() || null,
       };
       return requestId
-        ? api.post<Admission>(`/ipd/admission-requests/${requestId}/admit`, details)
+        ? api.post<Admission>(`/ipd/admission-requests/${requestId}/admit`, {
+            ...details,
+            vitals: taken && hasAnyVital(taken) ? toVitalsPayload(taken) : null,
+          })
         : api.post<Admission>("/ipd/admissions", { encounter_id: encounterId, ...details });
     },
     onSuccess: (admission) => {
@@ -116,6 +141,25 @@ export function AdmitDialog({
         </DialogHeader>
 
         <div className="max-h-[60vh] space-y-4 overflow-y-auto text-left">
+          {takesVitals ? (
+            <fieldset className="space-y-2" data-testid="admit-vitals">
+              <legend className="text-sm font-medium">
+                {t("vitalsAtAdmission")}{" "}
+                <span className="text-muted-foreground font-normal">({common("optional")})</span>
+              </legend>
+              <VitalsFields
+                form={vitalsForm}
+                idPrefix="admit-vitals"
+                className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+              />
+              {!bothOrNeitherBp ? (
+                <p role="alert" className="text-caution-foreground text-sm">
+                  {t("bloodPressurePair")}
+                </p>
+              ) : null}
+            </fieldset>
+          ) : null}
+
           <fieldset className="space-y-3">
             <legend className="text-sm font-medium">{t("chooseBed")}</legend>
 
@@ -220,8 +264,13 @@ export function AdmitDialog({
           </Button>
           <Button
             className="h-tap"
-            disabled={!bedId || admit.isPending}
-            onClick={() => admit.mutate()}
+            disabled={!bedId || admit.isPending || (takesVitals && !bothOrNeitherBp)}
+            onClick={() => {
+              if (!takesVitals) return admit.mutate(null);
+              // Validates the vitals first; an out-of-range reading is shown
+              // under its own input and nothing is sent.
+              void vitalsForm.handleSubmit((taken) => admit.mutate(taken))();
+            }}
           >
             {t("admit")}
           </Button>

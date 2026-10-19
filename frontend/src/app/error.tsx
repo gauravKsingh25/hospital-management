@@ -26,6 +26,7 @@ export default function GlobalError({
   reset: () => void;
 }) {
   const t = useTranslations("errors");
+  const common = useTranslations("common");
 
   useEffect(() => {
     // The digest correlates this screen with the server log entry, which is
@@ -44,8 +45,9 @@ export default function GlobalError({
           <p className="text-muted-foreground mt-1 font-mono text-xs">{error.digest}</p>
         ) : null}
       </div>
+      {/* Labelled "Try again", not "Go home": `reset()` retries this segment. */}
       <Button onClick={reset} className="h-tap">
-        {t("goHome")}
+        {common("retry")}
       </Button>
     </div>
   );
