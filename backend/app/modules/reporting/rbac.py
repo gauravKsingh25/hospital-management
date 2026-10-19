@@ -70,6 +70,7 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     # The counter reconciles its own day.
     Roles.CASHIER: (ReportingPermissions.OPERATIONAL, ReportingPermissions.REVENUE),
     Roles.BILLING_STAFF: (ReportingPermissions.OPERATIONAL, ReportingPermissions.REVENUE),
+    Roles.ACCOUNTANT: (ReportingPermissions.OPERATIONAL, ReportingPermissions.REVENUE),
     # Records officers own follow-up compliance and outcome statistics.
     Roles.RECORDS_OFFICER: (ReportingPermissions.OPERATIONAL, ReportingPermissions.CLINICAL),
 }

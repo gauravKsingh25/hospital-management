@@ -76,6 +76,7 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.RADIOLOGIST: (PatientPermissions.READ,),
     Roles.PHARMACIST: (PatientPermissions.READ,),
     Roles.CASHIER: (PatientPermissions.READ, PatientPermissions.READ_IDENTIFIERS),
+    Roles.ACCOUNTANT: (PatientPermissions.READ, PatientPermissions.READ_IDENTIFIERS),
     Roles.BILLING_STAFF: (
         PatientPermissions.READ,
         PatientPermissions.READ_IDENTIFIERS,

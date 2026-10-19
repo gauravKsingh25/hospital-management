@@ -217,6 +217,12 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
         IpdPermissions.ADMISSION_READ,
         IpdPermissions.MEDICINE_READ,
     ),
+    Roles.ACCOUNTANT: (
+        IpdPermissions.WARD_READ,
+        IpdPermissions.BED_READ,
+        IpdPermissions.ADMISSION_READ,
+        IpdPermissions.MEDICINE_READ,
+    ),
     # The pharmacy reads the chart to dispense against it, and does not sign for
     # a dose given at the bedside. It keeps the medicine list — the formulary is
     # the pharmacy's in any hospital that has one — and issues from it.

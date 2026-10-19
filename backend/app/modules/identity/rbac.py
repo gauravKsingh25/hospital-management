@@ -114,6 +114,9 @@ class Roles:
     # the bed, the paperwork. Added for the reception → admission hand-off; a
     # hospital where one person does both simply gives them both roles.
     ADMISSION_DESK = "ADMISSION_DESK"
+    # Owns the IPD bill: reviews, corrects and finalises it after discharge.
+    # Takes no money — that stays at the counter.
+    ACCOUNTANT = "ACCOUNTANT"
     AUDITOR = "AUDITOR"
 
 
@@ -143,6 +146,11 @@ SYSTEM_ROLES: Final[tuple[RoleDef, ...]] = (
         Roles.ADMISSION_DESK,
         "Admission Desk",
         "Admits patients sent from OPD: bed, admission paperwork.",
+    ),
+    RoleDef(
+        Roles.ACCOUNTANT,
+        "Accountant",
+        "Reviews, corrects and finalises IPD bills; sees all billing.",
     ),
     RoleDef(Roles.AUDITOR, "Auditor", "Read-only access to audit logs and reports."),
 )
@@ -187,4 +195,5 @@ SYSTEM_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.BILLING_STAFF: _STAFF_BASELINE,
     Roles.RECORDS_OFFICER: _STAFF_BASELINE,
     Roles.ADMISSION_DESK: _STAFF_BASELINE,
+    Roles.ACCOUNTANT: _STAFF_BASELINE,
 }

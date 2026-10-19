@@ -19,6 +19,7 @@
  * billing, clinical, diagnostics, identity, ipd, notifications, patients, reporting, scheduling.
  */
 export const PERMISSIONS = [
+  "accounts:read",
   "admission:cancel",
   "admission:create",
   "admission:desk",
@@ -68,6 +69,8 @@ export const PERMISSIONS = [
   "invoice:issue",
   "invoice:read",
   "invoice:write_off",
+  "ipd_bill:edit",
+  "ipd_bill:finalise",
   "medication:administer",
   "medication:prescribe",
   "medication:read",
@@ -141,6 +144,7 @@ export type Permission = (typeof PERMISSIONS)[number];
 
 /** Seed roles from CLAUDE.md §8, plus those added since. */
 export const ROLES = [
+  "ACCOUNTANT",
   "ADMISSION_DESK",
   "AUDITOR",
   "BILLING_STAFF",
@@ -169,6 +173,32 @@ export type Role = (typeof ROLES)[number];
  * holds. Never branch on this to decide whether an action is allowed.
  */
 export const DECLARED_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
+  "ACCOUNTANT": [
+    "accounts:read",
+    "admission:read",
+    "appointment:read",
+    "bed:read",
+    "charge:read",
+    "claim:read",
+    "department:read",
+    "doctor:read",
+    "encounter:read",
+    "hospital:read",
+    "invoice:read",
+    "ipd_bill:edit",
+    "ipd_bill:finalise",
+    "medicine:read",
+    "order:read",
+    "patient:read",
+    "patient:read_identifiers",
+    "payment:read",
+    "queue:read",
+    "ratecard:read",
+    "report:operational",
+    "report:revenue",
+    "service:read",
+    "ward:read",
+  ],
   "ADMISSION_DESK": [
     "admission:create",
     "admission:desk",
@@ -353,6 +383,7 @@ export const DECLARED_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = 
     "ward:read",
   ],
   "HOSPITAL_ADMIN": [
+    "accounts:read",
     "admission:cancel",
     "admission:create",
     "admission:desk",
@@ -400,6 +431,8 @@ export const DECLARED_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = 
     "invoice:issue",
     "invoice:read",
     "invoice:write_off",
+    "ipd_bill:edit",
+    "ipd_bill:finalise",
     "medication:administer",
     "medication:prescribe",
     "medication:read",
@@ -586,6 +619,7 @@ export const DECLARED_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = 
     "service:read",
   ],
   "PLATFORM_ADMIN": [
+    "accounts:read",
     "admission:cancel",
     "admission:create",
     "admission:desk",
@@ -635,6 +669,8 @@ export const DECLARED_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = 
     "invoice:issue",
     "invoice:read",
     "invoice:write_off",
+    "ipd_bill:edit",
+    "ipd_bill:finalise",
     "medication:administer",
     "medication:prescribe",
     "medication:read",

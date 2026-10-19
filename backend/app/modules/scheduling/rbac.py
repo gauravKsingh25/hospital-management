@@ -84,6 +84,7 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.NURSE: (*_READ_ONLY, SchedulingPermissions.QUEUE_MANAGE),
     Roles.CASHIER: _READ_ONLY,
     Roles.BILLING_STAFF: _READ_ONLY,
+    Roles.ACCOUNTANT: _READ_ONLY,
     Roles.RECORDS_OFFICER: _READ_ONLY,
     # Which doctor sent them, and from which department.
     Roles.ADMISSION_DESK: (
