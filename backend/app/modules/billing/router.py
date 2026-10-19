@@ -21,6 +21,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, status
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
+from app.core.exceptions import PermissionDeniedError
 from app.core.pagination import MAX_PAGE_SIZE, Page, PageParams, page_params
 from app.modules.billing import service
 from app.modules.billing.models import (
@@ -96,6 +97,31 @@ CanRecordPayment = Annotated[AuthContext, Depends(require(BillingPermissions.PAY
 CanReversePayment = Annotated[AuthContext, Depends(require(BillingPermissions.PAYMENT_REVERSE))]
 CanReadClaim = Annotated[AuthContext, Depends(require(BillingPermissions.CLAIM_READ))]
 CanManageClaim = Annotated[AuthContext, Depends(require(BillingPermissions.CLAIM_MANAGE))]
+
+
+async def _require_ipd_power(
+    session: SessionDep,
+    encounter_id: uuid.UUID,
+    context: AuthContext,
+    permission: str,
+    *,
+    hospital_id: uuid.UUID,
+) -> None:
+    """On an IPD stay, the manual routes also need the accountant's power.
+
+    The bill of a stay goes to the tax filing and has one owner. Whoever else
+    holds `charge:discount` or `invoice:issue` keeps it for OPD visits; on a
+    stay they are refused, whatever else they hold. Checked by permission
+    first, so the accountant and the admin never pay for the stay lookup.
+    """
+    if context.has_permission(permission):
+        return
+    if await service.stay_for(session, encounter_id, hospital_id=hospital_id) is not None:
+        raise PermissionDeniedError(
+            "This patient is admitted. Only the accounts office may change the IPD bill.",
+            code="ipd_bill_accounts_only",
+            details={"required": [permission]},
+        )
 
 
 async def _render(session: SessionDep, invoice: Invoice, *, hospital_id: uuid.UUID) -> InvoiceRead:
@@ -356,6 +382,13 @@ async def add_charge(
 ) -> ChargeRead:
     """For what the event bus cannot see — a dressing, a consumable, an
     ambulance. Everything else is captured automatically."""
+    await _require_ipd_power(
+        session,
+        payload.encounter_id,
+        context,
+        BillingPermissions.IPD_BILL_EDIT,
+        hospital_id=tenant_id,
+    )
     charge = await service.add_charge(session, payload, hospital_id=tenant_id, actor=context.user)
     await session.commit()
     return ChargeRead.model_validate(charge)
@@ -373,6 +406,13 @@ async def discount_charge(
     tenant_id: TenantId,
 ) -> ChargeRead:
     charge = await service.get_charge(session, charge_id, hospital_id=tenant_id)
+    await _require_ipd_power(
+        session,
+        charge.encounter_id,
+        context,
+        BillingPermissions.IPD_BILL_EDIT,
+        hospital_id=tenant_id,
+    )
     updated = await service.discount_charge(
         session, charge, amount=payload.amount, reason=payload.reason, actor=context.user
     )
@@ -403,6 +443,13 @@ async def waive_charge(
     the amount, because this is the lever somebody would pull to make money
     disappear."""
     charge = await service.get_charge(session, charge_id, hospital_id=tenant_id)
+    await _require_ipd_power(
+        session,
+        charge.encounter_id,
+        context,
+        BillingPermissions.IPD_BILL_EDIT,
+        hospital_id=tenant_id,
+    )
     updated = await service.waive_charge(session, charge, reason=payload.reason, actor=context.user)
     await identity_service.record_audit(
         session,
@@ -676,6 +723,13 @@ async def issue_invoice(
     """One-way door: after this the lines are frozen and the patient has a
     printout. A correction is a credit note, not an edit."""
     invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id)
+    await _require_ipd_power(
+        session,
+        invoice.encounter_id,
+        context,
+        BillingPermissions.IPD_BILL_FINALISE,
+        hospital_id=tenant_id,
+    )
     issued = await service.issue_invoice(
         session,
         invoice,
@@ -714,6 +768,13 @@ async def cancel_invoice(
     """Releases the charges back onto the running bill — the care still happened
     and still belongs on whatever invoice replaces this one."""
     invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id)
+    await _require_ipd_power(
+        session,
+        invoice.encounter_id,
+        context,
+        BillingPermissions.IPD_BILL_FINALISE,
+        hospital_id=tenant_id,
+    )
     cancelled = await service.cancel_invoice(
         session, invoice, reason=payload.reason, actor=context.user, hospital_id=tenant_id
     )
@@ -745,6 +806,13 @@ async def write_off_invoice(
     """Bad debt. Terminal, and it releases the visit's closure gate — which is
     how an absconded patient's encounter stops sitting open forever."""
     invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id)
+    await _require_ipd_power(
+        session,
+        invoice.encounter_id,
+        context,
+        BillingPermissions.IPD_BILL_FINALISE,
+        hospital_id=tenant_id,
+    )
     written_off = await service.write_off_invoice(
         session, invoice, reason=payload.reason, actor=context.user, hospital_id=tenant_id
     )

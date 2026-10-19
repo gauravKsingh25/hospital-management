@@ -70,6 +70,7 @@ from app.core.ids import new_id
 from app.core.models import utc_now
 from app.core.pagination import MAX_PAGE_SIZE, PageParams
 from app.modules.billing import service as billing_service
+from app.modules.billing.stays import StayInfo
 from app.modules.clinical import service as clinical_service
 from app.modules.clinical.models import Encounter, EncounterStatus, EncounterType
 from app.modules.diagnostics import service as diagnostics_service
@@ -1355,6 +1356,96 @@ async def get_admission_by_encounter(
         .scalars()
         .first()
     )
+
+
+async def stay_info_for(
+    session: AsyncSession, encounter_ids: Collection[uuid.UUID], hospital_id: uuid.UUID
+) -> dict[uuid.UUID, StayInfo]:
+    """`ipd`'s answer to billing's "which of these visits are stays?".
+
+    Registered as billing's stay provider (`ipd/handlers.py`), because billing
+    cannot import this module. Four queries for any number of visits — the
+    admissions, their latest bed, the beds' wards, the doctors — so an accounts
+    page of fifty bills costs the same as one.
+
+    The bed is the *latest* assignment, released or not: a discharged patient's
+    bill still names the bed they were in.
+    """
+    if not encounter_ids:
+        return {}
+    admissions = (
+        (
+            await session.execute(
+                select(Admission).where(
+                    col(Admission.encounter_id).in_(set(encounter_ids)),
+                    col(Admission.hospital_id) == hospital_id,
+                    col(Admission.status) != AdmissionStatus.CANCELLED,
+                    col(Admission.deleted_at).is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not admissions:
+        return {}
+
+    assignments = (
+        (
+            await session.execute(
+                select(BedAssignment)
+                .where(
+                    col(BedAssignment.admission_id).in_({row.id for row in admissions}),
+                    col(BedAssignment.hospital_id) == hospital_id,
+                    col(BedAssignment.deleted_at).is_(None),
+                )
+                .order_by(col(BedAssignment.assigned_at))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Ordered oldest first, so the last write per admission is its latest bed.
+    latest_bed = {row.admission_id: row.bed_id for row in assignments}
+    beds = (
+        (
+            await session.execute(
+                select(Bed).where(
+                    col(Bed.id).in_(set(latest_bed.values())), col(Bed.hospital_id) == hospital_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if latest_bed
+        else []
+    )
+    beds_by_id = {bed.id: bed for bed in beds}
+    wards = await get_wards_by_ids(session, {bed.ward_id for bed in beds}, hospital_id=hospital_id)
+    doctors = await scheduling_service.get_doctors_by_ids(
+        session,
+        {row.attending_doctor_id for row in admissions if row.attending_doctor_id},
+        hospital_id=hospital_id,
+    )
+
+    found: dict[uuid.UUID, StayInfo] = {}
+    for admission in admissions:
+        bed_id = latest_bed.get(admission.id)
+        bed = beds_by_id.get(bed_id) if bed_id else None
+        ward = wards.get(bed.ward_id) if bed else None
+        doctor = (
+            doctors.get(admission.attending_doctor_id) if admission.attending_doctor_id else None
+        )
+        found[admission.encounter_id] = StayInfo(
+            admission_id=admission.id,
+            admission_number=admission.admission_number,
+            status=admission.status.value,
+            admitted_at=admission.admitted_at,
+            discharged_at=admission.discharged_at,
+            ward_bed=(f"{ward.name}, {bed.code}" if ward else bed.code) if bed else None,
+            attending_doctor=doctor.display_name if doctor else None,
+        )
+    return found
 
 
 async def list_admissions(
