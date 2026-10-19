@@ -1,0 +1,79 @@
+import { expect, test, type Page } from "@playwright/test";
+
+import {
+  ACCOUNTS,
+  deskAdmits,
+  openPatientBills,
+  registerAndQueue,
+  releaseTrackedBeds,
+  sentForAdmission,
+  signIn,
+  signOut,
+} from "./support";
+
+/**
+ * The printed bill: an A4 page with the hospital's letterhead, the GST
+ * columns, the total in words and the receipts — the page "Download PDF" and
+ * "Print" both open. Browsers save it as a PDF; no PDF library is involved.
+ */
+releaseTrackedBeds();
+
+async function paidOpdBill(page: Page): Promise<string> {
+  const name = await registerAndQueue(page);
+  await signIn(page, ACCOUNTS.reception);
+  await page.goto("/reception");
+  const row = page.getByTestId("queue-row").filter({ hasText: name });
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  await row.scrollIntoViewIfNeeded();
+  const paid = row.getByTestId("mark-paid");
+  await paid.click();
+  await paid.click();
+  await expect(row.getByTestId("paid-chip")).toContainText("500");
+  await signOut(page);
+  return name;
+}
+
+test("the printed bill carries the letterhead, GST columns and amount in words", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const name = await paidOpdBill(page);
+
+  await signIn(page, ACCOUNTS.accountant);
+  await page.goto("/billing");
+  const bill = page.getByTestId("bill-row").filter({ hasText: name });
+  await expect(bill).toBeVisible();
+  const number = (await bill.locator("td").nth(1).innerText()).trim();
+  await bill.getByRole("link", { name: `Open bill ${number}` }).click();
+
+  await expect(page).toHaveURL(/\/bills\/[0-9a-f-]+$/);
+  const sheet = page.getByTestId("printed-bill");
+  await expect(sheet.getByTestId("letterhead")).toBeVisible();
+  await expect(sheet.getByRole("heading", { name: "BILL OF SUPPLY" })).toBeVisible();
+  await expect(sheet).toContainText(number);
+  await expect(sheet).toContainText(name);
+  for (const column of ["SAC/HSN", "Taxable", "GST %", "CGST", "SGST"]) {
+    await expect(sheet.getByRole("columnheader", { name: column, exact: true })).toBeVisible();
+  }
+  await expect(sheet).toContainText("Rupees Five Hundred Only");
+  await expect(sheet.getByTestId("receipts")).toContainText("Cash");
+  // No app chrome on paper.
+  await expect(page.getByRole("navigation")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Print" })).toBeVisible();
+});
+
+test("a stay's running bill prints as interim", async ({ page }) => {
+  test.setTimeout(180_000);
+  const name = await sentForAdmission(page);
+  await deskAdmits(page, name);
+  await signOut(page);
+  await signIn(page, ACCOUNTS.accountant);
+  await openPatientBills(page, name);
+
+  await page.getByRole("link", { name: "Print running bill" }).click();
+
+  await expect(page).toHaveURL(/\/bills\/running\/[0-9a-f-]+\?print=1$/);
+  await expect(
+    page.getByTestId("printed-bill").getByRole("heading", { name: "INTERIM — NOT A FINAL BILL" }),
+  ).toBeVisible();
+});

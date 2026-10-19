@@ -12,7 +12,8 @@
     "codegen:check": "node scripts/codegen.mjs --check",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "verify": "npm run codegen:check && npm run lint && npm run typecheck && npm run build"
+    "verify": "npm run codegen:check && npm run lint && npm run typecheck && npm run test:unit && npm run build",
+    "test:unit": "node --test \"src/**/*.test.mjs\""
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
