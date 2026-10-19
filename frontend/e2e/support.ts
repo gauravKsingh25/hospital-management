@@ -259,7 +259,20 @@ async function releaseBed(page: Page, stay: OpenStay): Promise<void> {
   await page.context().clearCookies();
   await signIn(page, ACCOUNTS.admin);
 
-  await page.goto(stay.url);
+  await dischargeOpenStay(page, stay.url);
+
+  await page.goto("/wards");
+  const tile = bedTile(page, stay.bed);
+  await expect(tile).toBeVisible({ timeout: 45_000 });
+
+  const cleaned = tile.getByRole("button", { name: "Cleaned" });
+  if ((await cleaned.count()) > 0) await cleaned.click();
+  await expect(tile).toHaveAttribute("data-status", "AVAILABLE", { timeout: 45_000 });
+}
+
+/** Discharge a stay as the signed-in user, if it is still open. */
+async function dischargeOpenStay(page: Page, url: string): Promise<void> {
+  await page.goto(url);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible({ timeout: 45_000 });
 
   // Absent once the patient is out: the whole actions section is gated on the
@@ -273,14 +286,32 @@ async function releaseBed(page: Page, stay: OpenStay): Promise<void> {
     await dialog.getByRole("button", { name: "Discharge", exact: true }).click();
     await expect(page.getByText(/Patient discharged/)).toBeVisible({ timeout: 45_000 });
   }
+}
 
-  await page.goto("/wards");
-  const tile = bedTile(page, stay.bed);
-  await expect(tile).toBeVisible({ timeout: 45_000 });
+/**
+ * Discharge a stay the way the ward does, as the hospital admin. Ends signed
+ * out, so the next role signs in to a clean session.
+ */
+export async function dischargeStay(page: Page, url: string): Promise<void> {
+  await page.context().clearCookies();
+  await signIn(page, ACCOUNTS.admin);
+  await dischargeOpenStay(page, url);
+  await page.context().clearCookies();
+}
 
-  const cleaned = tile.getByRole("button", { name: "Cleaned" });
-  if ((await cleaned.count()) > 0) await cleaned.click();
-  await expect(tile).toHaveAttribute("data-status", "AVAILABLE", { timeout: 45_000 });
+/**
+ * The accountant's way into a patient's bills: Billing → Accounts → Patients,
+ * searched by name. Ends on the patient's bill page.
+ */
+export async function openPatientBills(page: Page, name: string): Promise<void> {
+  await page.goto("/billing");
+  await page.getByRole("tab", { name: "Patients" }).click();
+  await page.getByRole("searchbox", { name: "Search accounts" }).fill(name);
+  const row = page.getByTestId("patient-row").filter({ hasText: name });
+  await expect(row).toHaveCount(1, { timeout: 15_000 });
+  await row.getByRole("link", { name }).click();
+  await expect(page).toHaveURL(/\/billing\/patients\/[0-9a-f-]+$/);
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
 }
 
 /**

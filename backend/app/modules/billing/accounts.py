@@ -580,10 +580,20 @@ async def bill_history(
     unbilled = await _unbilled_by_encounter(
         session, hospital_id=hospital_id, patient_ids=[patient_id]
     )
-    encounter_ids = {row.encounter_id for row in invoices} | {row[0] for row in unbilled}
-    encounters = await clinical_service.get_encounters_by_ids(
-        session, encounter_ids, hospital_id=hospital_id
+    # Every visit of the patient, so a stay admitted a minute ago — nothing
+    # charged on it yet — is still listed: it is a bill the accountant will make.
+    visits_page, _ = await clinical_service.list_encounters(
+        session, PageParams(limit=MAX_PAGE_SIZE), hospital_id=hospital_id, patient_id=patient_id
     )
+    encounters = {encounter.id: encounter for encounter in visits_page}
+    encounter_ids = (
+        {row.encounter_id for row in invoices} | {row[0] for row in unbilled} | set(encounters)
+    )
+    missing = encounter_ids - set(encounters)
+    if missing:
+        encounters.update(
+            await clinical_service.get_encounters_by_ids(session, missing, hospital_id=hospital_id)
+        )
     stays = await stays_for(session, encounter_ids, hospital_id=hospital_id)
     doctors = await scheduling_service.get_doctors_by_ids(
         session,
@@ -600,6 +610,8 @@ async def bill_history(
         kind = "IPD" if _is_ipd(stays.get(encounter_id), captured_at) else "OPD"
         pending[(encounter_id, kind)] += amount
         grouped.setdefault((encounter_id, kind), [])
+    for encounter_id in stays:
+        grouped.setdefault((encounter_id, "IPD"), [])
 
     visits: list[VisitBills] = []
     for (encounter_id, kind), bills in grouped.items():

@@ -302,3 +302,15 @@ async def test_receptionist_cannot_open_the_accounts_dashboard(
         assert response.status_code == 403, (path, response.text)
     history = await api.get(f"{PATIENTS}/{stay.patient.id}/history", headers=auth(token))
     assert history.status_code == 403
+
+
+async def test_history_lists_a_stay_that_has_no_charges_yet(
+    api: AsyncClient, stay: support.Stay, accountant: str
+) -> None:
+    """Admitted a minute ago: nothing charged on the stay yet, but it is a
+    visit the accountant will bill, so it is listed — and newest."""
+    body = (await api.get(f"{PATIENTS}/{stay.patient.id}/history", headers=auth(accountant))).json()
+
+    assert [visit["kind"] for visit in body["visits"]] == ["IPD", "OPD"]
+    assert body["visits"][0]["total"] == "0.00"
+    assert body["visits"][0]["status_label"] == "Running"
