@@ -100,14 +100,18 @@ async function handle(request: NextRequest, { params }: RouteParams): Promise<Ne
 
   // The body is forwarded untouched rather than parsed and re-serialised:
   // this proxy has no opinion about payloads, and re-encoding one is a way to
-  // corrupt it. GET and HEAD have no body by definition.
-  const body =
-    request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
+  // corrupt it. As bytes, not text: a logo upload is a PNG, and decoding it as
+  // UTF-8 would mangle it. GET and HEAD have no body by definition.
+  const bytes =
+    request.method === "GET" || request.method === "HEAD"
+      ? undefined
+      : await request.arrayBuffer();
+  const body = bytes && bytes.byteLength > 0 ? bytes : undefined;
 
   const forward = (accessToken: string) =>
     callApiRaw(`/${target}`, {
       method: request.method as "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
-      rawBody: body || undefined,
+      rawBody: body,
       accessToken,
       query: forwardedQuery(request.nextUrl.searchParams),
       headers: {

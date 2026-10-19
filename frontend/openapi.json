@@ -161,6 +161,69 @@
         "title": "AccountBoardEntry",
         "type": "object"
       },
+      "AccountsSummary": {
+        "description": "The totals strip for a period. Outstanding and running are as of now.",
+        "properties": {
+          "billed": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Billed",
+            "type": "string"
+          },
+          "bills_count": {
+            "title": "Bills Count",
+            "type": "integer"
+          },
+          "collected": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Collected",
+            "type": "string"
+          },
+          "collected_by_method": {
+            "additionalProperties": {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            "title": "Collected By Method",
+            "type": "object"
+          },
+          "outstanding": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Outstanding",
+            "type": "string"
+          },
+          "outstanding_patients": {
+            "title": "Outstanding Patients",
+            "type": "integer"
+          },
+          "reversals": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Reversals",
+            "type": "string"
+          },
+          "running_in_wards": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Running In Wards",
+            "type": "string"
+          },
+          "running_patients": {
+            "title": "Running Patients",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collected",
+          "collected_by_method",
+          "bills_count",
+          "billed",
+          "outstanding",
+          "outstanding_patients",
+          "running_in_wards",
+          "running_patients",
+          "reversals"
+        ],
+        "title": "AccountsSummary",
+        "type": "object"
+      },
       "AdhocSend": {
         "description": "A message composed by staff, outside any event trigger.\n\nStill goes through the same dispatcher, and therefore through the same\nsuppression checks. There is deliberately no path that sends a message\nwithout them.",
         "properties": {
@@ -2445,6 +2508,433 @@
           }
         },
         "title": "BedUpdate",
+        "type": "object"
+      },
+      "BillAdd": {
+        "description": "A line the events could not see: from the catalogue, or free text with a price.",
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/ChargeCategory",
+            "default": "OTHER"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 250,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "op": {
+            "const": "add",
+            "title": "Op",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,7}|(?=[\\d.]{1,10}0*$)\\d{0,7}\\.\\d{0,2}0*$)",
+                "type": "string"
+              }
+            ],
+            "default": "1",
+            "title": "Quantity"
+          },
+          "reason": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          },
+          "service_item_code": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Item Code"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price"
+          }
+        },
+        "required": [
+          "op",
+          "reason"
+        ],
+        "title": "BillAdd",
+        "type": "object"
+      },
+      "BillChangesRequest": {
+        "description": "Everything the accountant staged, applied together or not at all.\n\n`expected_version` is the bill's version when the editor loaded it. If the\nstay changed since — another accountant, a night's bed-day — the save is\nrefused and the editor reloads, rather than one person's edits silently\nlanding on a bill they never saw.",
+        "properties": {
+          "expected_version": {
+            "maxLength": 64,
+            "title": "Expected Version",
+            "type": "string"
+          },
+          "ops": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "add": "#/components/schemas/BillAdd",
+                  "discount": "#/components/schemas/BillDiscount",
+                  "edit": "#/components/schemas/BillEdit",
+                  "remove": "#/components/schemas/BillRemove"
+                },
+                "propertyName": "op"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/BillAdd"
+                },
+                {
+                  "$ref": "#/components/schemas/BillEdit"
+                },
+                {
+                  "$ref": "#/components/schemas/BillDiscount"
+                },
+                {
+                  "$ref": "#/components/schemas/BillRemove"
+                }
+              ]
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Ops",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_version",
+          "ops"
+        ],
+        "title": "BillChangesRequest",
+        "type": "object"
+      },
+      "BillDiscount": {
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
+          },
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "op": {
+            "const": "discount",
+            "title": "Op",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op",
+          "charge_id",
+          "amount",
+          "reason"
+        ],
+        "title": "BillDiscount",
+        "type": "object"
+      },
+      "BillEdit": {
+        "properties": {
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 250,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "op": {
+            "const": "edit",
+            "title": "Op",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,7}|(?=[\\d.]{1,10}0*$)\\d{0,7}\\.\\d{0,2}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "reason": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price"
+          }
+        },
+        "required": [
+          "op",
+          "charge_id",
+          "reason"
+        ],
+        "title": "BillEdit",
+        "type": "object"
+      },
+      "BillHistory": {
+        "properties": {
+          "lifetime_billed": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Lifetime Billed",
+            "type": "string"
+          },
+          "lifetime_due": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Lifetime Due",
+            "type": "string"
+          },
+          "lifetime_paid": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Lifetime Paid",
+            "type": "string"
+          },
+          "patient": {
+            "$ref": "#/components/schemas/PatientBrief"
+          },
+          "visits": {
+            "items": {
+              "$ref": "#/components/schemas/VisitBills"
+            },
+            "title": "Visits",
+            "type": "array"
+          }
+        },
+        "required": [
+          "patient",
+          "lifetime_billed",
+          "lifetime_paid",
+          "lifetime_due",
+          "visits"
+        ],
+        "title": "BillHistory",
+        "type": "object"
+      },
+      "BillRemove": {
+        "description": "Waives the line: the care stays on the record, the money does not.",
+        "properties": {
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "op": {
+            "const": "remove",
+            "title": "Op",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op",
+          "charge_id",
+          "reason"
+        ],
+        "title": "BillRemove",
+        "type": "object"
+      },
+      "BillRow": {
+        "properties": {
+          "admission_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission Number"
+          },
+          "amount_paid": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount Paid",
+            "type": "string"
+          },
+          "balance_due": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Balance Due",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "encounter_id": {
+            "format": "uuid",
+            "title": "Encounter Id",
+            "type": "string"
+          },
+          "grand_total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Grand Total",
+            "type": "string"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued At"
+          },
+          "patient_id": {
+            "format": "uuid",
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "patient_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patient Name"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/InvoiceScope"
+          },
+          "status": {
+            "$ref": "#/components/schemas/InvoiceStatus"
+          },
+          "stay_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stay Days"
+          },
+          "uhid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uhid"
+          }
+        },
+        "required": [
+          "invoice_id",
+          "invoice_number",
+          "issued_at",
+          "created_at",
+          "status",
+          "scope",
+          "encounter_id",
+          "patient_id",
+          "grand_total",
+          "amount_paid",
+          "balance_due"
+        ],
+        "title": "BillRow",
         "type": "object"
       },
       "BloodGroup": {
@@ -6797,6 +7287,17 @@
             ],
             "title": "Legal Name"
           },
+          "logo_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Version"
+          },
           "name": {
             "maxLength": 200,
             "minLength": 2,
@@ -7437,6 +7938,9 @@
             "title": "Round Off",
             "type": "string"
           },
+          "scope": {
+            "$ref": "#/components/schemas/InvoiceScope"
+          },
           "settled_at": {
             "anyOf": [
               {
@@ -7513,6 +8017,7 @@
           "patient_id",
           "rate_card_id",
           "payer_type",
+          "scope",
           "status",
           "subtotal",
           "discount_total",
@@ -7542,6 +8047,15 @@
         ],
         "title": "InvoiceRead",
         "type": "object"
+      },
+      "InvoiceScope": {
+        "description": "Which kind of bill this is — the two have different owners.\n\nAn OPD bill is made at the counter and frozen when paid. An IPD bill covers\na stay from the admission on, is corrected by the accountant and issued as\nthe final bill after discharge. A patient admitted from a still-open OPD\nvisit gets one of each on the same visit.",
+        "enum": [
+          "OPD",
+          "IPD"
+        ],
+        "title": "InvoiceScope",
+        "type": "string"
       },
       "InvoiceStatus": {
         "enum": [
@@ -7612,6 +8126,9 @@
           "payer_type": {
             "$ref": "#/components/schemas/PayerType"
           },
+          "scope": {
+            "$ref": "#/components/schemas/InvoiceScope"
+          },
           "settlement_context": {
             "anyOf": [
               {
@@ -7633,6 +8150,7 @@
           "encounter_id",
           "patient_id",
           "status",
+          "scope",
           "payer_type",
           "grand_total",
           "amount_paid",
@@ -7642,6 +8160,157 @@
           "created_at"
         ],
         "title": "InvoiceSummary",
+        "type": "object"
+      },
+      "IpdBill": {
+        "properties": {
+          "can_finalise": {
+            "title": "Can Finalise",
+            "type": "boolean"
+          },
+          "charges": {
+            "items": {
+              "$ref": "#/components/schemas/ChargeRead"
+            },
+            "title": "Charges",
+            "type": "array"
+          },
+          "encounter_id": {
+            "format": "uuid",
+            "title": "Encounter Id",
+            "type": "string"
+          },
+          "final_invoice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InvoiceSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_unpriced_items": {
+            "title": "Has Unpriced Items",
+            "type": "boolean"
+          },
+          "stay": {
+            "$ref": "#/components/schemas/StayRead"
+          },
+          "total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "encounter_id",
+          "version",
+          "stay",
+          "charges",
+          "total",
+          "has_unpriced_items",
+          "final_invoice",
+          "can_finalise"
+        ],
+        "title": "IpdBill",
+        "type": "object"
+      },
+      "Journey": {
+        "properties": {
+          "lines": {
+            "$ref": "#/components/schemas/Page_JourneyLine_"
+          },
+          "totals_by_category": {
+            "additionalProperties": {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            "title": "Totals By Category",
+            "type": "object"
+          }
+        },
+        "required": [
+          "lines",
+          "totals_by_category"
+        ],
+        "title": "Journey",
+        "type": "object"
+      },
+      "JourneyLine": {
+        "description": "One thing given to the patient, as billing recorded it.",
+        "properties": {
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "category": {
+            "$ref": "#/components/schemas/ChargeCategory"
+          },
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "encounter_id": {
+            "format": "uuid",
+            "title": "Encounter Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "OPD",
+              "IPD"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "quantity": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "source_module": {
+            "title": "Source Module",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChargeStatus"
+          },
+          "total_amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Amount",
+            "type": "string"
+          },
+          "unit_price": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Unit Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "charge_id",
+          "captured_at",
+          "encounter_id",
+          "kind",
+          "category",
+          "description",
+          "quantity",
+          "unit_price",
+          "total_amount",
+          "status",
+          "source_module"
+        ],
+        "title": "JourneyLine",
         "type": "object"
       },
       "LamaRecord": {
@@ -7696,6 +8365,19 @@
           "password"
         ],
         "title": "LoginRequest",
+        "type": "object"
+      },
+      "LogoUploaded": {
+        "properties": {
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "LogoUploaded",
         "type": "object"
       },
       "MedicationOrderCreate": {
@@ -10067,6 +10749,45 @@
         "title": "Page[BedRead]",
         "type": "object"
       },
+      "Page_BillRow_": {
+        "properties": {
+          "has_more": {
+            "description": "True when another page follows this one.",
+            "readOnly": true,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BillRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows matching the filter, ignoring paging.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "Page[BillRow]",
+        "type": "object"
+      },
       "Page_CatalogueItemRead_": {
         "properties": {
           "has_more": {
@@ -10457,6 +11178,45 @@
         "title": "Page[InvoiceSummary]",
         "type": "object"
       },
+      "Page_JourneyLine_": {
+        "properties": {
+          "has_more": {
+            "description": "True when another page follows this one.",
+            "readOnly": true,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JourneyLine"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows matching the filter, ignoring paging.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "Page[JourneyLine]",
+        "type": "object"
+      },
       "Page_MedicationOrderRead_": {
         "properties": {
           "has_more": {
@@ -10730,6 +11490,45 @@
         "title": "Page[PatientRead]",
         "type": "object"
       },
+      "Page_PatientRow_": {
+        "properties": {
+          "has_more": {
+            "description": "True when another page follows this one.",
+            "readOnly": true,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PatientRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows matching the filter, ignoring paging.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "Page[PatientRow]",
+        "type": "object"
+      },
       "Page_PatientVisit_": {
         "properties": {
           "has_more": {
@@ -10806,6 +11605,45 @@
           "has_more"
         ],
         "title": "Page[PaymentRead]",
+        "type": "object"
+      },
+      "Page_PaymentRow_": {
+        "properties": {
+          "has_more": {
+            "description": "True when another page follows this one.",
+            "readOnly": true,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows matching the filter, ignoring paging.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "Page[PaymentRow]",
         "type": "object"
       },
       "Page_RateCardRead_": {
@@ -11246,6 +12084,59 @@
           "created_at"
         ],
         "title": "PatientAlertRead",
+        "type": "object"
+      },
+      "PatientBrief": {
+        "properties": {
+          "age_years": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Years"
+          },
+          "gender": {
+            "title": "Gender",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "uhid": {
+            "title": "Uhid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "uhid",
+          "age_years",
+          "gender",
+          "phone"
+        ],
+        "title": "PatientBrief",
         "type": "object"
       },
       "PatientClinicalSummary": {
@@ -12118,6 +13009,74 @@
         "title": "PatientRegister",
         "type": "object"
       },
+      "PatientRow": {
+        "description": "A patient with billing activity. Ordered by last activity — not a ranking.",
+        "properties": {
+          "billed": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Billed",
+            "type": "string"
+          },
+          "due": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Due",
+            "type": "string"
+          },
+          "last_activity_at": {
+            "format": "date-time",
+            "title": "Last Activity At",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "paid": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Paid",
+            "type": "string"
+          },
+          "patient_id": {
+            "format": "uuid",
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "uhid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uhid"
+          },
+          "visits": {
+            "title": "Visits",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "patient_id",
+          "name",
+          "uhid",
+          "last_activity_at",
+          "visits",
+          "billed",
+          "paid",
+          "due"
+        ],
+        "title": "PatientRow",
+        "type": "object"
+      },
       "PatientSort": {
         "description": "Orders the directory can be read in.\n\nNewest registration first is the default because \"the woman who came in\nyesterday\" is the question the directory answers most; by name for a\nprinted list; by UHID for reconciling against paper files.",
         "enum": [
@@ -12847,6 +13806,126 @@
         "title": "PaymentRequest",
         "type": "object"
       },
+      "PaymentRow": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          },
+          "invoice_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Number"
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod"
+          },
+          "patient_id": {
+            "format": "uuid",
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "patient_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patient Name"
+          },
+          "receipt_number": {
+            "title": "Receipt Number",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "received_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received By Name"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "reverses_payment_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverses Payment Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus"
+          },
+          "uhid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uhid"
+          }
+        },
+        "required": [
+          "id",
+          "receipt_number",
+          "invoice_id",
+          "patient_id",
+          "amount",
+          "method",
+          "reference",
+          "status",
+          "received_at",
+          "reverses_payment_id"
+        ],
+        "title": "PaymentRow",
+        "type": "object"
+      },
       "PaymentStatus": {
         "enum": [
           "RECORDED",
@@ -12917,6 +13996,192 @@
           "description"
         ],
         "title": "PermissionRead",
+        "type": "object"
+      },
+      "PrintableBill": {
+        "description": "Everything the printed page needs, in one response.",
+        "properties": {
+          "date": {
+            "format": "date-time",
+            "title": "Date",
+            "type": "string"
+          },
+          "invoice_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Id"
+          },
+          "letterhead": {
+            "additionalProperties": true,
+            "title": "Letterhead",
+            "type": "object"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ChargeRead"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          },
+          "patient": {
+            "$ref": "#/components/schemas/PatientBrief"
+          },
+          "payments": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentRead"
+            },
+            "title": "Payments",
+            "type": "array"
+          },
+          "place_of_supply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/InvoiceScope"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InvoiceStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stay": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StayRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "enum": [
+              "TAX INVOICE",
+              "BILL OF SUPPLY",
+              "INTERIM — NOT A FINAL BILL"
+            ],
+            "title": "Title",
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/PrintableTotals"
+          }
+        },
+        "required": [
+          "invoice_id",
+          "number",
+          "date",
+          "title",
+          "scope",
+          "status",
+          "place_of_supply",
+          "letterhead",
+          "patient",
+          "stay",
+          "lines",
+          "totals",
+          "payments"
+        ],
+        "title": "PrintableBill",
+        "type": "object"
+      },
+      "PrintableTotals": {
+        "properties": {
+          "balance": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Balance",
+            "type": "string"
+          },
+          "cgst_total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cgst Total",
+            "type": "string"
+          },
+          "discount_total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Discount Total",
+            "type": "string"
+          },
+          "grand_total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Grand Total",
+            "type": "string"
+          },
+          "igst_total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Igst Total",
+            "type": "string"
+          },
+          "paid": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Paid",
+            "type": "string"
+          },
+          "round_off": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Round Off",
+            "type": "string"
+          },
+          "sgst_total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sgst Total",
+            "type": "string"
+          },
+          "subtotal": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Subtotal",
+            "type": "string"
+          },
+          "taxable_total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Taxable Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subtotal",
+          "discount_total",
+          "taxable_total",
+          "cgst_total",
+          "sgst_total",
+          "igst_total",
+          "round_off",
+          "grand_total",
+          "paid",
+          "balance"
+        ],
+        "title": "PrintableTotals",
         "type": "object"
       },
       "ProblemEntry": {
@@ -16328,6 +17593,74 @@
         "title": "SpecimenType",
         "type": "string"
       },
+      "StayRead": {
+        "description": "The admission a bill belongs to, as billing knows it.",
+        "properties": {
+          "admission_id": {
+            "format": "uuid",
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "admission_number": {
+            "title": "Admission Number",
+            "type": "string"
+          },
+          "admitted_at": {
+            "format": "date-time",
+            "title": "Admitted At",
+            "type": "string"
+          },
+          "attending_doctor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attending Doctor"
+          },
+          "discharged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharged At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "ward_bed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ward Bed"
+          }
+        },
+        "required": [
+          "admission_id",
+          "admission_number",
+          "status",
+          "admitted_at",
+          "discharged_at",
+          "ward_bed",
+          "attending_doctor"
+        ],
+        "title": "StayRead",
+        "type": "object"
+      },
       "SummaryRead": {
         "properties": {
           "admission_id": {
@@ -17474,6 +18807,114 @@
           "has_unpriced_items"
         ],
         "title": "VisitAccount",
+        "type": "object"
+      },
+      "VisitBills": {
+        "description": "One bill-bearing visit. A patient admitted from an open OPD visit has two:\nthe consultation (OPD) and the stay (IPD), on the same encounter.",
+        "properties": {
+          "admission_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission Number"
+          },
+          "doctor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doctor Name"
+          },
+          "due": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Due",
+            "type": "string"
+          },
+          "encounter_id": {
+            "format": "uuid",
+            "title": "Encounter Id",
+            "type": "string"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "invoices": {
+            "items": {
+              "$ref": "#/components/schemas/InvoiceSummary"
+            },
+            "title": "Invoices",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "OPD",
+              "IPD"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "paid": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Paid",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status_label": {
+            "title": "Status Label",
+            "type": "string"
+          },
+          "total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total",
+            "type": "string"
+          },
+          "ward_bed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ward Bed"
+          }
+        },
+        "required": [
+          "encounter_id",
+          "kind",
+          "started_at",
+          "ended_at",
+          "doctor_name",
+          "status_label",
+          "total",
+          "paid",
+          "due",
+          "invoices"
+        ],
+        "title": "VisitBills",
         "type": "object"
       },
       "VisitDiagnosis": {
@@ -19305,6 +20746,460 @@
         ]
       }
     },
+    "/api/v1/billing/accounts/bills": {
+      "get": {
+        "operationId": "accounts_bills_api_v1_billing_accounts_bills_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_BillRow_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Bills, newest first",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/outstanding": {
+      "get": {
+        "operationId": "accounts_outstanding_api_v1_billing_accounts_outstanding_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_BillRow_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Issued bills with a balance",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/patients": {
+      "get": {
+        "description": "Ordered by last activity, not by cost: this is not a ranking.",
+        "operationId": "accounts_patients_api_v1_billing_accounts_patients_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PatientRow_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Patients, latest activity first",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/payments": {
+      "get": {
+        "operationId": "accounts_payments_api_v1_billing_accounts_payments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PaymentRow_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Payments received, newest first",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/summary": {
+      "get": {
+        "description": "Collected (by method), billed and reversals for the period; outstanding\nand running in wards as of now. Default period: today.",
+        "operationId": "accounts_summary_api_v1_billing_accounts_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountsSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Accounts totals",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/accounts/{encounter_id}": {
       "get": {
         "description": "Everything the cash counter needs about one visit, in one round trip.",
@@ -19457,6 +21352,212 @@
           }
         ],
         "summary": "What a visit has cost so far",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/{encounter_id}/final-bill": {
+      "post": {
+        "description": "After discharge (or death, LAMA, referral) only. Issued and frozen:\nthe counter takes payment against it as against any invoice.",
+        "operationId": "finalise_ipd_bill_api_v1_billing_accounts__encounter_id__final_bill_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Generate an IPD stay's final bill",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/{encounter_id}/ipd-bill": {
+      "get": {
+        "description": "Every line from the admission on, the last saved total, and the version\nthe editor sends back on Save. An OPD visit is refused: its bill is frozen.",
+        "operationId": "ipd_bill_api_v1_billing_accounts__encounter_id__ipd_bill_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IpdBill"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "An IPD stay's running bill",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/{encounter_id}/ipd-bill/changes": {
+      "post": {
+        "description": "All the staged changes in one request: applied together or not at all,\neach audited with its before, after and reason. The total is recalculated\nhere, once, on Save.",
+        "operationId": "save_ipd_bill_api_v1_billing_accounts__encounter_id__ipd_bill_changes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillChangesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IpdBill"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save the accountant's changes to an IPD bill",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/{encounter_id}/ipd-bill/printable": {
+      "get": {
+        "description": "The bill as last saved, marked INTERIM — NOT A FINAL BILL.",
+        "operationId": "ipd_bill_printable_api_v1_billing_accounts__encounter_id__ipd_bill_printable_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrintableBill"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "An IPD stay's running bill, to print",
         "tags": [
           "billing"
         ]
@@ -20414,6 +22515,55 @@
         ]
       }
     },
+    "/api/v1/billing/invoices/{invoice_id}/printable": {
+      "get": {
+        "description": "The printed page's data: letterhead from the day of issue, lines, GST,\ntotals and receipts. A draft prints as interim.",
+        "operationId": "invoice_printable_api_v1_billing_invoices__invoice_id__printable_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrintableBill"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "An invoice, to print",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/invoices/{invoice_id}/write-off": {
       "post": {
         "description": "Bad debt. Terminal, and it releases the visit's closure gate — which is\nhow an absconded patient's encounter stops sitting open forever.",
@@ -20468,6 +22618,160 @@
           }
         ],
         "summary": "Write off an unpaid invoice",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/patients/{patient_id}/history": {
+      "get": {
+        "description": "Every bill-bearing visit, newest first, with lifetime billed, paid, due.",
+        "operationId": "patient_bill_history_api_v1_billing_patients__patient_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "A patient's bill history",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/patients/{patient_id}/journey": {
+      "get": {
+        "description": "Everything given to the patient, latest first, with totals by category.",
+        "operationId": "patient_cost_journey_api_v1_billing_patients__patient_id__journey_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ChargeCategory"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "encounter_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Encounter Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Journey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "A patient's cost journey",
         "tags": [
           "billing"
         ]
@@ -25376,6 +27680,133 @@
           }
         ],
         "summary": "Suspend a hospital tenant",
+        "tags": [
+          "tenancy"
+        ]
+      }
+    },
+    "/api/v1/hospitals/{hospital_id}/logo": {
+      "get": {
+        "description": "A versioned logo never changes, so it may be cached for a long time.",
+        "operationId": "get_logo_api_v1_hospitals__hospital_id__logo_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "hospital_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Hospital Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {},
+              "image/png": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The hospital's logo",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "put": {
+        "description": "The file itself is the request body, with its own Content-Type — no\nmultipart form. A new upload is a new version; issued bills keep theirs.",
+        "operationId": "upload_logo_api_v1_hospitals__hospital_id__logo_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "hospital_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Hospital Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoUploaded"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Upload the hospital's logo (raw PNG or JPEG body)",
         "tags": [
           "tenancy"
         ]

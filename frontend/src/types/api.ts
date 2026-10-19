@@ -166,6 +166,22 @@ export type PaymentMethod = Schemas["PaymentMethod"];
 export type CollectPayment = Schemas["CollectPayment"];
 export type CollectPaymentResult = Schemas["CollectPaymentResult"];
 
+// --- Accounts (the accountant's dashboard) ---------------------------------
+export type InvoiceScope = Schemas["InvoiceScope"];
+export type AccountsSummary = Schemas["AccountsSummary"];
+export type BillRow = Schemas["BillRow"];
+export type PaymentRow = Schemas["PaymentRow"];
+export type PatientRow = Schemas["PatientRow"];
+export type BillHistory = Schemas["BillHistory"];
+export type VisitBills = Schemas["VisitBills"];
+export type Journey = Schemas["Journey"];
+export type JourneyLine = Schemas["JourneyLine"];
+/** A stay's running bill, as the IPD bill editor loads and saves it. */
+export type IpdBill = Schemas["IpdBill"];
+export type BillChangesRequest = Schemas["BillChangesRequest"];
+export type PrintableBill = Schemas["PrintableBill"];
+export type Stay = Schemas["StayRead"];
+
 // --- Notifications ---------------------------------------------------------
 /** One outbox row, carrying enough identity to find the person who complained. */
 export type MessageSummary = Schemas["NotificationSummary"];

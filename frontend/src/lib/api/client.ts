@@ -44,10 +44,17 @@ async function request<T>(
   let response: Response;
 
   try {
+    // A file goes as itself — its bytes, labelled with its own type — not
+    // wrapped in JSON or a multipart form. Everything else is JSON.
+    const file = body instanceof Blob ? body : null;
     response = await fetch(buildPath(path, options.query), {
       method,
-      headers: body === undefined ? {} : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: file
+        ? { "Content-Type": file.type || "application/octet-stream" }
+        : body === undefined
+          ? {}
+          : { "Content-Type": "application/json" },
+      body: file ?? (body === undefined ? undefined : JSON.stringify(body)),
       signal: options.signal,
       // Same-origin by definition, but stated so a future change to the
       // fetch defaults cannot quietly stop sending the session cookie.

@@ -1,11 +1,11 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Bed,
+  Building,
   Building2,
   FlaskConical,
   IndianRupee,
   MessageSquareText,
-  QrCode,
   Stethoscope,
   Users,
 } from "lucide-react";
@@ -84,10 +84,10 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     permissions: ["notification_template:read"],
   },
   {
-    href: "/admin/payments",
-    icon: QrCode,
-    titleKey: "paymentsTitle",
-    descriptionKey: "paymentsCard",
+    href: "/admin/hospital",
+    icon: Building,
+    titleKey: "hospitalTitle",
+    descriptionKey: "hospitalCard",
     permissions: ["hospital:update"],
   },
 ];
