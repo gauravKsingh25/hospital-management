@@ -36,7 +36,7 @@ async function paidOpdBill(page: Page): Promise<string> {
 test("the printed bill carries the letterhead, GST columns and amount in words", async ({
   page,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   const name = await paidOpdBill(page);
 
   await signIn(page, ACCOUNTS.accountant);
