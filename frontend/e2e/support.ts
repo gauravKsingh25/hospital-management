@@ -19,6 +19,7 @@ export const ACCOUNTS = {
   lab: "lab@demo.hospital",
   cashier: "cashier@demo.hospital",
   admissionDesk: "admission@demo.hospital",
+  accountant: "accountant@demo.hospital",
 } as const;
 
 export async function signIn(page: Page, email: string): Promise<void> {

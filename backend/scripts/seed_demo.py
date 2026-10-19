@@ -57,6 +57,7 @@ STAFF = [
     ("lab@demo.hospital", "Ravi Kulkarni", Roles.LAB_TECH),
     ("cashier@demo.hospital", "Meera Joshi", Roles.CASHIER),
     ("admission@demo.hospital", "Ritu Sharma", Roles.ADMISSION_DESK),
+    ("accountant@demo.hospital", "Anil Kapoor", Roles.ACCOUNTANT),
 ]
 
 # What a clinic must have configured before it can charge for anything. Without
