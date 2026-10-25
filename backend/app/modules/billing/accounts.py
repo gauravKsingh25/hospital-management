@@ -165,6 +165,66 @@ def _footer(charges: list[Charge], *, paid: Decimal = ZERO) -> PrintableTotals:
     )
 
 
+def _unbilled_filters(hospital_id: uuid.UUID) -> list[ColumnElement[bool]]:
+    """A charge on nobody's issued bill yet: pending, or on a draft. Needs
+    the charge joined to its invoice (outer)."""
+    return [
+        col(Charge.hospital_id) == hospital_id,
+        col(Charge.deleted_at).is_(None),
+        or_(
+            col(Charge.status) == ChargeStatus.PENDING,
+            (col(Charge.status) == ChargeStatus.INVOICED)
+            & (col(Invoice.status) == InvoiceStatus.DRAFT),
+        ),
+    ]
+
+
+async def _running_in_wards(
+    session: AsyncSession, *, hospital_id: uuid.UUID
+) -> tuple[Decimal, int]:
+    """Unbilled money on stays, from the admission on: (total, patients).
+
+    Summed in the database. Python sees only the distinct visits with
+    unbilled lines, so the stay provider can say which are stays, and then
+    one sum per stay window — bounded by beds, not by charge rows.
+    """
+    visits = (
+        (
+            await session.execute(
+                sa_select(col(Charge.encounter_id))
+                .select_from(Charge)
+                .outerjoin(Invoice, col(Invoice.id) == col(Charge.invoice_id))
+                .where(*_unbilled_filters(hospital_id))
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    stays = await stays_for(session, set(visits), hospital_id=hospital_id)
+    if not stays:
+        return ZERO, 0
+    since_admission = or_(
+        *(
+            (col(Charge.encounter_id) == encounter_id)
+            & (col(Charge.captured_at) >= stay.admitted_at)
+            for encounter_id, stay in stays.items()
+        )
+    )
+    total, patients = (
+        await session.execute(
+            sa_select(
+                func.coalesce(func.sum(col(Charge.total_amount)), 0),
+                func.count(func.distinct(col(Charge.patient_id))),
+            )
+            .select_from(Charge)
+            .outerjoin(Invoice, col(Invoice.id) == col(Charge.invoice_id))
+            .where(*_unbilled_filters(hospital_id), since_admission)
+        )
+    ).one()
+    return money(Decimal(total)), int(patients)
+
+
 async def _unbilled_by_encounter(
     session: AsyncSession,
     *,
@@ -175,15 +235,7 @@ async def _unbilled_by_encounter(
 
     Returns (encounter, patient, captured_at, total) per charge.
     """
-    filters: list[ColumnElement[bool]] = [
-        col(Charge.hospital_id) == hospital_id,
-        col(Charge.deleted_at).is_(None),
-        or_(
-            col(Charge.status) == ChargeStatus.PENDING,
-            (col(Charge.status) == ChargeStatus.INVOICED)
-            & (col(Invoice.status) == InvoiceStatus.DRAFT),
-        ),
-    ]
+    filters = _unbilled_filters(hospital_id)
     if patient_ids is not None:
         filters.append(col(Charge.patient_id).in_(set(patient_ids)))
     rows = (
@@ -265,15 +317,7 @@ async def summary(
     ).one()
 
     # Running in wards: unbilled charges on stays, from the admission on.
-    unbilled = await _unbilled_by_encounter(session, hospital_id=hospital_id)
-    stays = await stays_for(session, {row[0] for row in unbilled}, hospital_id=hospital_id)
-    running = ZERO
-    running_patients: set[uuid.UUID] = set()
-    for encounter_id, patient_id, captured_at, total in unbilled:
-        stay = stays.get(encounter_id)
-        if stay is not None and captured_at >= stay.admitted_at:
-            running += total
-            running_patients.add(patient_id)
+    running, running_patients = await _running_in_wards(session, hospital_id=hospital_id)
 
     return AccountsSummary(
         collected=money(sum(collected_by_method.values(), start=ZERO)),
@@ -282,8 +326,8 @@ async def summary(
         billed=money(Decimal(billed)),
         outstanding=money(Decimal(outstanding)),
         outstanding_patients=int(outstanding_patients),
-        running_in_wards=money(running),
-        running_patients=len(running_patients),
+        running_in_wards=running,
+        running_patients=running_patients,
         reversals=money(Decimal(reversals)),
     )
 

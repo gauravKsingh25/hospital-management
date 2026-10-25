@@ -19,8 +19,12 @@ from app.core import database as db
 from app.core.pagination import PageParams
 from app.modules.billing import service as billing_service
 from app.modules.billing.models import ChargeStatus
+from app.modules.billing.schemas import ChargeAdd, InvoiceDraftRequest
 from app.modules.identity.models import AuditLog, User
 from app.modules.identity.rbac import Roles
+from app.modules.ipd import service as ipd_service
+from app.modules.ipd.models import DischargeType
+from app.modules.ipd.schemas import DischargeRequest
 from app.modules.tenancy.models import Hospital
 from tests import accounts_support as support
 from tests.conftest import _make_user, auth, login
@@ -125,11 +129,21 @@ class TestOnlyAccountsChangeAnIpdBill:
         assert response.status_code == 200, response.text
 
     async def test_cashier_cannot_issue_an_ipd_invoice(
-        self, api: AsyncClient, session: AsyncSession, tenant: Hospital, stay: support.Stay
+        self,
+        api: AsyncClient,
+        session: AsyncSession,
+        tenant: Hospital,
+        stay: support.Stay,
+        admin_token: str,
     ) -> None:
         token = await _token(api, session, tenant, Roles.CASHIER)
+        await api.post(
+            CHARGES,
+            json={"encounter_id": str(stay.encounter.id), "service_item_code": "DRESSING"},
+            headers=auth(admin_token),
+        )
         draft = await api.post(
-            INVOICES, json={"encounter_id": str(stay.encounter.id)}, headers=auth(token)
+            INVOICES, json={"encounter_id": str(stay.encounter.id)}, headers=auth(admin_token)
         )
         assert draft.status_code == 201, draft.text
 
@@ -259,3 +273,158 @@ class TestIpdBillEditor:
 
         assert response.status_code == 409, response.text
         assert response.json()["error"]["code"] == "bill_changed"
+
+
+# ---------------------------------------------------------------------------
+# The generic invoice routes on a stay (final review #1, #3)
+# ---------------------------------------------------------------------------
+class TestGenericRoutesOnAStay:
+    async def test_admin_cannot_issue_the_ipd_bill_before_discharge(
+        self, api: AsyncClient, stay: support.Stay, admin_token: str
+    ) -> None:
+        """Issuing a stay's IPD draft is generating its final bill, with the
+        final bill's rules: after discharge, priced, once."""
+        await api.post(
+            CHARGES,
+            json={"encounter_id": str(stay.encounter.id), "service_item_code": "DRESSING"},
+            headers=auth(admin_token),
+        )
+        draft = await api.post(
+            INVOICES, json={"encounter_id": str(stay.encounter.id)}, headers=auth(admin_token)
+        )
+        assert draft.status_code == 201, draft.text
+        assert draft.json()["scope"] == "IPD"
+
+        response = await api.post(
+            f"{INVOICES}/{draft.json()['id']}/issue", json={}, headers=auth(admin_token)
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "stay_not_discharged"
+
+    async def test_billing_staff_cannot_assemble_a_stay_bill(
+        self, api: AsyncClient, session: AsyncSession, tenant: Hospital, stay: support.Stay
+    ) -> None:
+        token = await _token(api, session, tenant, Roles.BILLING_STAFF)
+
+        response = await api.post(
+            INVOICES, json={"encounter_id": str(stay.encounter.id)}, headers=auth(token)
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["code"] == "ipd_bill_accounts_only"
+
+    async def test_billing_staff_correct_and_reissue_the_pre_admission_bill(
+        self, api: AsyncClient, session: AsyncSession, tenant: Hospital, stay: support.Stay
+    ) -> None:
+        """The consultation before the admission is an OPD bill: the counter's,
+        cancelled, discounted and issued again like any other."""
+        token = await _token(api, session, tenant, Roles.BILLING_STAFF)
+        [opd] = (
+            await api.get(
+                INVOICES, params={"encounter_id": str(stay.encounter.id)}, headers=auth(token)
+            )
+        ).json()["items"]
+
+        cancelled = await api.post(
+            f"{INVOICES}/{opd['id']}/cancel", json={"reason": "Wrong fee"}, headers=auth(token)
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        account = (await api.get(f"{ACCOUNTS}/{stay.encounter.id}", headers=auth(token))).json()
+        assert (account["is_stay"], account["pre_admission_pending"]) == (True, True)
+        charge_id = await _pending_charge(session, tenant, stay.encounter.id)
+        discounted = await api.post(
+            f"{CHARGES}/{charge_id}/discount",
+            json={"amount": "100.00", "reason": "Senior citizen"},
+            headers=auth(token),
+        )
+        assert discounted.status_code == 200, discounted.text
+
+        reissued = await api.post(
+            f"{ACCOUNTS}/{stay.encounter.id}/pre-admission-bill", headers=auth(token)
+        )
+
+        assert reissued.status_code == 201, reissued.text
+        body = reissued.json()
+        assert (body["scope"], body["status"], body["grand_total"]) == ("OPD", "ISSUED", "400.00")
+
+
+async def test_the_printed_bill_carries_every_line(
+    api: AsyncClient, session: AsyncSession, tenant: Hospital, admin_user: User, admin_token: str
+) -> None:
+    """Final review #5: a long stay has hundreds of lines; none may drop off paper."""
+    patient = await support.register(session, tenant.id, name="Long Stay")
+    visit = await support.open_visit(session, tenant.id, patient, admin_user)
+    for _ in range(210):
+        await billing_service.add_charge(
+            session,
+            ChargeAdd(encounter_id=visit.id, service_item_code="DRESSING"),
+            hospital_id=tenant.id,
+            actor=admin_user,
+        )
+    invoice = await billing_service.assemble_draft(
+        session, InvoiceDraftRequest(encounter_id=visit.id), hospital_id=tenant.id
+    )
+    await session.commit()
+
+    printed = await api.get(f"{INVOICES}/{invoice.id}/printable", headers=auth(admin_token))
+
+    assert printed.status_code == 200, printed.text
+    assert len(printed.json()["lines"]) == 211
+
+
+async def test_the_accountant_cancels_a_final_bill_to_correct_it(
+    api: AsyncClient,
+    session: AsyncSession,
+    tenant: Hospital,
+    stay: support.Stay,
+    admin_user: User,
+) -> None:
+    """Final review #6: correction is cancel (with a reason), edit, generate
+    again — and the accountant, who holds no `invoice:cancel`, can do it."""
+    token = await _token(api, session, tenant, Roles.ACCOUNTANT)
+    await ipd_service.discharge_patient(
+        session,
+        stay.admission,
+        DischargeRequest(discharge_type=DischargeType.RECOVERED),
+        actor=admin_user,
+    )
+    await session.commit()
+    final = await api.post(f"{ACCOUNTS}/{stay.encounter.id}/final-bill", headers=auth(token))
+    assert final.status_code == 201, final.text
+
+    cancelled = await api.post(
+        f"{ACCOUNTS}/{stay.encounter.id}/final-bill/cancel",
+        json={"reason": "Room charged twice"},
+        headers=auth(token),
+    )
+
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED"
+    bill = (await api.get(f"{ACCOUNTS}/{stay.encounter.id}/ipd-bill", headers=auth(token))).json()
+    assert bill["final_invoice"] is None
+    assert bill["can_finalise"] is True
+    audit = (
+        await session.execute(
+            sa.select(AuditLog).where(
+                AuditLog.action == "billing.ipd_bill.cancel",
+                AuditLog.resource_id == uuid.UUID(final.json()["id"]),
+            )
+        )
+    ).scalar_one()
+    assert audit.changes["reason"] == "Room charged twice"
+
+
+async def test_cancelling_with_no_final_bill_is_refused(
+    api: AsyncClient, session: AsyncSession, tenant: Hospital, stay: support.Stay
+) -> None:
+    token = await _token(api, session, tenant, Roles.ACCOUNTANT)
+
+    response = await api.post(
+        f"{ACCOUNTS}/{stay.encounter.id}/final-bill/cancel",
+        json={"reason": "Nothing to cancel"},
+        headers=auth(token),
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "no_final_bill"

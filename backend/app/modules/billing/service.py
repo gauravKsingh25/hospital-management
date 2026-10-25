@@ -1643,14 +1643,29 @@ async def assemble_draft(
         session, payload.encounter_id, hospital_id=hospital_id
     )
     # A stay's bill holds only what was charged from the admission on; what
-    # came before was split off as its own OPD bill when the patient was
-    # admitted (`split_pre_admission`).
+    # came before is its own OPD bill (`split_pre_admission`). Split again
+    # here, so lines from before the admission can never be stranded: after
+    # that OPD bill was cancelled to correct it, or on a stay admitted before
+    # the split existed, whose OPD draft still holds them.
     stay = await stay_for(session, encounter.id, hospital_id=hospital_id)
+    if stay is not None:
+        await split_pre_admission(
+            session, encounter, admitted_at=stay.admitted_at, actor=actor, hospital_id=hospital_id
+        )
     scope = InvoiceScope.IPD if stay is not None else InvoiceScope.OPD
 
     invoice = await get_draft_for_encounter(
         session, encounter.id, hospital_id=hospital_id, scope=scope
     )
+    if invoice is None and stay is None:
+        # A visit whose admission was cancelled is an OPD visit again; the
+        # draft it ran as a stay becomes its OPD draft rather than a second one.
+        invoice = await get_draft_for_encounter(
+            session, encounter.id, hospital_id=hospital_id, scope=InvoiceScope.IPD
+        )
+        if invoice is not None:
+            invoice.scope = InvoiceScope.OPD
+            session.add(invoice)
     if invoice is None:
         invoice = await _new_draft(session, encounter, payload, scope=scope)
     elif payload.payer_liability:
@@ -1770,10 +1785,19 @@ async def split_pre_admission(
             InvoiceDraftRequest(encounter_id=encounter.id),
             scope=InvoiceScope.OPD,
         )
+    for charge in await _charges_on(session, invoice.id):
+        if charge.captured_at >= admitted_at and charge.status is ChargeStatus.INVOICED:
+            # An OPD draft from before this rule existed may hold lines from
+            # after the admission; they belong to the IPD bill.
+            charge.status = ChargeStatus.PENDING
+            charge.invoice_id = None
+            charge.updated_at = utc_now()
+            session.add(charge)
+    await session.flush()
     await _gather_pending(session, invoice, before=admitted_at)
     if not await _charges_on(session, invoice.id):
-        # An empty draft the counter left behind. Closed, because a visit may
-        # hold only one live draft and the stay's IPD bill needs that slot.
+        # An empty draft the counter left behind. Closed: a stay's OPD bill is
+        # issued or absent, never a draft that sits open beside the IPD one.
         invoice.status = InvoiceStatus.CANCELLED
         invoice.cancellation_reason = "Empty draft closed at admission."
         invoice.updated_at = utc_now()
@@ -1781,6 +1805,41 @@ async def split_pre_admission(
         await session.flush()
         return None
     return await issue_invoice(session, invoice, actor=actor, hospital_id=hospital_id)
+
+
+async def rebill_pre_admission(
+    session: AsyncSession, encounter: Encounter, *, actor: User, hospital_id: uuid.UUID
+) -> Invoice:
+    """Issue again what a stay owed before its admission.
+
+    The way the counter corrects that OPD bill: cancel it (its lines return to
+    pending), price or discount the lines, then issue it here. Refused when
+    nothing from before the admission is waiting.
+    """
+    stay = await _require_stay(session, encounter, hospital_id=hospital_id)
+    invoice = await split_pre_admission(
+        session, encounter, admitted_at=stay.admitted_at, actor=actor, hospital_id=hospital_id
+    )
+    if invoice is None:
+        raise ConflictError(
+            "Nothing from before the admission is waiting to be billed.",
+            code="nothing_before_admission",
+        )
+    return invoice
+
+
+async def invoice_lines(
+    session: AsyncSession, invoice: Invoice, *, hospital_id: uuid.UUID
+) -> list[Charge]:
+    """Every line of one invoice, unpaged — what its printed copy shows.
+
+    Bounded by the invoice, not by a page: a three-week stay charged dose by
+    dose runs to hundreds of lines, and a bill missing its last days is a GST
+    document that does not add up.
+    """
+    if invoice.hospital_id != hospital_id:
+        raise NotFoundError("Invoice not found.", code="invoice_not_found")
+    return await _charges_on(session, invoice.id)
 
 
 async def issue_invoice(
@@ -2456,6 +2515,11 @@ class VisitAccountData:
     paid_total: Decimal
     balance_due: Decimal
     has_unpriced_items: bool
+    # An IPD stay: its bill is the accounts office's, not the counter's.
+    is_stay: bool = False
+    # Lines from before the admission wait to be issued again as the stay's
+    # OPD bill (after that bill was cancelled to correct it).
+    pre_admission_pending: bool = False
 
 
 async def visit_account(
@@ -2490,6 +2554,7 @@ async def visit_account(
         )
     )
     paid_total = money(sum((invoice.amount_paid for invoice in invoices), ZERO))
+    stay = await stay_for(session, encounter.id, hospital_id=hospital_id)
 
     return VisitAccountData(
         encounter_id=encounter.id,
@@ -2505,6 +2570,9 @@ async def visit_account(
         paid_total=paid_total,
         balance_due=await open_balance(session, encounter.id),
         has_unpriced_items=any(charge.needs_pricing for charge in charges),
+        is_stay=stay is not None,
+        pre_admission_pending=stay is not None
+        and any(charge.captured_at < stay.admitted_at for charge in charges),
     )
 
 
@@ -3005,6 +3073,27 @@ async def apply_bill_changes(
             await _gather_pending(session, draft, since=stay.admitted_at)
             await _recompute_totals(session, draft)
     return applied
+
+
+async def cancel_final_ipd_bill(
+    session: AsyncSession,
+    encounter: Encounter,
+    *,
+    reason: str,
+    actor: User,
+    hospital_id: uuid.UUID,
+) -> Invoice:
+    """Void the stay's final bill so it can be corrected and generated again.
+
+    Its lines return to the stay's running bill, editable again. Refused once
+    money has been received against it, like any invoice: reverse first.
+    """
+    await _require_stay(session, encounter, hospital_id=hospital_id)
+    await _lock_visit_billing(session, encounter.id, hospital_id=hospital_id)
+    final = await _final_ipd_invoice(session, encounter.id, hospital_id=hospital_id)
+    if final is None:
+        raise NotFoundError("This stay has no final bill to cancel.", code="no_final_bill")
+    return await cancel_invoice(session, final, reason=reason, actor=actor, hospital_id=hospital_id)
 
 
 async def finalise_ipd_bill(

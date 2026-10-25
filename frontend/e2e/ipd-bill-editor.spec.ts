@@ -93,4 +93,59 @@ test("after discharge the accountant generates the final bill and it can no long
   await expect(pane.getByRole("button", { name: "Add charge" })).toHaveCount(0);
   await expect(pane.getByRole("link", { name: /Print bill/ })).toBeVisible();
   await expect(page.getByTestId("visit-item").first()).toContainText(/Final|Paid/);
+
+  // A wrong final bill is corrected in the product: cancel (with a reason),
+  // and the stay's bill is editable again.
+  await pane.getByRole("button", { name: "Cancel final bill" }).click();
+  const cancel = page.getByRole("dialog", { name: "Cancel final bill" });
+  await cancel.getByLabel("Reason for cancelling").fill("Oxygen charged twice");
+  await cancel.getByRole("button", { name: "Cancel final bill" }).click();
+  await expect(page.getByText(/Final bill .* cancelled/)).toBeVisible();
+  await expect(pane.getByRole("button", { name: "Add charge" })).toBeVisible();
+});
+
+test("a background reload cannot slip a stale save through, and refused changes are kept", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await admittedForAccounts(page);
+  const href = await page.getByRole("link", { name: "Print running bill" }).getAttribute("href");
+  const encounterId = href?.match(/running\/([0-9a-f-]+)/)?.[1];
+  expect(encounterId).toBeTruthy();
+
+  await addFreeTextCharge(page, "Dressing kit", "240");
+  await expect(page.getByTestId("unsaved-count")).toHaveText("1 unsaved change");
+
+  // Another accountant saves first.
+  const bill = `/bff/billing/accounts/${encounterId}/ipd-bill`;
+  const { version } = (await (await page.request.get(bill)).json()) as { version: string };
+  const other = await page.request.post(`${bill}/changes`, {
+    data: {
+      expected_version: version,
+      ops: [
+        {
+          op: "add",
+          description: "Oxygen cylinder",
+          category: "OTHER",
+          unit_price: "1000.00",
+          reason: "Night shift",
+        },
+      ],
+    },
+  });
+  expect(other.ok()).toBeTruthy();
+
+  // This tab reloads the bill in the background, as it does on focus.
+  await page.waitForTimeout(11_000);
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.getByTestId("ipd-line").filter({ hasText: "Oxygen cylinder" })).toBeVisible();
+
+  // The staged change was made against the old bill: refused, and kept.
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText(/Someone else changed this bill/)).toBeVisible();
+  await expect(page.getByTestId("unsaved-count")).toHaveText("1 unsaved change");
+
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Bill saved.")).toBeVisible();
+  await expect(page.getByTestId("ipd-line").filter({ hasText: "Dressing kit" })).toBeVisible();
 });

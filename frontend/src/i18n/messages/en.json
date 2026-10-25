@@ -488,7 +488,10 @@
     "noUpiId": "No UPI ID is set for this hospital yet — ask an administrator. A UPI payment made to the counter's own QR can still be recorded below.",
     "utr": "UPI transaction ID (UTR)",
     "cardApproval": "Card approval code",
-    "confirmReceived": "Received {amount}"
+    "confirmReceived": "Received {amount}",
+    "stayNote": "This patient is admitted. The IPD bill is made by the accounts office.",
+    "reissuePreAdmission": "Issue OPD bill",
+    "preAdmissionIssued": "OPD bill {number} issued."
   },
   "patients": {
     "title": "Patients",
@@ -1433,7 +1436,7 @@
     "saveChanges": "Save changes",
     "discard": "Discard",
     "saved": "Bill saved.",
-    "changedElsewhere": "Someone else changed this bill. It has been reloaded — make your changes again.",
+    "changedElsewhere": "Someone else changed this bill. It has been reloaded and your unsaved changes are kept — check them and save again.",
     "cancel": "Cancel",
     "noLines": "Nothing on this stay's bill yet.",
     "lines": "Charges on this stay",
@@ -1476,7 +1479,13 @@
     "stagedAdd": "Add {item}",
     "stagedEdit": "Edit {item}",
     "stagedDiscount": "Discount on {item}",
-    "stagedRemove": "Remove {item}"
+    "stagedRemove": "Remove {item}",
+    "changedElsewhereDropped": "Someone else changed this bill. It has been reloaded; changes to lines no longer on it were dropped — check the rest and save again.",
+    "cancelFinal": "Cancel final bill",
+    "cancelFinalHint": "The bill is voided and its lines go back to the stay, so you can correct them and generate the final bill again. A bill with payments cannot be cancelled until they are reversed.",
+    "cancelReason": "Reason for cancelling",
+    "keepBill": "Keep the bill",
+    "finalCancelled": "Final bill {number} cancelled."
   },
   "bill": {
     "title": "Bill",

@@ -533,3 +533,142 @@ async def test_reprint_uses_the_letterhead_of_the_issue_day(
     live = await tenancy_service.letterhead_for(session, tenant.id)
     assert live["address_line1"] == "Plot 4, New Campus"
     assert live["logo_version"] == 2
+
+
+# ---------------------------------------------------------------------------
+# One live draft per visit, whatever its scope; the pre-admission OPD bill
+# can always be billed again (final review #1, #2)
+# ---------------------------------------------------------------------------
+async def _cancel_pre_admission_bill(
+    session: AsyncSession, tenant: Hospital, admin: User, stay: support.Stay
+) -> None:
+    [opd] = await _invoices(session, tenant, stay.encounter.id)
+    await service.cancel_invoice(
+        session, opd, reason="Wrong consultation fee", actor=admin, hospital_id=tenant.id
+    )
+    await session.commit()
+
+
+async def _pending(session: AsyncSession, tenant: Hospital, encounter_id: uuid.UUID) -> list:
+    rows, _ = await service.list_charges(
+        session,
+        PageParams(),
+        hospital_id=tenant.id,
+        encounter_id=encounter_id,
+        status=ChargeStatus.PENDING,
+    )
+    return rows
+
+
+@pytest.mark.integration
+async def test_a_cancelled_pre_admission_bill_can_be_issued_again(
+    session: AsyncSession, tenant: Hospital, admin: User, stay: support.Stay
+) -> None:
+    await _cancel_pre_admission_bill(session, tenant, admin, stay)
+
+    reissued = await service.rebill_pre_admission(
+        session, stay.encounter, actor=admin, hospital_id=tenant.id
+    )
+    await session.commit()
+
+    assert reissued.scope is InvoiceScope.OPD
+    assert reissued.status is InvoiceStatus.ISSUED
+    assert reissued.grand_total == D("500.00")
+    assert await _pending(session, tenant, stay.encounter.id) == []
+
+
+@pytest.mark.integration
+async def test_rebilling_with_nothing_before_the_admission_is_refused(
+    session: AsyncSession, tenant: Hospital, admin: User, stay: support.Stay
+) -> None:
+    with pytest.raises(ConflictError) as refused:
+        await service.rebill_pre_admission(
+            session, stay.encounter, actor=admin, hospital_id=tenant.id
+        )
+    assert refused.value.code == "nothing_before_admission"
+
+
+@pytest.mark.integration
+async def test_the_final_bill_does_not_strand_a_cancelled_consultation(
+    session: AsyncSession, tenant: Hospital, admin: User, stay: support.Stay
+) -> None:
+    """Cancelled and never re-issued: the stay's bill re-issues it as its own
+    OPD bill rather than leaving it pending forever or folding it into IPD."""
+    await _cancel_pre_admission_bill(session, tenant, admin, stay)
+    await _discharge(session, stay, admin)
+
+    final = await service.finalise_ipd_bill(
+        session, stay.encounter, actor=admin, hospital_id=tenant.id
+    )
+    await session.commit()
+
+    assert final.grand_total == D("2000.00")
+    issued_opd = [
+        invoice
+        for invoice in await _invoices(session, tenant, stay.encounter.id)
+        if invoice.scope is InvoiceScope.OPD and invoice.status is InvoiceStatus.ISSUED
+    ]
+    assert [invoice.grand_total for invoice in issued_opd] == [D("500.00")]
+    assert await _pending(session, tenant, stay.encounter.id) == []
+
+
+@pytest.mark.integration
+async def test_an_opd_draft_left_on_a_stay_does_not_block_its_bill(
+    session: AsyncSession, tenant: Hospital, admin: User, stay: support.Stay
+) -> None:
+    """A stay admitted before this release: its draft was made before the
+    admission, so it is OPD, and it may hold lines from after it too."""
+    await _cancel_pre_admission_bill(session, tenant, admin, stay)
+    await service.add_charge(
+        session,
+        ChargeAdd(encounter_id=stay.encounter.id, service_item_code="DRESSING"),
+        hospital_id=tenant.id,
+        actor=admin,
+    )
+    legacy = await service._new_draft(
+        session,
+        stay.encounter,
+        InvoiceDraftRequest(encounter_id=stay.encounter.id),
+        scope=InvoiceScope.OPD,
+    )
+    await service._gather_pending(session, legacy)
+    await session.commit()
+
+    draft = await service.assemble_draft(
+        session, InvoiceDraftRequest(encounter_id=stay.encounter.id), hospital_id=tenant.id
+    )
+    await session.commit()
+
+    assert draft.scope is InvoiceScope.IPD
+    # The dressing alone, rounded to the rupee.
+    assert draft.grand_total == D("269.00")
+    await session.refresh(legacy)
+    assert legacy.status is InvoiceStatus.ISSUED
+    assert legacy.grand_total == D("500.00")
+
+
+@pytest.mark.integration
+async def test_a_cancelled_admission_turns_its_draft_back_into_the_opd_draft(
+    session: AsyncSession, tenant: Hospital, admin: User, stay: support.Stay
+) -> None:
+    await service.add_charge(
+        session,
+        ChargeAdd(encounter_id=stay.encounter.id, service_item_code="DRESSING"),
+        hospital_id=tenant.id,
+        actor=admin,
+    )
+    ipd_draft = await service.assemble_draft(
+        session, InvoiceDraftRequest(encounter_id=stay.encounter.id), hospital_id=tenant.id
+    )
+    await session.commit()
+    await ipd_service.cancel_admission(
+        session, stay.admission, reason="Admitted the wrong patient", actor=admin
+    )
+    await session.commit()
+
+    draft = await service.assemble_draft(
+        session, InvoiceDraftRequest(encounter_id=stay.encounter.id), hospital_id=tenant.id
+    )
+
+    assert draft.id == ipd_draft.id
+    assert draft.scope is InvoiceScope.OPD

@@ -22,6 +22,7 @@ import { LinkButton } from "@/components/ui/link-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { billHref } from "@/features/billing/accounts/accounts-tables";
 import {
+  useCancelFinalBill,
   useFinaliseIpdBill,
   useIpdBill,
   useSaveIpdBill,
@@ -41,8 +42,11 @@ import type { Charge, ChargeCategory, IpdBill, Page, ServiceItem } from "@/types
  * that moves while somebody is still deciding is a total nobody can trust.
  * Save sends everything at once with the version this editor loaded; the
  * server applies all or none, records each change with its reason, and
- * returns the recalculated bill. If somebody else changed the stay first,
- * the save is refused and the editor reloads.
+ * returns the recalculated bill. The version sent is the one the first
+ * change was staged against, so a background reload cannot make a stale save
+ * look fresh. If somebody else changed the stay first, the save is refused,
+ * the editor reloads, and the staged changes are kept for the user to check
+ * and save again (those whose line has gone are dropped).
  *
  * Read-only once the final bill exists, and for anyone without
  * `ipd_bill:edit`.
@@ -59,10 +63,15 @@ export const CATEGORIES: ChargeCategory[] = [
 ];
 
 type Staged = { key: number; op: BillOp; label: string };
-type Action = { type: "stage"; op: BillOp; label: string } | { type: "unstage"; key: number } | { type: "clear" };
+type Action =
+  | { type: "stage"; op: BillOp; label: string }
+  | { type: "unstage"; key: number }
+  | { type: "keep"; items: Staged[] }
+  | { type: "clear" };
 
 function staging(state: Staged[], action: Action): Staged[] {
   if (action.type === "clear") return [];
+  if (action.type === "keep") return action.items;
   if (action.type === "unstage") return state.filter((item) => item.key !== action.key);
   return [...state, { key: Date.now() + state.length, op: action.op, label: action.label }];
 }
@@ -86,9 +95,14 @@ export function IpdBillEditor({
   const bill = useIpdBill(encounterId);
   const save = useSaveIpdBill(encounterId);
   const finalise = useFinaliseIpdBill(encounterId);
+  const cancelFinal = useCancelFinalBill(encounterId);
   const [staged, dispatch] = useReducer(staging, []);
+  // The bill version the staged changes were made against.
+  const [base, setBase] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [confirming, setConfirming] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
 
   if (bill.isPending) return <Skeleton className="h-64 w-full rounded-lg" />;
   if (!bill.data) {
@@ -97,25 +111,46 @@ export function IpdBillEditor({
   const data = bill.data;
   const editable = canEdit && !data.final_invoice;
 
+  const clearStaged = () => {
+    dispatch({ type: "clear" });
+    setBase(null);
+  };
+
   const submit = () =>
     save.mutate(
-      { expected_version: data.version, ops: staged.map((item) => item.op) },
+      { expected_version: base ?? data.version, ops: staged.map((item) => item.op) },
       {
         onSuccess: () => {
-          dispatch({ type: "clear" });
+          clearStaged();
           toast.success(t("saved"));
         },
-        onError: (failure) => {
+        onError: async (failure) => {
           if (isApiError(failure) && failure.code === "bill_changed") {
-            dispatch({ type: "clear" });
-            void bill.refetch();
-            toast.warning(t("changedElsewhere"));
+            const fresh = (await bill.refetch()).data;
+            if (!fresh) return clearStaged();
+            const live = new Set(
+              fresh.charges.filter((charge) => charge.status !== "WAIVED").map((charge) => charge.id),
+            );
+            const kept = staged.filter((item) => !("charge_id" in item.op) || live.has(item.op.charge_id));
+            dispatch({ type: "keep", items: kept });
+            setBase(kept.length ? fresh.version : null);
+            toast.warning(kept.length < staged.length ? t("changedElsewhereDropped") : t("changedElsewhere"));
           } else {
             toast.error(isApiError(failure) ? failure.message : String(failure));
           }
         },
       },
     );
+
+  const voidFinal = () =>
+    cancelFinal.mutate(cancelReason.trim(), {
+      onSuccess: (invoice) => {
+        setCancelling(false);
+        setCancelReason("");
+        toast.success(t("finalCancelled", { number: invoice.invoice_number }));
+      },
+      onError: (failure) => toast.error(isApiError(failure) ? failure.message : String(failure)),
+    });
 
   const generate = () =>
     finalise.mutate(undefined, {
@@ -180,7 +215,12 @@ export function IpdBillEditor({
               </span>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            {canFinalise && data.final_invoice.status === "ISSUED" ? (
+              <Button variant="outline" className="h-tap" onClick={() => setCancelling(true)}>
+                {t("cancelFinal")}
+              </Button>
+            ) : null}
             <LinkButton href={billHref(data.final_invoice.id)} variant="outline" className="h-tap">
               {accounts("open")}
             </LinkButton>
@@ -238,7 +278,7 @@ export function IpdBillEditor({
             <Button
               variant="outline"
               className="h-tap"
-              onClick={() => dispatch({ type: "clear" })}
+              onClick={clearStaged}
               disabled={save.isPending}
             >
               {t("discard")}
@@ -252,6 +292,7 @@ export function IpdBillEditor({
           state={dialog}
           onClose={() => setDialog(null)}
           onStage={(op, label) => {
+            if (!staged.length) setBase(data.version);
             dispatch({ type: "stage", op, label });
             setDialog(null);
           }}
@@ -275,6 +316,48 @@ export function IpdBillEditor({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {data.final_invoice ? (
+        <Dialog open={cancelling} onOpenChange={setCancelling}>
+          <DialogContent className="sm:max-w-md">
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (cancelReason.trim().length < 3) return toast.error(t("reasonRequired"));
+                voidFinal();
+              }}
+            >
+              <DialogHeader>
+                <DialogTitle>{t("cancelFinal")}</DialogTitle>
+                <DialogDescription>{t("cancelFinalHint")}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-1.5">
+                <Label htmlFor="cancel-final-reason">{t("cancelReason")}</Label>
+                <Input
+                  id="cancel-final-reason"
+                  value={cancelReason}
+                  onChange={(event) => setCancelReason(event.target.value)}
+                  className="h-tap"
+                />
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-tap"
+                  onClick={() => setCancelling(false)}
+                >
+                  {t("keepBill")}
+                </Button>
+                <Button type="submit" className="h-tap" disabled={cancelFinal.isPending}>
+                  {t("cancelFinal")}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

@@ -412,6 +412,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/accounts/{encounter_id}/final-bill/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel an IPD stay's final bill to correct it
+         * @description Correction of a final bill: cancel it (with a reason), edit the stay's
+         *     lines, generate it again. Refused while payments stand against it.
+         */
+        post: operations["cancel_final_ipd_bill_api_v1_billing_accounts__encounter_id__final_bill_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing/accounts/{encounter_id}/ipd-bill": {
         parameters: {
             query?: never;
@@ -469,6 +490,27 @@ export interface paths {
         get: operations["ipd_bill_printable_api_v1_billing_accounts__encounter_id__ipd_bill_printable_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/accounts/{encounter_id}/pre-admission-bill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a stay's pre-admission OPD bill again
+         * @description What the visit owed before the admission is an OPD bill. After it was
+         *     cancelled to correct it, this issues it again from its pending lines.
+         */
+        post: operations["rebill_pre_admission_api_v1_billing_accounts__encounter_id__pre_admission_bill_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -598,7 +640,8 @@ export interface paths {
          * Assemble a draft invoice
          * @description Gathers every pending charge on the visit. Re-runnable: called again
          *     after a later charge lands, it pulls the new line onto the same draft
-         *     rather than opening a second one.
+         *     rather than opening a second one. On a stay, that is the IPD bill: the
+         *     accounts office's.
          */
         post: operations["assemble_draft_api_v1_billing_invoices_post"];
         delete?: never;
@@ -658,6 +701,9 @@ export interface paths {
          * Issue the invoice
          * @description One-way door: after this the lines are frozen and the patient has a
          *     printout. A correction is a credit note, not an edit.
+         *
+         *     A stay's IPD draft is issued only as its final bill, with the final
+         *     bill's rules: after discharge, every line priced, once.
          */
         post: operations["issue_invoice_api_v1_billing_invoices__invoice_id__issue_post"];
         delete?: never;
@@ -10266,6 +10312,11 @@ export interface components {
             invoiced_total: string;
             /** Invoices */
             invoices: components["schemas"]["InvoiceSummary"][];
+            /**
+             * Is Stay
+             * @default false
+             */
+            is_stay: boolean;
             /** Paid Total */
             paid_total: string;
             /**
@@ -10281,6 +10332,11 @@ export interface components {
             pending_charges: components["schemas"]["ChargeRead"][];
             /** Pending Total */
             pending_total: string;
+            /**
+             * Pre Admission Pending
+             * @default false
+             */
+            pre_admission_pending: boolean;
             /** Uhid */
             uhid: string;
             /** Upi Vpa */
@@ -11402,6 +11458,41 @@ export interface operations {
             };
         };
     };
+    cancel_final_ipd_bill_api_v1_billing_accounts__encounter_id__final_bill_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                encounter_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReasonRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ipd_bill_api_v1_billing_accounts__encounter_id__ipd_bill_get: {
         parameters: {
             query?: never;
@@ -11486,6 +11577,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PrintableBill"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rebill_pre_admission_api_v1_billing_accounts__encounter_id__pre_admission_bill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                encounter_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceRead"];
                 };
             };
             /** @description Validation Error */

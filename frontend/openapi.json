@@ -18738,6 +18738,11 @@
             "title": "Invoices",
             "type": "array"
           },
+          "is_stay": {
+            "default": false,
+            "title": "Is Stay",
+            "type": "boolean"
+          },
           "paid_total": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Paid Total",
@@ -18774,6 +18779,11 @@
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Pending Total",
             "type": "string"
+          },
+          "pre_admission_pending": {
+            "default": false,
+            "title": "Pre Admission Pending",
+            "type": "boolean"
           },
           "uhid": {
             "title": "Uhid",
@@ -21406,6 +21416,65 @@
         ]
       }
     },
+    "/api/v1/billing/accounts/{encounter_id}/final-bill/cancel": {
+      "post": {
+        "description": "Correction of a final bill: cancel it (with a reason), edit the stay's\nlines, generate it again. Refused while payments stand against it.",
+        "operationId": "cancel_final_ipd_bill_api_v1_billing_accounts__encounter_id__final_bill_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel an IPD stay's final bill to correct it",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/accounts/{encounter_id}/ipd-bill": {
       "get": {
         "description": "Every line from the admission on, the last saved total, and the version\nthe editor sends back on Save. An OPD visit is refused: its bill is frozen.",
@@ -21558,6 +21627,55 @@
           }
         ],
         "summary": "An IPD stay's running bill, to print",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/accounts/{encounter_id}/pre-admission-bill": {
+      "post": {
+        "description": "What the visit owed before the admission is an OPD bill. After it was\ncancelled to correct it, this issues it again from its pending lines.",
+        "operationId": "rebill_pre_admission_api_v1_billing_accounts__encounter_id__pre_admission_bill_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "encounter_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Encounter Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Issue a stay's pre-admission OPD bill again",
         "tags": [
           "billing"
         ]
@@ -22245,7 +22363,7 @@
         ]
       },
       "post": {
-        "description": "Gathers every pending charge on the visit. Re-runnable: called again\nafter a later charge lands, it pulls the new line onto the same draft\nrather than opening a second one.",
+        "description": "Gathers every pending charge on the visit. Re-runnable: called again\nafter a later charge lands, it pulls the new line onto the same draft\nrather than opening a second one. On a stay, that is the IPD bill: the\naccounts office's.",
         "operationId": "assemble_draft_api_v1_billing_invoices_post",
         "requestBody": {
           "content": {
@@ -22399,7 +22517,7 @@
     },
     "/api/v1/billing/invoices/{invoice_id}/issue": {
       "post": {
-        "description": "One-way door: after this the lines are frozen and the patient has a\nprintout. A correction is a credit note, not an edit.",
+        "description": "One-way door: after this the lines are frozen and the patient has a\nprintout. A correction is a credit note, not an edit.\n\nA stay's IPD draft is issued only as its final bill, with the final\nbill's rules: after discharge, every line priced, once.",
         "operationId": "issue_invoice_api_v1_billing_invoices__invoice_id__issue_post",
         "parameters": [
           {

@@ -420,12 +420,14 @@ class Invoice(AuditedTenantModel, table=True):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        # At most one live draft per visit, so two staff members cannot each
-        # build half a bill. Issued invoices are excluded: a long stay may
-        # legitimately produce several.
+        # At most one live draft per visit and scope, so two staff members
+        # cannot each build half a bill. Issued invoices are excluded: a long
+        # stay may legitimately produce several. Per scope, because a stay's
+        # pre-admission OPD bill can be issued again while its IPD draft runs.
         Index(
             "uq_invoices_encounter_draft",
             "encounter_id",
+            "scope",
             unique=True,
             postgresql_where=text("deleted_at IS NULL AND status = 'DRAFT'"),
         ),

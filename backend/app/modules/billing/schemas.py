@@ -469,6 +469,11 @@ class VisitAccount(BaseModel):
     # True when something on this visit could not be priced. Shown to the
     # cashier, because they are the last person who can catch it.
     has_unpriced_items: bool
+    # An IPD stay: the counter neither assembles nor issues its bill.
+    is_stay: bool = False
+    # Lines from before the admission are waiting to be issued again as the
+    # stay's OPD bill.
+    pre_admission_pending: bool = False
 
     # Where a UPI QR for this bill pays: the hospital's own UPI ID, or null
     # when the administrator has not set one (the dialog then says so).

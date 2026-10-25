@@ -10,7 +10,8 @@ import type { BillChangesRequest, Invoice, IpdBill } from "@/types/api";
  *
  * Staged changes live in the editor (a reducer), never here: nothing reaches
  * the server until Save, and Save sends every staged change in one request
- * with the version the editor loaded. The server applies all or none and
+ * with the version the first change was staged against — not whatever a
+ * background reload fetched since. The server applies all or none and
  * returns the recalculated bill, which replaces the cached one.
  */
 export type BillOp = BillChangesRequest["ops"][number];
@@ -32,6 +33,19 @@ export function useSaveIpdBill(encounterId: string) {
       api.post<IpdBill>(`/billing/accounts/${encounterId}/ipd-bill/changes`, request),
     onSuccess: (bill) => {
       client.setQueryData(ipdBillKey(encounterId), bill);
+      void client.invalidateQueries({ queryKey: ["billing", "history"] });
+    },
+  });
+}
+
+/** Void the final bill so the stay can be corrected and billed again. */
+export function useCancelFinalBill(encounterId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (reason: string) =>
+      api.post<Invoice>(`/billing/accounts/${encounterId}/final-bill/cancel`, { reason }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ipdBillKey(encounterId) });
       void client.invalidateQueries({ queryKey: ["billing", "history"] });
     },
   });

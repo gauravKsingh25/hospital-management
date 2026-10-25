@@ -115,7 +115,11 @@ same browser. Each change is listed with before, after, reason and who made it.
 
 **Check the lock:** open the same patient in two tabs, save a change in one,
 then save a different change in the other → the second save is refused
-("Someone else changed this bill…") and the editor reloads.
+("Someone else changed this bill…"), the editor reloads, and your unsaved
+change is **kept** — check it and click **Save changes** again. The same
+happens if you leave a tab with unsaved changes and come back after the bill
+reloaded in the background: the save is still checked against the bill you
+started from.
 
 ## 7. The final bill, after discharge [§5.6]
 
@@ -128,6 +132,10 @@ then save a different change in the other → the second save is refused
 4. The editor's Add / Edit / Remove buttons are gone: the final bill is frozen.
    It shows its number, status and balance, with **Open** and **Print**.
 5. The counter takes payment against it as usual (Billing → Cash counter).
+6. **Correct a final bill:** click **Cancel final bill**, give a reason →
+   "Final bill INV-… cancelled." The editor opens again: fix the lines, Save,
+   then **Generate final bill** again. (Refused while a payment stands
+   against the bill — reverse the payment first.)
 
 Also works when the stay ends by **death, LAMA or referral** instead of a
 discharge.
@@ -155,8 +163,29 @@ of the day they were issued.
   strip on the row. The IPD bill is the accountant's.
 - **Cashier** opening `/billing/patients/<any id>` → "You do not have
   permission to open this."
-- **Cashier** trying **Issue** on an admitted patient's bill from the cash
-  counter → refused ("Only the accounts office may change the IPD bill").
+- **Cashier** opening an admitted patient on the cash counter → no
+  **Assemble draft** or **Issue** for the IPD bill, only the note "This
+  patient is admitted. The IPD bill is made by the accounts office."
+  (The server refuses those calls too.)
+- **Hospital admin** cannot issue a stay's IPD bill early from the cash
+  counter either: issuing it *is* generating the final bill, so it waits for
+  discharge.
+
+## 10. The consultation bill of an admitted patient is never lost [§5.6]
+
+The consultation from before the admission is an OPD bill, issued at
+admission. If it is cancelled to correct it, its lines wait for an OPD bill
+again — never for the IPD one.
+
+1. Cancel it: the counter has no Cancel button for an OPD bill yet (this
+   predates the accountant work), so use the API — signed in as **billing
+   staff** or **admin**, `POST /bff/billing/invoices/<invoice id>/cancel` with
+   `{"reason": "Wrong fee"}`.
+2. Billing → Cash counter → the admitted patient: the consultation is under
+   pending charges and an **Issue OPD bill** button appears → click it →
+   "OPD bill INV-… issued."
+3. If nobody re-issues it, generating the final IPD bill issues it as its own
+   OPD bill first — the IPD bill still holds only the stay.
 
 ---
 
