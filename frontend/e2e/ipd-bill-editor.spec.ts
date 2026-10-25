@@ -91,7 +91,8 @@ test("after discharge the accountant generates the final bill and it can no long
 
   const pane = page.getByTestId("visit-pane");
   await expect(pane.getByRole("button", { name: "Add charge" })).toHaveCount(0);
-  await expect(pane.getByRole("link", { name: /Print bill/ })).toBeVisible();
+  await expect(pane.getByRole("button", { name: /Print bill/ })).toBeVisible();
+  await expect(pane.getByRole("button", { name: /Edit bill/ })).toBeVisible();
   await expect(page.getByTestId("visit-item").first()).toContainText(/Final|Paid/);
 
   // A wrong final bill is corrected in the product: cancel (with a reason),
@@ -108,9 +109,9 @@ test("a background reload cannot slip a stale save through, and refused changes 
   page,
 }) => {
   test.setTimeout(180_000);
+  const loaded = page.waitForResponse((response) => /\/ipd-bill$/.test(response.url()));
   await admittedForAccounts(page);
-  const href = await page.getByRole("link", { name: "Print running bill" }).getAttribute("href");
-  const encounterId = href?.match(/running\/([0-9a-f-]+)/)?.[1];
+  const encounterId = (await loaded).url().match(/accounts\/([0-9a-f-]+)\/ipd-bill$/)?.[1];
   expect(encounterId).toBeTruthy();
 
   await addFreeTextCharge(page, "Dressing kit", "240");

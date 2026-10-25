@@ -45,7 +45,8 @@ Sign in as **admin**.
 2. On **Reception**, find the patient's row → tap **Paid** twice (cash).
    The row shows the paid chip.
 
-That OPD bill is now issued and **cannot be edited by anyone**.
+That OPD bill is now issued and frozen: nobody changes it in place. Only the
+accounts office can correct it, by issuing a corrected bill (section 8b).
 
 ## 3. The accountant's dashboard [§5.2]
 
@@ -66,6 +67,12 @@ Sign out, sign in as **accountant**.
 7. **Outstanding** tab: issued bills not fully paid. **Patients** tab:
    patients by latest activity (not a ranking).
 8. Click **Export CSV** → a `.csv` of the current tab downloads.
+9. Each bill row has three buttons:
+   - **Open** → the patient's bill page, with that bill selected and locked
+     (see section 8b).
+   - **Print** → the A4 bill prints straight away; you stay on the dashboard.
+   - **PDF** → the same print window opens; choose **Save as PDF**. The file
+     is named after the bill number.
 
 **Check:** sign in as **reception** and open Billing → only the **Cash
 counter**, no Accounts tab.
@@ -88,7 +95,7 @@ patient from step 4 → click their name.
 2. On the left, **two visits**, newest first: **IPD admission** (selected)
    and **OPD** with the ₹500 consultation.
 3. Click the **OPD** visit → its bill lines (OPD consultation) and receipts.
-   No edit buttons: OPD bills are read only.
+   Locked, with **Edit**, **PDF** and **Print** (section 8b).
 
 ## 6. Edit the IPD bill — totals change only on Save [§5.5]
 
@@ -105,8 +112,8 @@ Still on the patient's page, IPD visit selected.
 5. Try the **%** (Discount) and **bin** (Remove) icons. Remove keeps the line,
    struck through as "Removed (waived)". The care stays on the record, the
    money doesn't. Every change needs a reason.
-6. Click **Print running bill** → an A4 page titled **"INTERIM — NOT A FINAL
-   BILL"**.
+6. Click **Print running bill** → the A4 bill titled **"INTERIM — NOT A FINAL
+   BILL"** prints without leaving the page.
 
 **Check the audit trail:** there is no audit screen yet, so use the API. Signed
 in as **admin**, open
@@ -142,10 +149,11 @@ discharge.
 
 ## 8. The printed bill [§5.7]
 
-From the dashboard (**Open**, **PDF**, **Print** on any bill row) or the patient's page:
+From a dashboard bill row (**Print** / **PDF**), or from any bill on the
+patient's page:
 
-- **Open** shows the A4 page. **PDF** and **Print** open the print dialog.
-  Choose "Save as PDF" to download.
+- **Print** prints the A4 bill without leaving the page. **PDF** opens the
+  same print window — choose "Save as PDF" to download it.
 - Top: your **logo, name, address, phone, GSTIN** (from step 1).
 - Title: **TAX INVOICE** when any line carries GST, otherwise **BILL OF SUPPLY**.
 - Patient name, UHID, age/sex. For IPD: admission number, dates, ward/bed, doctor.
@@ -156,6 +164,29 @@ From the dashboard (**Open**, **PDF**, **Print** on any bill row) or the patient
 **Check the snapshot:** change the address in the Hospital profile and reprint
 an *old* bill → it still shows the **old** address. Bills keep the letterhead
 of the day they were issued.
+
+## 8b. Open a bill, edit it, print it [§5.5, §5.6]
+
+As **accountant** (or admin): Billing → Accounts → any bill row → **Open**.
+
+1. You land on the patient's bill page: their visits on the left, newest
+   first, and the bill you opened on the right — **locked**, with **Edit**,
+   **PDF** and **Print**. Pick any other visit or bill on the left to print
+   that one instead.
+2. Click **Edit**. The lines unlock (pencil, %, bin per line, and **Add
+   charge**). Change what you need; each change asks for a reason and is
+   listed as unsaved.
+3. Click **Issue corrected bill** → give the reason for the correction →
+   **Issue corrected bill**.
+   → "Corrected bill INV-… issued; INV-… cancelled."
+4. The old bill now shows **Cancelled**; the new one carries the changes,
+   under a new number, with the receipts already paid moved onto it (e.g.
+   **Part paid** if the total went up).
+5. A correction that would bring the total below what was already paid is
+   refused — reverse the payment first.
+
+The same **Edit** is on a final IPD bill. A running IPD bill (patient still
+admitted) needs no Edit: it is editable directly (section 6).
 
 ## 9. Who cannot do what [§5.1]
 
@@ -191,10 +222,10 @@ again — never for the IPD one.
 
 ### Automated tests covering the same path
 
-- Backend: `backend/tests/test_billing_accounts.py`, `test_api_accounts.py`,
+- Backend: `backend/tests/test_billing_accounts.py`, `test_api_accounts.py`, `test_bill_correction.py`,
   `test_api_accounts_read.py`, `test_api_hospital_logo.py`.
 - Browser (Playwright): `frontend/e2e/hospital-profile.spec.ts`,
-  `accounts.spec.ts`, `patient-bills.spec.ts`, `ipd-bill-editor.spec.ts`,
+  `accounts.spec.ts`, `patient-bills.spec.ts`, `ipd-bill-editor.spec.ts`, `bill-correction.spec.ts`,
   `printed-bill.spec.ts`.
 - Unit: `frontend/src/features/billing/print/amount-in-words.test.mjs`
   (`npm run test:unit`).

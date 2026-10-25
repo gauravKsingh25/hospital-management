@@ -14,17 +14,20 @@ export async function generateMetadata() {
 /** A patient's bill history and cost journey — the accountant's view. */
 export default async function PatientBillsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ patientId: string }>;
+  searchParams: Promise<{ bill?: string }>;
 }) {
   const user = await getCurrentUser();
   if (!can(user, "accounts:read")) return <NoPermission />;
 
-  const { patientId } = await params;
+  const [{ patientId }, { bill }] = await Promise.all([params, searchParams]);
   const history = await serverFetch<BillHistory>(`/billing/patients/${patientId}/history`);
   return (
     <PatientHistory
       initial={history}
+      initialBill={bill}
       canEdit={can(user, "ipd_bill:edit")}
       canFinalise={can(user, "ipd_bill:finalise")}
     />

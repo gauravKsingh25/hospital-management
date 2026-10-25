@@ -18,21 +18,22 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { LinkButton } from "@/components/ui/link-button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { billHref } from "@/features/billing/accounts/accounts-tables";
+import { CORRECTABLE, PrintActions } from "@/features/billing/accounts/bill-actions";
 import {
   useCancelFinalBill,
+  useCorrectBill,
   useFinaliseIpdBill,
   useIpdBill,
   useSaveIpdBill,
   type BillOp,
 } from "@/features/billing/accounts/use-ipd-bill";
 import { formatMoney } from "@/features/billing/money";
+import { printInPlace, runningBillPath } from "@/features/billing/print/print-in-place";
 import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
-import type { Charge, ChargeCategory, IpdBill, Page, ServiceItem } from "@/types/api";
+import type { Charge, ChargeCategory, Page, ServiceItem } from "@/types/api";
 
 /**
  * The accountant's IPD bill editor (spec §5.5).
@@ -62,21 +63,21 @@ export const CATEGORIES: ChargeCategory[] = [
   "REGISTRATION",
 ];
 
-type Staged = { key: number; op: BillOp; label: string };
+export type Staged = { key: number; op: BillOp; label: string };
 type Action =
   | { type: "stage"; op: BillOp; label: string }
   | { type: "unstage"; key: number }
   | { type: "keep"; items: Staged[] }
   | { type: "clear" };
 
-function staging(state: Staged[], action: Action): Staged[] {
+export function staging(state: Staged[], action: Action): Staged[] {
   if (action.type === "clear") return [];
   if (action.type === "keep") return action.items;
   if (action.type === "unstage") return state.filter((item) => item.key !== action.key);
   return [...state, { key: Date.now() + state.length, op: action.op, label: action.label }];
 }
 
-type DialogState =
+export type DialogState =
   | { mode: "add" }
   | { mode: "edit" | "discount" | "remove"; charge: Charge }
   | null;
@@ -91,29 +92,35 @@ export function IpdBillEditor({
   canFinalise: boolean;
 }) {
   const t = useTranslations("ipdBill");
-  const accounts = useTranslations("accounts");
   const bill = useIpdBill(encounterId);
   const save = useSaveIpdBill(encounterId);
   const finalise = useFinaliseIpdBill(encounterId);
   const cancelFinal = useCancelFinalBill(encounterId);
+  const correct = useCorrectBill();
   const [staged, dispatch] = useReducer(staging, []);
   // The bill version the staged changes were made against.
   const [base, setBase] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [confirming, setConfirming] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
+  // Edit on the final bill: staged changes become a corrected bill.
+  const [correcting, setCorrecting] = useState(false);
+  const [reasonFor, setReasonFor] = useState<"correct" | "cancel" | null>(null);
 
   if (bill.isPending) return <Skeleton className="h-64 w-full rounded-lg" />;
   if (!bill.data) {
     return <p className="text-destructive text-sm">{t("loadFailed")}</p>;
   }
   const data = bill.data;
-  const editable = canEdit && !data.final_invoice;
+  const final = data.final_invoice;
+  const editable = (canEdit && !final) || correcting;
 
   const clearStaged = () => {
     dispatch({ type: "clear" });
     setBase(null);
+  };
+  const stopCorrecting = () => {
+    clearStaged();
+    setCorrecting(false);
   };
 
   const submit = () =>
@@ -142,15 +149,29 @@ export function IpdBillEditor({
       },
     );
 
-  const voidFinal = () =>
-    cancelFinal.mutate(cancelReason.trim(), {
+  const voidFinal = (reason: string) =>
+    cancelFinal.mutate(reason, {
       onSuccess: (invoice) => {
-        setCancelling(false);
-        setCancelReason("");
+        setReasonFor(null);
         toast.success(t("finalCancelled", { number: invoice.invoice_number }));
       },
       onError: (failure) => toast.error(isApiError(failure) ? failure.message : String(failure)),
     });
+
+  const issueCorrected = (reason: string) => {
+    if (!final) return;
+    correct.mutate(
+      { invoiceId: final.id, reason, ops: staged.map((item) => item.op) },
+      {
+        onSuccess: (fresh) => {
+          setReasonFor(null);
+          stopCorrecting();
+          toast.success(t("corrected", { number: fresh.invoice_number, old: final.invoice_number }));
+        },
+        onError: (failure) => toast.error(isApiError(failure) ? failure.message : String(failure)),
+      },
+    );
+  };
 
   const generate = () =>
     finalise.mutate(undefined, {
@@ -185,14 +206,16 @@ export function IpdBillEditor({
               {t("addCharge")}
             </Button>
           ) : null}
-          <LinkButton
-            href={`/bills/running/${encounterId}?print=1`}
-            variant="outline"
-            className="h-tap"
-          >
-            <Printer aria-hidden />
-            {t("printRunning")}
-          </LinkButton>
+          {final ? null : (
+            <Button
+              variant="outline"
+              className="h-tap"
+              onClick={() => printInPlace(runningBillPath(encounterId))}
+            >
+              <Printer aria-hidden />
+              {t("printRunning")}
+            </Button>
+          )}
           {canFinalise && data.can_finalise && !staged.length ? (
             <Button className="h-tap" onClick={() => setConfirming(true)}>
               {t("generateFinal")}
@@ -201,38 +224,55 @@ export function IpdBillEditor({
         </div>
       </div>
 
-      {data.final_invoice ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
-          <div className="space-y-1">
-            <p className="font-medium">
-              {t("finalBill")} · <span className="tabular">{data.final_invoice.invoice_number}</span>
-            </p>
-            <div className="flex items-center gap-2 text-sm">
-              <InvoiceStatusChip status={data.final_invoice.status} />
-              <span className="tabular">{formatMoney(data.final_invoice.grand_total)}</span>
-              <span className="text-muted-foreground">
-                {t("balance")} {formatMoney(data.final_invoice.balance_due)}
-              </span>
+      {final ? (
+        <div className="space-y-2 rounded-lg border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-1">
+              <p className="font-medium">
+                {t("finalBill")} · <span className="tabular">{final.invoice_number}</span>
+              </p>
+              <div className="flex items-center gap-2 text-sm">
+                <InvoiceStatusChip status={final.status} />
+                <span className="tabular">{formatMoney(final.grand_total)}</span>
+                <span className="text-muted-foreground">
+                  {t("balance")} {formatMoney(final.balance_due)}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {canFinalise && CORRECTABLE.has(final.status) && !correcting ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-tap"
+                  aria-label={t("editBillNumber", { number: final.invoice_number })}
+                  onClick={() => setCorrecting(true)}
+                >
+                  <Pencil aria-hidden />
+                  {t("editBill")}
+                </Button>
+              ) : null}
+              {canFinalise && final.status === "ISSUED" && !correcting ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-tap"
+                  onClick={() => setReasonFor("cancel")}
+                >
+                  {t("cancelFinal")}
+                </Button>
+              ) : null}
+              <PrintActions invoiceId={final.id} number={final.invoice_number} />
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {canFinalise && data.final_invoice.status === "ISSUED" ? (
-              <Button variant="outline" className="h-tap" onClick={() => setCancelling(true)}>
-                {t("cancelFinal")}
+          {correcting ? (
+            <div className="bg-primary/5 flex flex-wrap items-center justify-between gap-2 rounded-md p-2 text-sm">
+              <p>{t("correctingNote", { number: final.invoice_number })}</p>
+              <Button variant="ghost" size="sm" className="h-tap" onClick={stopCorrecting}>
+                {t("stopEditing")}
               </Button>
-            ) : null}
-            <LinkButton href={billHref(data.final_invoice.id)} variant="outline" className="h-tap">
-              {accounts("open")}
-            </LinkButton>
-            <LinkButton
-              href={billHref(data.final_invoice.id, true)}
-              className="h-tap"
-              aria-label={accounts("printBill", { number: data.final_invoice.invoice_number })}
-            >
-              <Printer aria-hidden />
-              {accounts("print")}
-            </LinkButton>
-          </div>
+            </div>
+          ) : null}
         </div>
       ) : data.stay.status === "DISCHARGED" || data.can_finalise ? (
         <p className="text-muted-foreground text-sm">{t("awaitingFinal")}</p>
@@ -245,46 +285,21 @@ export function IpdBillEditor({
       ) : null}
 
       <Lines
-        bill={data}
+        charges={data.charges}
         editable={editable}
         stagedFor={stagedFor}
         onAction={(mode, charge) => setDialog({ mode, charge })}
       />
 
       {staged.length ? (
-        <div className="bg-caution/10 border-caution/40 space-y-2 rounded-lg border p-3" role="status">
-          <p className="text-sm font-medium" data-testid="unsaved-count">
-            {t("unsavedCount", { count: staged.length })}
-          </p>
-          <ul className="space-y-1 text-sm">
-            {staged.map((item) => (
-              <li key={item.key} className="flex items-center justify-between gap-2">
-                <span>{item.label}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => dispatch({ type: "unstage", key: item.key })}
-                  aria-label={t("undoStaged", { change: item.label })}
-                >
-                  {t("undo")}
-                </Button>
-              </li>
-            ))}
-          </ul>
-          <div className="flex gap-2">
-            <Button className="h-tap" onClick={submit} disabled={save.isPending}>
-              {t("saveChanges")}
-            </Button>
-            <Button
-              variant="outline"
-              className="h-tap"
-              onClick={clearStaged}
-              disabled={save.isPending}
-            >
-              {t("discard")}
-            </Button>
-          </div>
-        </div>
+        <StagedPanel
+          staged={staged}
+          onUndo={(key) => dispatch({ type: "unstage", key })}
+          onDiscard={clearStaged}
+          onSubmit={correcting ? () => setReasonFor("correct") : submit}
+          submitLabel={correcting ? t("issueCorrected") : t("saveChanges")}
+          pending={save.isPending || correct.isPending}
+        />
       ) : null}
 
       {dialog ? (
@@ -292,7 +307,7 @@ export function IpdBillEditor({
           state={dialog}
           onClose={() => setDialog(null)}
           onStage={(op, label) => {
-            if (!staged.length) setBase(data.version);
+            if (!staged.length && !correcting) setBase(data.version);
             dispatch({ type: "stage", op, label });
             setDialog(null);
           }}
@@ -317,58 +332,35 @@ export function IpdBillEditor({
         </DialogContent>
       </Dialog>
 
-      {data.final_invoice ? (
-        <Dialog open={cancelling} onOpenChange={setCancelling}>
-          <DialogContent className="sm:max-w-md">
-            <form
-              className="space-y-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (cancelReason.trim().length < 3) return toast.error(t("reasonRequired"));
-                voidFinal();
-              }}
-            >
-              <DialogHeader>
-                <DialogTitle>{t("cancelFinal")}</DialogTitle>
-                <DialogDescription>{t("cancelFinalHint")}</DialogDescription>
-              </DialogHeader>
-              <div className="space-y-1.5">
-                <Label htmlFor="cancel-final-reason">{t("cancelReason")}</Label>
-                <Input
-                  id="cancel-final-reason"
-                  value={cancelReason}
-                  onChange={(event) => setCancelReason(event.target.value)}
-                  className="h-tap"
-                />
-              </div>
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-tap"
-                  onClick={() => setCancelling(false)}
-                >
-                  {t("keepBill")}
-                </Button>
-                <Button type="submit" className="h-tap" disabled={cancelFinal.isPending}>
-                  {t("cancelFinal")}
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+      {final ? (
+        <ReasonDialog
+          key={reasonFor ?? "closed"}
+          open={reasonFor !== null}
+          onOpenChange={(open) => (open ? null : setReasonFor(null))}
+          title={reasonFor === "correct" ? t("issueCorrected") : t("cancelFinal")}
+          hint={
+            reasonFor === "correct"
+              ? t("correctHint", { number: final.invoice_number })
+              : t("cancelFinalHint")
+          }
+          label={reasonFor === "correct" ? t("correctionReason") : t("cancelReason")}
+          confirmLabel={reasonFor === "correct" ? t("issueCorrected") : t("cancelFinal")}
+          keepLabel={reasonFor === "correct" ? t("keepEditing") : t("keepBill")}
+          pending={correct.isPending || cancelFinal.isPending}
+          onConfirm={reasonFor === "correct" ? issueCorrected : voidFinal}
+        />
       ) : null}
     </div>
   );
 }
 
-function Lines({
-  bill,
+export function Lines({
+  charges: lines,
   editable,
   stagedFor,
   onAction,
 }: {
-  bill: IpdBill;
+  charges: Charge[];
   editable: boolean;
   stagedFor: (chargeId: string) => Staged[];
   onAction: (mode: "edit" | "discount" | "remove", charge: Charge) => void;
@@ -376,7 +368,7 @@ function Lines({
   const t = useTranslations("ipdBill");
   const categories = useTranslations("categories");
 
-  if (bill.charges.length === 0) {
+  if (lines.length === 0) {
     return (
       <p className="text-muted-foreground rounded-lg border border-dashed py-8 text-center text-sm">
         {t("noLines")}
@@ -385,7 +377,7 @@ function Lines({
   }
 
   const groups = new Map<string, Charge[]>();
-  for (const charge of bill.charges) {
+  for (const charge of lines) {
     groups.set(charge.category, [...(groups.get(charge.category) ?? []), charge]);
   }
 
@@ -485,8 +477,122 @@ function Lines({
   );
 }
 
+/** The staged, unsaved changes, with Save (or Issue corrected bill) and Discard. */
+export function StagedPanel({
+  staged,
+  onUndo,
+  onDiscard,
+  onSubmit,
+  submitLabel,
+  pending,
+}: {
+  staged: Staged[];
+  onUndo: (key: number) => void;
+  onDiscard: () => void;
+  onSubmit: () => void;
+  submitLabel: string;
+  pending: boolean;
+}) {
+  const t = useTranslations("ipdBill");
+  return (
+    <div className="bg-caution/10 border-caution/40 space-y-2 rounded-lg border p-3" role="status">
+      <p className="text-sm font-medium" data-testid="unsaved-count">
+        {t("unsavedCount", { count: staged.length })}
+      </p>
+      <ul className="space-y-1 text-sm">
+        {staged.map((item) => (
+          <li key={item.key} className="flex items-center justify-between gap-2">
+            <span>{item.label}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onUndo(item.key)}
+              aria-label={t("undoStaged", { change: item.label })}
+            >
+              {t("undo")}
+            </Button>
+          </li>
+        ))}
+      </ul>
+      <div className="flex gap-2">
+        <Button className="h-tap" onClick={onSubmit} disabled={pending}>
+          {submitLabel}
+        </Button>
+        <Button variant="outline" className="h-tap" onClick={onDiscard} disabled={pending}>
+          {t("discard")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Asks why, before a bill is cancelled or corrected. At least 3 characters. */
+export function ReasonDialog({
+  open,
+  onOpenChange,
+  title,
+  hint,
+  label,
+  confirmLabel,
+  keepLabel,
+  pending,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  hint: string;
+  label: string;
+  confirmLabel: string;
+  keepLabel: string;
+  pending: boolean;
+  onConfirm: (reason: string) => void;
+}) {
+  const t = useTranslations("ipdBill");
+  const [reason, setReason] = useState("");
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (reason.trim().length < 3) {
+              toast.error(t("reasonRequired"));
+              return;
+            }
+            onConfirm(reason.trim());
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{hint}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="bill-reason">{label}</Label>
+            <Input
+              id="bill-reason"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              className="h-tap"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" className="h-tap" onClick={() => onOpenChange(false)}>
+              {keepLabel}
+            </Button>
+            <Button type="submit" className="h-tap" disabled={pending}>
+              {confirmLabel}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** One dialog for the four kinds of change; every one needs a reason. */
-function ChargeDialog({
+export function ChargeDialog({
   state,
   onClose,
   onStage,

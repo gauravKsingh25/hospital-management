@@ -44,10 +44,17 @@ test("the accountant opens Billing on the Accounts dashboard, newest bill first"
   const firstBill = page.getByTestId("bill-row").first();
   await expect(firstBill).toContainText(name);
   await expect(firstBill).toContainText("OPD");
-  await expect(firstBill.getByRole("link", { name: /Print/ })).toHaveAttribute(
+  // Open goes to the patient's bills with this one selected.
+  await expect(firstBill.getByRole("link", { name: /Open bill/ })).toHaveAttribute(
     "href",
-    /\/bills\/[0-9a-f-]+\?print=1$/,
+    /\/billing\/patients\/[0-9a-f-]+\?bill=[0-9a-f-]+$/,
   );
+  // Print prints in place: the page stays, the A4 bill loads in a hidden frame.
+  await firstBill.getByRole("button", { name: /Print bill/ }).click();
+  await expect(page).toHaveURL(/\/billing$/);
+  await expect(
+    page.frameLocator('[data-testid="print-frame"]').last().getByTestId("printed-bill"),
+  ).toContainText(name);
 
   await page.getByRole("tab", { name: "Payments received" }).click();
   await expect(page.getByTestId("payment-row").first()).toContainText(name);

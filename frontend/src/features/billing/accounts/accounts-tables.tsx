@@ -5,21 +5,23 @@ import { useFormatter, useTranslations } from "next-intl";
 
 import { InvoiceStatusChip } from "@/components/status-chip";
 import { LinkButton } from "@/components/ui/link-button";
+import { PrintActions } from "@/features/billing/accounts/bill-actions";
 import { formatMoney } from "@/features/billing/money";
 import { cn } from "@/lib/utils";
 import type { BillRow, PatientRow, PaymentRow } from "@/types/api";
 
 /**
- * The dashboard's tables. Read only: every row opens, prints or leads to the
- * patient's bill history, and nothing here changes a figure.
+ * The dashboard's tables. Nothing here changes a figure: Open takes the
+ * accountant to the patient's bills with this one selected (where it can be
+ * edited), and Print and PDF print the bill in place.
  */
 const TH = "px-3 py-2.5 text-left font-medium";
 const TH_RIGHT = "px-3 py-2.5 text-right font-medium";
 const TD = "px-3 py-2.5 align-top";
 
-export const billHref = (invoiceId: string, print = false) =>
-  `/bills/${invoiceId}${print ? "?print=1" : ""}`;
-export const patientHref = (patientId: string) => `/billing/patients/${patientId}`;
+export const billHref = (invoiceId: string) => `/bills/${invoiceId}`;
+export const patientHref = (patientId: string, invoiceId?: string) =>
+  `/billing/patients/${patientId}${invoiceId ? `?bill=${invoiceId}` : ""}`;
 
 function Frame({ caption, children }: { caption: string; children: React.ReactNode }) {
   return (
@@ -87,29 +89,15 @@ export function BillsTable({ rows, caption }: { rows: BillRow[]; caption: string
             <td className={cn(TD, "text-right")}>
               <div className="flex justify-end gap-1">
                 <LinkButton
-                  href={billHref(row.invoice_id)}
-                  variant="ghost"
+                  href={patientHref(row.patient_id, row.invoice_id)}
+                  variant="outline"
                   size="sm"
+                  className="h-tap"
                   aria-label={t("openBill", { number: row.invoice_number })}
                 >
                   {t("open")}
                 </LinkButton>
-                <LinkButton
-                  href={billHref(row.invoice_id, true)}
-                  variant="ghost"
-                  size="sm"
-                  aria-label={t("downloadBill", { number: row.invoice_number })}
-                >
-                  {t("pdf")}
-                </LinkButton>
-                <LinkButton
-                  href={billHref(row.invoice_id, true)}
-                  variant="ghost"
-                  size="sm"
-                  aria-label={t("printBill", { number: row.invoice_number })}
-                >
-                  {t("print")}
-                </LinkButton>
+                <PrintActions invoiceId={row.invoice_id} number={row.invoice_number} />
               </div>
             </td>
           </tr>

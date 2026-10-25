@@ -13,8 +13,8 @@ import {
 
 /**
  * The printed bill: an A4 page with the hospital's letterhead, the GST
- * columns, the total in words and the receipts — the page "Download PDF" and
- * "Print" both open. Browsers save it as a PDF; no PDF library is involved.
+ * columns, the total in words and the receipts — the page "PDF" and "Print"
+ * print in place. Browsers save it as a PDF; no PDF library is involved.
  */
 releaseTrackedBeds();
 
@@ -44,9 +44,9 @@ test("the printed bill carries the letterhead, GST columns and amount in words",
   const bill = page.getByTestId("bill-row").filter({ hasText: name });
   await expect(bill).toBeVisible();
   const number = (await bill.locator("td").nth(1).innerText()).trim();
-  await bill.getByRole("link", { name: `Open bill ${number}` }).click();
-
-  await expect(page).toHaveURL(/\/bills\/[0-9a-f-]+$/);
+  const open = await bill.getByRole("link", { name: `Open bill ${number}` }).getAttribute("href");
+  const invoiceId = open?.match(/bill=([0-9a-f-]+)/)?.[1];
+  await page.goto(`/bills/${invoiceId}`);
   const sheet = page.getByTestId("printed-bill");
   await expect(sheet.getByTestId("letterhead")).toBeVisible();
   await expect(sheet.getByRole("heading", { name: "BILL OF SUPPLY" })).toBeVisible();
@@ -70,10 +70,11 @@ test("a stay's running bill prints as interim", async ({ page }) => {
   await signIn(page, ACCOUNTS.accountant);
   await openPatientBills(page, name);
 
-  await page.getByRole("link", { name: "Print running bill" }).click();
+  await page.getByRole("button", { name: "Print running bill" }).click();
 
-  await expect(page).toHaveURL(/\/bills\/running\/[0-9a-f-]+\?print=1$/);
+  // Printed in place: the accountant stays on the patient's page.
+  await expect(page).toHaveURL(/\/billing\/patients\//);
   await expect(
-    page.getByTestId("printed-bill").getByRole("heading", { name: "INTERIM — NOT A FINAL BILL" }),
-  ).toBeVisible();
+    page.frameLocator('[data-testid="print-frame"]').last().getByTestId("printed-bill"),
+  ).toContainText("INTERIM — NOT A FINAL BILL");
 });

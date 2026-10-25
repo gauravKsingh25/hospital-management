@@ -688,6 +688,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/invoices/{invoice_id}/correct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Correct an issued bill
+         * @description The accounts office's Edit on an issued bill, OPD or IPD. Issues a new
+         *     bill with the changes, moves the receipts onto it, and cancels this one
+         *     with the reason. Each change is audited with its before and after.
+         */
+        post: operations["correct_invoice_api_v1_billing_invoices__invoice_id__correct_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing/invoices/{invoice_id}/issue": {
         parameters: {
             query?: never;
@@ -4597,6 +4619,19 @@ export interface components {
             expected_version: string;
             /** Ops */
             ops: (components["schemas"]["BillAdd"] | components["schemas"]["BillEdit"] | components["schemas"]["BillDiscount"] | components["schemas"]["BillRemove"])[];
+        };
+        /**
+         * BillCorrection
+         * @description Edit on an issued bill: the changes, and why the bill is corrected.
+         *
+         *     The bill is replaced, not changed: a new bill with the changes, the
+         *     receipts moved onto it, the old one cancelled with this reason.
+         */
+        BillCorrection: {
+            /** Ops */
+            ops: (components["schemas"]["BillAdd"] | components["schemas"]["BillEdit"] | components["schemas"]["BillDiscount"] | components["schemas"]["BillRemove"])[];
+            /** Reason */
+            reason: string;
         };
         /** BillDiscount */
         BillDiscount: {
@@ -12012,6 +12047,41 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correct_invoice_api_v1_billing_invoices__invoice_id__correct_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BillCorrection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

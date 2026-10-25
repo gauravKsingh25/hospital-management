@@ -4,38 +4,43 @@ import { useQuery } from "@tanstack/react-query";
 import { useFormatter, useTranslations } from "next-intl";
 import { useState } from "react";
 
-import { InvoiceStatusChip } from "@/components/status-chip";
-import { LinkButton } from "@/components/ui/link-button";
-import { Skeleton } from "@/components/ui/skeleton";
-import { billHref } from "@/features/billing/accounts/accounts-tables";
 import { CostJourney } from "@/features/billing/accounts/cost-journey";
 import { IpdBillEditor } from "@/features/billing/accounts/ipd-bill-editor";
+import { IssuedBill } from "@/features/billing/accounts/issued-bill";
 import { formatMoney } from "@/features/billing/money";
 import { api } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
-import type { BillHistory, InvoiceSummary, PrintableBill, VisitBills } from "@/types/api";
+import type { BillHistory, VisitBills } from "@/types/api";
 
 /**
  * A patient's bills (spec §5.3): identity and lifetime totals on top, every
  * bill-bearing visit newest first on the left — the newest open — and the
- * selected visit's bill on the right. A stay that is not final yet opens in
- * the IPD bill editor; everything else is read only. The cost journey is one
- * tab away.
+ * selected visit's bill on the right — or the visit holding `initialBill`,
+ * when the dashboard's Open brought the accountant here. A stay opens in the
+ * IPD bill editor; an issued bill opens locked, with Edit (a corrected bill
+ * under a new number), Print and PDF. The cost journey is one tab away.
  */
 type View = "bills" | "journey";
 
 export function PatientHistory({
   initial,
+  initialBill,
   canEdit,
   canFinalise,
 }: {
   initial: BillHistory;
+  initialBill?: string;
   canEdit: boolean;
   canFinalise: boolean;
 }) {
   const t = useTranslations("history");
   const [view, setView] = useState<View>("bills");
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected] = useState(() =>
+    Math.max(
+      0,
+      initial.visits.findIndex((item) => item.invoices.some((bill) => bill.id === initialBill)),
+    ),
+  );
 
   const history = useQuery({
     queryKey: ["billing", "history", initial.patient.id],
@@ -120,6 +125,7 @@ export function PatientHistory({
               <VisitPane
                 key={`${visit.encounter_id}-${visit.kind}`}
                 visit={visit}
+                focusBill={initialBill}
                 canEdit={canEdit}
                 canFinalise={canFinalise}
               />
@@ -180,10 +186,12 @@ function VisitItem({
 
 function VisitPane({
   visit,
+  focusBill,
   canEdit,
   canFinalise,
 }: {
   visit: VisitBills;
+  focusBill?: string;
   canEdit: boolean;
   canFinalise: boolean;
 }) {
@@ -210,96 +218,14 @@ function VisitPane({
         <p className="text-muted-foreground text-sm">{t("notBilledYet")}</p>
       ) : (
         visit.invoices.map((invoice, index) => (
-          <InvoiceCard key={invoice.id} invoice={invoice} expanded={index === 0} />
+          <IssuedBill
+            key={invoice.id}
+            invoice={invoice}
+            expanded={focusBill ? invoice.id === focusBill : index === 0}
+            canCorrect={canFinalise}
+          />
         ))
       )}
-    </div>
-  );
-}
-
-/** One issued bill, read only: its lines by category, its receipts, its balance. */
-function InvoiceCard({ invoice, expanded }: { invoice: InvoiceSummary; expanded: boolean }) {
-  const t = useTranslations("history");
-  const accounts = useTranslations("accounts");
-  const categories = useTranslations("categories");
-  const [open, setOpen] = useState(expanded);
-  const printable = useQuery({
-    queryKey: ["billing", "printable", invoice.id],
-    queryFn: ({ signal }) =>
-      api.get<PrintableBill>(`/billing/invoices/${invoice.id}/printable`, { signal }),
-    enabled: open,
-  });
-
-  return (
-    <div className="rounded-lg border">
-      <div className="flex flex-wrap items-center justify-between gap-2 p-3">
-        <button
-          type="button"
-          className="flex items-center gap-2 text-left"
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-        >
-          <span className="tabular font-medium">{invoice.invoice_number}</span>
-          <InvoiceStatusChip status={invoice.status} />
-          <span className="tabular text-sm">{formatMoney(invoice.grand_total)}</span>
-        </button>
-        <div className="flex gap-1">
-          <LinkButton href={billHref(invoice.id)} variant="ghost" size="sm">
-            {accounts("open")}
-          </LinkButton>
-          <LinkButton
-            href={billHref(invoice.id, true)}
-            variant="ghost"
-            size="sm"
-            aria-label={accounts("printBill", { number: invoice.invoice_number })}
-          >
-            {accounts("print")}
-          </LinkButton>
-        </div>
-      </div>
-      {open ? (
-        <div className="border-t p-3">
-          {printable.data ? (
-            <div className="space-y-3 text-sm">
-              <table className="w-full">
-                <caption className="sr-only">{invoice.invoice_number}</caption>
-                <tbody className="divide-border divide-y">
-                  {printable.data.lines.map((line) => (
-                    <tr key={line.id}>
-                      <td className="py-1.5">
-                        <div className={cn(line.status === "WAIVED" && "line-through")}>
-                          {line.description}
-                        </div>
-                        <div className="text-muted-foreground text-xs">{categories(line.category)}</div>
-                      </td>
-                      <td className="tabular py-1.5 text-right">{Number(line.quantity)}</td>
-                      <td className="tabular py-1.5 text-right">{formatMoney(line.total_amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {printable.data.payments.length ? (
-                <ul className="text-muted-foreground space-y-0.5 text-xs">
-                  {printable.data.payments.map((payment) => (
-                    <li key={payment.id}>
-                      {t("receipt", {
-                        number: payment.receipt_number,
-                        amount: formatMoney(payment.amount),
-                        method: payment.method,
-                      })}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <p className="text-right font-medium">
-                {t("balanceDue", { amount: formatMoney(printable.data.totals.balance) })}
-              </p>
-            </div>
-          ) : (
-            <Skeleton className="h-16 w-full" />
-          )}
-        </div>
-      ) : null}
     </div>
   );
 }

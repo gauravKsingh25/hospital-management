@@ -627,6 +627,17 @@ class BillRemove(BaseModel):
 BillOp = Annotated[BillAdd | BillEdit | BillDiscount | BillRemove, Field(discriminator="op")]
 
 
+class BillCorrection(BaseModel):
+    """Edit on an issued bill: the changes, and why the bill is corrected.
+
+    The bill is replaced, not changed: a new bill with the changes, the
+    receipts moved onto it, the old one cancelled with this reason.
+    """
+
+    reason: Annotated[str, Field(min_length=3, max_length=255)]
+    ops: Annotated[list[BillOp], Field(min_length=1, max_length=200)]
+
+
 class BillChangesRequest(BaseModel):
     """Everything the accountant staged, applied together or not at all.
 

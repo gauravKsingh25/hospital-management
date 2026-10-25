@@ -39,6 +39,7 @@ from app.modules.billing.schemas import (
     AccountBoardEntry,
     AccountsSummary,
     BillChangesRequest,
+    BillCorrection,
     BillHistory,
     BillRow,
     ChargeAdd,
@@ -1108,6 +1109,71 @@ async def issue_invoice(
     )
     await session.commit()
     return await _render(session, issued, hospital_id=tenant_id)
+
+
+@invoices_router.post(
+    "/{invoice_id}/correct",
+    response_model=InvoiceRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Correct an issued bill",
+)
+async def correct_invoice(
+    invoice_id: uuid.UUID,
+    payload: BillCorrection,
+    session: SessionDep,
+    request: Request,
+    context: CanFinaliseIpdBill,
+    tenant_id: TenantId,
+) -> InvoiceRead:
+    """The accounts office's Edit on an issued bill, OPD or IPD. Issues a new
+    bill with the changes, moves the receipts onto it, and cancels this one
+    with the reason. Each change is audited with its before and after."""
+    invoice = await service.get_invoice(session, invoice_id, hospital_id=tenant_id)
+    old_number = invoice.invoice_number
+    corrected, changes = await service.correct_invoice(
+        session,
+        invoice,
+        list(payload.ops),
+        reason=payload.reason,
+        actor=context.user,
+        hospital_id=tenant_id,
+    )
+    ip_address = await get_client_ip(request)
+    await identity_service.record_audit(
+        session,
+        action="billing.invoice.correct",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="invoice",
+        resource_id=invoice_id,
+        changes={
+            "invoice_number": old_number,
+            "new_invoice_id": str(corrected.id),
+            "new_invoice_number": corrected.invoice_number,
+            "grand_total": str(corrected.grand_total),
+            "reason": payload.reason,
+        },
+        ip_address=ip_address,
+    )
+    for change in changes:
+        await identity_service.record_audit(
+            session,
+            action="billing.invoice.correct_line",
+            actor=context.user,
+            hospital_id=tenant_id,
+            resource_type="charge",
+            resource_id=change.charge.id,
+            changes={
+                "op": change.op,
+                "reason": change.reason,
+                "invoice_number": corrected.invoice_number,
+                "before": change.before,
+                "after": change.after,
+            },
+            ip_address=ip_address,
+        )
+    await session.commit()
+    return await _render(session, corrected, hospital_id=tenant_id)
 
 
 @invoices_router.post(

@@ -2977,6 +2977,218 @@ async def ipd_bill(
     )
 
 
+async def _apply_ops(
+    session: AsyncSession,
+    encounter: Encounter,
+    ops: list[BillOp],
+    lines: dict[uuid.UUID, Charge],
+    *,
+    draft_id: uuid.UUID | None,
+    actor: User,
+    hospital_id: uuid.UUID,
+    attach_to: Invoice | None = None,
+) -> list[BillChange]:
+    """Apply staged changes, in order, to `lines` — the bill being changed.
+
+    A line added joins `attach_to` when given (a corrected bill), or stays
+    pending for the stay's running bill to gather. The caller holds the
+    savepoint: one bad change raises and none of the others land.
+    """
+    applied: list[BillChange] = []
+    for op in ops:
+        if isinstance(op, BillAdd):
+            added = await add_charge(
+                session,
+                ChargeAdd(
+                    encounter_id=encounter.id,
+                    service_item_code=op.service_item_code,
+                    description=op.description,
+                    category=op.category,
+                    quantity=op.quantity,
+                    unit_price=op.unit_price,
+                ),
+                hospital_id=hospital_id,
+                actor=actor,
+            )
+            if attach_to is not None:
+                added.status = ChargeStatus.INVOICED
+                added.invoice_id = attach_to.id
+                added.updated_at = utc_now()
+                session.add(added)
+                await session.flush()
+            lines[added.id] = added
+            applied.append(BillChange("add", added, {}, _snapshot(added), op.reason))
+            continue
+
+        charge = lines.get(op.charge_id)
+        if charge is None:
+            raise NotFoundError("That line is not on this bill.", code="charge_not_found")
+        before = _snapshot(charge)
+        if isinstance(op, BillEdit):
+            charge = await edit_charge(
+                session,
+                charge,
+                quantity=op.quantity,
+                unit_price=op.unit_price,
+                description=op.description,
+                draft_id=draft_id,
+            )
+        elif isinstance(op, BillDiscount):
+            charge = await discount_charge(
+                session,
+                charge,
+                amount=op.amount,
+                reason=op.reason,
+                actor=actor,
+                draft_id=draft_id,
+            )
+        elif isinstance(op, BillRemove):
+            charge = await waive_charge(
+                session, charge, reason=op.reason, actor=actor, draft_id=draft_id
+            )
+        applied.append(BillChange(op.op, charge, before, _snapshot(charge), op.reason))
+    return applied
+
+
+_CORRECTABLE: tuple[InvoiceStatus, ...] = (
+    InvoiceStatus.ISSUED,
+    InvoiceStatus.PARTIALLY_PAID,
+    InvoiceStatus.PAID,
+)
+
+
+async def correct_invoice(
+    session: AsyncSession,
+    invoice: Invoice,
+    ops: list[BillOp],
+    *,
+    reason: str,
+    actor: User,
+    hospital_id: uuid.UUID,
+) -> tuple[Invoice, list[BillChange]]:
+    """Correct an issued bill: a new bill replaces it. All of it, or none.
+
+    An issued bill is in the GST series and in the patient's hand, so it is
+    never changed in place. Its lines move to a new bill, the staged changes
+    are applied there, the new bill is issued under its own number, the
+    receipts move onto it, and the old bill is cancelled with the reason and
+    the new number. Refused when the corrected total is less than what was
+    already received: that is a refund, which starts with reversing the
+    payment.
+
+    Returns the new bill and the changes applied, for the router to audit.
+    """
+    if invoice.status not in _CORRECTABLE:
+        raise ConflictError(
+            "Only an issued bill is corrected this way.", code="invoice_not_correctable"
+        )
+    encounter = await clinical_service.get_encounter(
+        session, invoice.encounter_id, hospital_id=hospital_id
+    )
+    await _lock_visit_billing(session, encounter.id, hospital_id=hospital_id)
+    invoice = await get_invoice(session, invoice.id, hospital_id=hospital_id, for_update=True)
+    if invoice.status not in _CORRECTABLE:
+        raise ConflictError(
+            "Only an issued bill is corrected this way.", code="invoice_not_correctable"
+        )
+    if await get_draft_for_encounter(
+        session, encounter.id, hospital_id=hospital_id, scope=invoice.scope
+    ):
+        raise ConflictError(
+            "This visit has a draft bill open. Issue or clear it before correcting.",
+            code="bill_has_open_draft",
+        )
+
+    async with session.begin_nested():
+        replacement = await _new_draft(
+            session,
+            encounter,
+            InvoiceDraftRequest(
+                encounter_id=encounter.id,
+                rate_card_id=invoice.rate_card_id,
+                payer_type=invoice.payer_type,
+                payer_liability=invoice.payer_liability,
+                place_of_supply=invoice.place_of_supply,
+                is_interstate=invoice.is_interstate,
+                notes=invoice.notes,
+            ),
+            scope=invoice.scope,
+        )
+        lines: dict[uuid.UUID, Charge] = {}
+        for charge in await _charges_on(session, invoice.id):
+            charge.invoice_id = replacement.id
+            charge.updated_at = utc_now()
+            session.add(charge)
+            lines[charge.id] = charge
+        await session.flush()
+
+        changes = await _apply_ops(
+            session,
+            encounter,
+            ops,
+            lines,
+            draft_id=replacement.id,
+            actor=actor,
+            hospital_id=hospital_id,
+            attach_to=replacement,
+        )
+        replacement = await _recompute_totals(session, replacement)
+        if any(
+            charge.needs_pricing and charge.status is not ChargeStatus.WAIVED
+            for charge in await _charges_on(session, replacement.id)
+        ):
+            raise ValidationError(
+                "A line on this bill has no price yet. Price it before issuing.",
+                code="unpriced_charges",
+            )
+        received = invoice.amount_paid
+        if replacement.grand_total < received:
+            raise ConflictError(
+                f"{received} has been received on this bill and the corrected total is "
+                f"{replacement.grand_total}. Reverse the payment first.",
+                code="correction_below_paid",
+                details={
+                    "amount_paid": str(received),
+                    "grand_total": str(replacement.grand_total),
+                },
+            )
+        replacement = await issue_invoice(
+            session, replacement, actor=actor, hospital_id=hospital_id, notes=invoice.notes
+        )
+
+        # The receipts follow the bill they pay: the patient's receipt numbers
+        # stay as printed, now against the corrected bill.
+        for payment in (
+            (
+                await session.execute(
+                    select(Payment).where(
+                        col(Payment.invoice_id) == invoice.id,
+                        col(Payment.deleted_at).is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        ):
+            payment.invoice_id = replacement.id
+            payment.updated_at = utc_now()
+            session.add(payment)
+        await session.flush()
+        replacement = await _apply_receipts(session, replacement)
+        # Nothing is received on the old bill now, so it may be cancelled.
+        invoice = await _apply_receipts(session, invoice)
+        assert_invoice_transition(invoice.status, InvoiceStatus.CANCELLED)
+        invoice.status = InvoiceStatus.CANCELLED
+        invoice.cancellation_reason = (f"{reason} — corrected by {replacement.invoice_number}")[
+            :500
+        ]
+        invoice.balance_due = ZERO
+        invoice.updated_at = utc_now()
+        session.add(invoice)
+        await session.flush()
+    return replacement, changes
+
+
 async def apply_bill_changes(
     session: AsyncSession,
     encounter: Encounter,
@@ -3016,57 +3228,16 @@ async def apply_bill_changes(
         charge.id: charge
         for charge in await _stay_charges(session, encounter.id, stay, hospital_id=hospital_id)
     }
-    applied: list[BillChange] = []
     async with session.begin_nested():
-        for op in ops:
-            if isinstance(op, BillAdd):
-                added = await add_charge(
-                    session,
-                    ChargeAdd(
-                        encounter_id=encounter.id,
-                        service_item_code=op.service_item_code,
-                        description=op.description,
-                        category=op.category,
-                        quantity=op.quantity,
-                        unit_price=op.unit_price,
-                    ),
-                    hospital_id=hospital_id,
-                    actor=actor,
-                )
-                on_stay[added.id] = added
-                applied.append(BillChange("add", added, {}, _snapshot(added), op.reason))
-                continue
-
-            charge = on_stay.get(op.charge_id)
-            if charge is None:
-                raise NotFoundError(
-                    "That line is not on this stay's bill.", code="charge_not_found"
-                )
-            before = _snapshot(charge)
-            if isinstance(op, BillEdit):
-                charge = await edit_charge(
-                    session,
-                    charge,
-                    quantity=op.quantity,
-                    unit_price=op.unit_price,
-                    description=op.description,
-                    draft_id=draft_id,
-                )
-            elif isinstance(op, BillDiscount):
-                charge = await discount_charge(
-                    session,
-                    charge,
-                    amount=op.amount,
-                    reason=op.reason,
-                    actor=actor,
-                    draft_id=draft_id,
-                )
-            elif isinstance(op, BillRemove):
-                charge = await waive_charge(
-                    session, charge, reason=op.reason, actor=actor, draft_id=draft_id
-                )
-            applied.append(BillChange(op.op, charge, before, _snapshot(charge), op.reason))
-
+        applied = await _apply_ops(
+            session,
+            encounter,
+            ops,
+            on_stay,
+            draft_id=draft_id,
+            actor=actor,
+            hospital_id=hospital_id,
+        )
         if draft is not None:
             # One running document: new lines join the draft, and its footer is
             # re-added from the corrected lines.

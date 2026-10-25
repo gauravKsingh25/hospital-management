@@ -38,6 +38,21 @@ export function useSaveIpdBill(encounterId: string) {
   });
 }
 
+/**
+ * Edit on an issued bill (OPD or a final IPD bill): the server issues a new
+ * bill with the changes, moves the receipts onto it and cancels this one.
+ */
+export function useCorrectBill() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, reason, ops }: { invoiceId: string; reason: string; ops: BillOp[] }) =>
+      api.post<Invoice>(`/billing/invoices/${invoiceId}/correct`, { reason, ops }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["billing"] });
+    },
+  });
+}
+
 /** Void the final bill so the stay can be corrected and billed again. */
 export function useCancelFinalBill(encounterId: string) {
   const client = useQueryClient();

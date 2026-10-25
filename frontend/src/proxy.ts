@@ -39,7 +39,15 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 }
 
-function buildCsp(nonce: string, isDev: boolean): string {
+/**
+ * The printed bills — read only, one Print button — may be framed by this
+ * app itself: "Print" on a dashboard row loads the bill in a hidden frame and
+ * prints it without leaving the page. Same origin only; every other page
+ * still refuses to be framed at all.
+ */
+const isPrintPage = (pathname: string) => pathname.startsWith("/bills/");
+
+function buildCsp(nonce: string, isDev: boolean, framable = false): string {
   // `strict-dynamic` means scripts loaded by a nonced script are trusted too,
   // which is what lets Next's chunk loader work without allowlisting every
   // bundle path. `unsafe-eval` is a development-only concession: React uses
@@ -71,17 +79,21 @@ function buildCsp(nonce: string, isDev: boolean): string {
     "form-action 'self'",
     // Clickjacking a "confirm death record" button is not a hypothetical risk
     // worth carrying for a system with no reason to be framed.
-    "frame-ancestors 'none'",
+    framable ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
     ...(isDev ? [] : ["upgrade-insecure-requests"]),
   ].join("; ");
 }
 
-function withSecurityHeaders(response: NextResponse, csp: string): NextResponse {
+function withSecurityHeaders(
+  response: NextResponse,
+  csp: string,
+  framable = false,
+): NextResponse {
   response.headers.set("Content-Security-Policy", csp);
   response.headers.set("X-Content-Type-Options", "nosniff");
   // Patient identifiers appear in URLs. Never leak one in a Referer header.
   response.headers.set("Referrer-Policy", "no-referrer");
-  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("X-Frame-Options", framable ? "SAMEORIGIN" : "DENY");
   response.headers.set(
     "Permissions-Policy",
     "camera=(), microphone=(), geolocation=(), payment=()",
@@ -93,14 +105,15 @@ export function proxy(request: NextRequest): NextResponse {
   const { pathname, search } = request.nextUrl;
 
   const nonce = btoa(crypto.randomUUID());
-  const csp = buildCsp(nonce, process.env.NODE_ENV === "development");
+  const framable = isPrintPage(pathname);
+  const csp = buildCsp(nonce, process.env.NODE_ENV === "development", framable);
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", csp);
 
   const proceed = () =>
-    withSecurityHeaders(NextResponse.next({ request: { headers: requestHeaders } }), csp);
+    withSecurityHeaders(NextResponse.next({ request: { headers: requestHeaders } }), csp, framable);
 
   const redirectTo = (path: string, params?: Record<string, string>) => {
     const url = request.nextUrl.clone();
@@ -109,7 +122,7 @@ export function proxy(request: NextRequest): NextResponse {
     for (const [key, value] of Object.entries(params ?? {})) {
       url.searchParams.set(key, value);
     }
-    return withSecurityHeaders(NextResponse.redirect(url), csp);
+    return withSecurityHeaders(NextResponse.redirect(url), csp, framable);
   };
 
   // The BFF answers with JSON, including its own 401. Redirecting it would

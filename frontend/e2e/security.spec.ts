@@ -57,10 +57,24 @@ test.describe("the content security policy", () => {
     // The rest of the header, asserted because each one is load-bearing and
     // each is a single word away from being switched off by accident.
     expect(csp).toContain("frame-ancestors 'none'");
+    expect(response?.headers()["x-frame-options"]).toBe("DENY");
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("connect-src 'self'");
     expect(response?.headers()["x-content-type-options"]).toBe("nosniff");
     expect(response?.headers()["referrer-policy"]).toBe("no-referrer");
+  });
+
+  test("only the printed bills may be framed, and only by this app", async ({ page }) => {
+    // "Print" on a dashboard row prints the bill from a hidden same-origin
+    // frame. Signed out, the request is answered with a redirect that
+    // carries the same headers, which is all this checks.
+    const response = await page.request.get("/bills/00000000-0000-0000-0000-000000000000", {
+      maxRedirects: 0,
+    });
+    const csp = response.headers()["content-security-policy"] ?? "";
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).not.toContain("frame-ancestors 'none'");
+    expect(response.headers()["x-frame-options"]).toBe("SAMEORIGIN");
   });
 
   test("blocks no inline style except the one library that injects its own", async ({ page }) => {

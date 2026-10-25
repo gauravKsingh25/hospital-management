@@ -10,8 +10,12 @@ import { Button } from "@/components/ui/button";
  * Print, or Save as PDF from the same dialog — no PDF library involved.
  * `autoPrint` is the `?print=1` the dashboard's PDF and Print links carry.
  */
-export function PrintButton({ autoPrint }: { autoPrint: boolean }) {
+export function PrintButton({ autoPrint, title }: { autoPrint: boolean; title?: string }) {
   const t = useTranslations("bill");
+  useEffect(() => {
+    // "Save as PDF" names the file after the page title: the bill number.
+    if (title) document.title = title;
+  }, [title]);
   useEffect(() => {
     if (!autoPrint) return;
     // After the logo has had a moment to load, so it is on the page printed.

@@ -2638,6 +2638,54 @@
         "title": "BillChangesRequest",
         "type": "object"
       },
+      "BillCorrection": {
+        "description": "Edit on an issued bill: the changes, and why the bill is corrected.\n\nThe bill is replaced, not changed: a new bill with the changes, the\nreceipts moved onto it, the old one cancelled with this reason.",
+        "properties": {
+          "ops": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "add": "#/components/schemas/BillAdd",
+                  "discount": "#/components/schemas/BillDiscount",
+                  "edit": "#/components/schemas/BillEdit",
+                  "remove": "#/components/schemas/BillRemove"
+                },
+                "propertyName": "op"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/BillAdd"
+                },
+                {
+                  "$ref": "#/components/schemas/BillEdit"
+                },
+                {
+                  "$ref": "#/components/schemas/BillDiscount"
+                },
+                {
+                  "$ref": "#/components/schemas/BillRemove"
+                }
+              ]
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Ops",
+            "type": "array"
+          },
+          "reason": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "ops"
+        ],
+        "title": "BillCorrection",
+        "type": "object"
+      },
       "BillDiscount": {
         "properties": {
           "amount": {
@@ -22510,6 +22558,65 @@
           }
         ],
         "summary": "Cancel an invoice",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/invoices/{invoice_id}/correct": {
+      "post": {
+        "description": "The accounts office's Edit on an issued bill, OPD or IPD. Issues a new\nbill with the changes, moves the receipts onto it, and cancels this one\nwith the reason. Each change is audited with its before and after.",
+        "operationId": "correct_invoice_api_v1_billing_invoices__invoice_id__correct_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillCorrection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Correct an issued bill",
         "tags": [
           "billing"
         ]

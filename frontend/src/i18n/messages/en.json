@@ -1298,7 +1298,7 @@
   },
   "accounts": {
     "title": "Accounts",
-    "subtitle": "Every bill and payment, newest first. Read only — IPD bills are corrected on the patient's page.",
+    "subtitle": "Every bill and payment, newest first. Open a bill to see it with the patient's history and edit it there.",
     "tabAccounts": "Accounts",
     "tabCounter": "Cash counter",
     "billingViews": "Billing views",
@@ -1357,7 +1357,8 @@
     "print": "Print",
     "openBill": "Open bill {number}",
     "downloadBill": "Download bill {number} as PDF",
-    "printBill": "Print bill {number}"
+    "printBill": "Print bill {number}",
+    "pdfHint": "In the print window, choose “Save as PDF” to download it."
   },
   "categories": {
     "PHARMACY": "Medicines & consumables",
@@ -1485,7 +1486,16 @@
     "cancelFinalHint": "The bill is voided and its lines go back to the stay, so you can correct them and generate the final bill again. A bill with payments cannot be cancelled until they are reversed.",
     "cancelReason": "Reason for cancelling",
     "keepBill": "Keep the bill",
-    "finalCancelled": "Final bill {number} cancelled."
+    "finalCancelled": "Final bill {number} cancelled.",
+    "editBill": "Edit",
+    "editBillNumber": "Edit bill {number}",
+    "correctingNote": "Editing {number}. It is issued, so saving issues a corrected bill under a new number and cancels this one; its receipts move to the new bill.",
+    "stopEditing": "Stop editing",
+    "issueCorrected": "Issue corrected bill",
+    "correctHint": "A new bill is issued with your changes and {number} is cancelled with this reason. Payments already received move to the new bill.",
+    "correctionReason": "Reason for the correction",
+    "keepEditing": "Keep editing",
+    "corrected": "Corrected bill {number} issued; {old} cancelled."
   },
   "bill": {
     "title": "Bill",

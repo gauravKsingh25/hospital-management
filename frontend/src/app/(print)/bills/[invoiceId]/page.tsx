@@ -35,7 +35,7 @@ export default async function PrintedInvoicePage({
           {t("back")}
         </LinkButton>
         <p className="text-muted-foreground text-sm">{t("pdfHint")}</p>
-        <PrintButton autoPrint={print === "1"} />
+        <PrintButton autoPrint={print === "1"} title={bill.number ?? undefined} />
       </div>
       <PrintedBill bill={bill} hospitalId={user.hospital_id} />
     </>
