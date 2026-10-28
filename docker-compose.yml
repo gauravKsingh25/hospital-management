@@ -102,6 +102,12 @@ services:
       - ./frontend:/app
       - /app/node_modules
       - /app/.next
+      # Playwright, run on the host, writes here throughout a run. Seen by the
+      # dev server, every write recompiled the CSS and stalled the page under
+      # test mid-navigation; masked, the container never sees them.
+      - /app/test-results
+      - /app/playwright-report
+      - /app/blob-report
     env_file:
       - .env
     environment:
