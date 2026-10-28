@@ -40,12 +40,13 @@ function isPublic(pathname: string): boolean {
 }
 
 /**
- * The printed bills — read only, one Print button — may be framed by this
- * app itself: "Print" on a dashboard row loads the bill in a hidden frame and
- * prints it without leaving the page. Same origin only; every other page
- * still refuses to be framed at all.
+ * The printed bills and discharge summaries — read only, one Print button —
+ * may be framed by this app itself: "Print" loads the document in a hidden
+ * frame and prints it without leaving the page. Same origin only; every other
+ * page still refuses to be framed at all.
  */
-const isPrintPage = (pathname: string) => pathname.startsWith("/bills/");
+const isPrintPage = (pathname: string) =>
+  pathname.startsWith("/bills/") || pathname.startsWith("/discharge-summaries/");
 
 function buildCsp(nonce: string, isDev: boolean, framable = false): string {
   // `strict-dynamic` means scripts loaded by a nonced script are trusted too,

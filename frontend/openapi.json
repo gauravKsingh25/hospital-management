@@ -638,6 +638,17 @@
             "title": "Id",
             "type": "string"
           },
+          "last_ward_bed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Ward Bed"
+          },
           "length_of_stay_days": {
             "default": 0,
             "title": "Length Of Stay Days",

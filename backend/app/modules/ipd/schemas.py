@@ -414,6 +414,9 @@ class AdmissionRead(BaseModel):
     safety_banner: SafetyBanner | None = None
     attending_doctor_name: str | None = None
     discharge_summary_status: str | None = None
+    # "Ward, bed" of the latest assignment, released or not — what the printed
+    # discharge summary names after the bed has been freed and `bed` is null.
+    last_ward_bed: str | None = None
 
 
 # ---------------------------------------------------------------------------

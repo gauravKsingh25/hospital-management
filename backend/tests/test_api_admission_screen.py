@@ -89,3 +89,23 @@ async def test_the_admission_carries_banner_doctor_and_summary_state(
     assert any("Penicillin" in alert for alert in body["safety_banner"]["alerts"])
     assert body["discharge_summary_status"] is None
     assert body["attending_doctor_name"] == "Dr. Meera Rao"
+
+
+async def test_a_discharged_stay_still_names_its_last_bed(
+    api: AsyncClient, session: AsyncSession, tenant: Hospital, admin: User
+) -> None:
+    """The printed summary says where the patient was after the bed is freed."""
+    stay = await support.admitted_stay(session, tenant.id, admin)
+    await session.commit()
+    token = await login(api, admin)
+
+    discharged = await api.post(
+        f"{ADMISSIONS}/{stay.admission.id}/discharge",
+        json={"discharge_type": "RECOVERED"},
+        headers=auth(token),
+    )
+
+    assert discharged.status_code == 200, discharged.text
+    body = (await api.get(f"{ADMISSIONS}/{stay.admission.id}", headers=auth(token))).json()
+    assert body["bed"] is None
+    assert body["last_ward_bed"].startswith("General Ward, GW")

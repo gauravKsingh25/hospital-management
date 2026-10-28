@@ -164,6 +164,10 @@ async def _render_admission(
         rendered.attending_doctor_name = doctor.display_name if doctor else None
     summary = await service.get_summary(session, admission.id)
     rendered.discharge_summary_status = summary.status.value if summary else None
+    stay = (await service.stay_info_for(session, [admission.encounter_id], hospital_id)).get(
+        admission.encounter_id
+    )
+    rendered.last_ward_bed = stay.ward_bed if stay else None
     return rendered
 
 

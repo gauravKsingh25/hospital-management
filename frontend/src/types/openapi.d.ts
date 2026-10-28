@@ -3957,6 +3957,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Last Ward Bed */
+            last_ward_bed?: string | null;
             /**
              * Length Of Stay Days
              * @default 0

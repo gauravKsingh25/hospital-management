@@ -26,3 +26,4 @@ export function printInPlace(path: string): void {
 
 export const billPath = (invoiceId: string) => `/bills/${invoiceId}`;
 export const runningBillPath = (encounterId: string) => `/bills/running/${encounterId}`;
+export const summaryPath = (admissionId: string) => `/discharge-summaries/${admissionId}`;
