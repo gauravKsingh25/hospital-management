@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
 from app.core.exceptions import PermissionDeniedError
 from app.core.pagination import Page, PageParams, page_params
+from app.modules.clinical import service as clinical_service
 from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
 from app.modules.ipd import service
@@ -82,6 +83,7 @@ from app.modules.ipd.schemas import (
 )
 from app.modules.patients import service as patients_service
 from app.modules.patients.schemas import PatientRead
+from app.modules.scheduling import service as scheduling_service
 
 wards_router = APIRouter(prefix="/ipd/wards", tags=["ipd"])
 beds_router = APIRouter(prefix="/ipd/beds", tags=["ipd"])
@@ -153,6 +155,15 @@ async def _render_admission(
         rendered.patient_age_years = view.age_years
         rendered.patient_gender = str(view.gender)
         rendered.patient_is_deceased = view.is_deceased
+        rendered.safety_banner = await clinical_service.build_safety_banner(session, patient.id)
+    if admission.attending_doctor_id is not None:
+        doctors = await scheduling_service.get_doctors_by_ids(
+            session, [admission.attending_doctor_id], hospital_id=hospital_id
+        )
+        doctor = doctors.get(admission.attending_doctor_id)
+        rendered.attending_doctor_name = doctor.display_name if doctor else None
+    summary = await service.get_summary(session, admission.id)
+    rendered.discharge_summary_status = summary.status.value if summary else None
     return rendered
 
 

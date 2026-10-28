@@ -2621,7 +2621,14 @@ async def cost_breakdown(
     ceftriaxone are one line of twelve rather than twelve lines, and aggregated
     in SQL rather than by fetching every charge — a fortnight's stay on four
     drugs is several hundred rows, well past one page of `list_charges`.
+
+    For an IPD stay, from the admission on: the consultation before it is its
+    own OPD bill (`split_pre_admission`), not part of what the stay cost.
     """
+    stay = await stay_for(session, encounter_id, hospital_id=hospital_id)
+    since: list[ColumnElement[bool]] = (
+        [col(Charge.captured_at) >= stay.admitted_at] if stay is not None else []
+    )
     rows = await session.execute(
         sa_select(
             col(Charge.category),
@@ -2636,6 +2643,7 @@ async def cost_breakdown(
             col(Charge.encounter_id) == encounter_id,
             col(Charge.deleted_at).is_(None),
             col(Charge.status).in_([ChargeStatus.PENDING, ChargeStatus.INVOICED]),
+            *since,
         )
         .group_by(
             col(Charge.category),

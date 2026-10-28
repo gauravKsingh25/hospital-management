@@ -524,6 +524,17 @@
             ],
             "title": "Attending Doctor Id"
           },
+          "attending_doctor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attending Doctor Name"
+          },
           "bed": {
             "anyOf": [
               {
@@ -572,6 +583,17 @@
               }
             ],
             "title": "Discharge Initiated At"
+          },
+          "discharge_summary_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharge Summary Status"
           },
           "discharge_type": {
             "anyOf": [
@@ -674,6 +696,16 @@
               }
             ],
             "title": "Provisional Diagnosis"
+          },
+          "safety_banner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SafetyBanner"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/AdmissionStatus"

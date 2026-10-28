@@ -1,10 +1,12 @@
 "use client";
 
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { ArrowLeftRight, ClipboardCheck, FileText, LogOut, Pill } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { PatientIdentityStrip, SafetyBanner } from "@/components/patient/safety-banner";
 import { Button } from "@/components/ui/button";
 import { LinkButton } from "@/components/ui/link-button";
 import {
@@ -28,6 +30,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { ItemsUsedPanel, StayCostPanel } from "@/features/medicines/stay-medicines";
 import { VisitOutcomeAction } from "@/features/outcomes/visit-outcome-action";
 import { LatestVitals } from "@/features/vitals/latest-vitals";
+import {
+  ClinicalPanel,
+  DischargeReadiness,
+  DueNowPanel,
+  StayPanel,
+} from "@/features/wards/stay-panels";
 import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
@@ -46,9 +54,12 @@ import type { Admission, BoardWard, DischargeType } from "@/types/api";
  *
  * **Transfer** moves them between beds, releasing the old one to cleaning.
  *
- * Below the details, what the stay has used from the medicine list and what it
- * has cost so far — so the desk, the ward and a relative asking at the counter
- * all read the same number billing will invoice.
+ * Layout: a sticky header — who, where, the safety banner, every act on the
+ * stay — then two columns. On the left what needs doing (doses due, vitals)
+ * and the clinical facts; on the right the stay's practical facts, what it has
+ * cost so far (from the admission on — the same number the IPD bill starts
+ * from), what it has used, and how close it is to discharge. Every missing
+ * detail can be filled in where it shows "Not recorded".
  *
  * Two discharge outcomes are deliberately missing from the picker: death and
  * leaving against advice. Both are recorded against the *visit* through
@@ -71,6 +82,9 @@ export function AdmissionScreen({
   canRecordLama = false,
   canReadVitals = false,
   canRecordVitals = false,
+  canUpdate = false,
+  canReadChart = false,
+  canAdminister = false,
 }: {
   admissionId: string;
   initial: Admission;
@@ -85,6 +99,12 @@ export function AdmissionScreen({
   canRecordLama?: boolean;
   canReadVitals?: boolean;
   canRecordVitals?: boolean;
+  /** Edit the stay's details inline (`admission:update`). */
+  canUpdate?: boolean;
+  /** See doses due (`medication:read`). */
+  canReadChart?: boolean;
+  /** Sign for a dose from "Due now" (`medication:administer`). */
+  canAdminister?: boolean;
 }) {
   const t = useTranslations("wards");
   const common = useTranslations("common");
@@ -112,159 +132,149 @@ export function AdmissionScreen({
     onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
   });
 
+  const banner = data.safety_banner;
+  const editable = canUpdate && live;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      {/* Sticky under the app bar: who, where, what is dangerous about them,
+          and every act on the stay — never a scroll away. */}
       <header
         className={cn(
-          "rounded-lg border p-4",
-          data.patient_is_deceased ? "border-foreground/40 bg-foreground/5" : "bg-muted/30",
+          "bg-background/95 supports-[backdrop-filter]:bg-background/85 sticky top-16 z-20 space-y-3 rounded-lg border p-4 shadow-sm backdrop-blur",
+          data.patient_is_deceased && "border-foreground/40",
         )}
+        data-testid="stay-header"
       >
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">
-              {data.patient_name ?? common("notRecorded")}
-            </h1>
-            <p className="text-muted-foreground tabular text-sm">
-              {data.uhid}
-              {data.patient_age_years !== null && data.patient_age_years !== undefined
-                ? ` · ${data.patient_age_years}`
-                : ""}
-              {data.patient_gender ? ` · ${data.patient_gender}` : ""}
-            </p>
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+          <div className="min-w-0 space-y-1">
+            {banner ? (
+              <PatientIdentityStrip banner={banner} as="h1" />
+            ) : (
+              <h1 className="text-xl font-semibold tracking-tight">
+                {data.patient_name ?? common("notRecorded")}
+              </h1>
+            )}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+              <span
+                className={cn(
+                  "rounded-full border px-2.5 py-0.5 text-xs font-medium",
+                  data.status === "ADMITTED" && "border-info/30 bg-info/10 text-info",
+                  data.status === "DISCHARGE_INITIATED" &&
+                    "border-caution/40 bg-caution/15 text-caution-foreground",
+                  data.status === "DISCHARGED" && "border-success/25 bg-success/10 text-success",
+                  data.status === "CANCELLED" && "bg-muted text-muted-foreground border-border",
+                )}
+                data-status={data.status}
+              >
+                {t(`admission${data.status}` as "admissionADMITTED")}
+              </span>
+              <span className="font-medium" data-testid="stay-day">
+                {data.expected_stay_days
+                  ? t("dayOfExpected", {
+                      day: Math.max(1, data.length_of_stay_days),
+                      expected: data.expected_stay_days,
+                    })
+                  : t("dayOfStay", { day: Math.max(1, data.length_of_stay_days) })}
+              </span>
+              <span className="text-muted-foreground">
+                {data.attending_doctor_name ?? t("noDoctorYet")}
+              </span>
+            </div>
           </div>
           <div className="text-right">
-            <div className="font-medium">
+            <div className="font-semibold">
               {data.ward?.name ?? "—"} · {data.bed?.code ?? "—"}
             </div>
             <div className="text-muted-foreground tabular text-xs">{data.admission_number}</div>
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
-          <span
-            className={cn(
-              "rounded-full border px-2.5 py-0.5 text-xs font-medium",
-              data.status === "ADMITTED" && "border-info/30 bg-info/10 text-info",
-              data.status === "DISCHARGE_INITIATED" &&
-                "border-caution/40 bg-caution/15 text-caution-foreground",
-              data.status === "DISCHARGED" && "border-success/25 bg-success/10 text-success",
-              data.status === "CANCELLED" && "bg-muted text-muted-foreground border-border",
-            )}
-            data-status={data.status}
-          >
-            {t(`admission${data.status}` as "admissionADMITTED")}
-          </span>
-          <span className="text-muted-foreground">
-            {t("lengthOfStay", { days: data.length_of_stay_days })}
-          </span>
-          <span className="text-muted-foreground">
-            {t("bedDaysCharged", { days: data.bed_days_charged })}
-          </span>
-        </div>
+        {banner ? <SafetyBanner banner={banner} /> : null}
 
         {data.status === "DISCHARGE_INITIATED" ? (
           // The distinction that stops a bed being double-booked.
-          <p className="border-caution/50 bg-caution/10 mt-3 rounded-md border px-3 py-2 text-sm">
+          <p className="border-caution/50 bg-caution/10 rounded-md border px-3 py-2 text-sm">
             {t("dischargeInitiatedHint")}
           </p>
         ) : null}
+
+        {/* The chart and the summary stay their own pages (a nurse bookmarks
+            the chart), linked from here; the acts on the stay sit beside them. */}
+        <nav className="flex flex-wrap items-center gap-2" aria-label={t("stayNav")}>
+          <LinkButton variant="outline" size="sm" className="h-tap" href={`/admissions/${admissionId}/chart`}>
+            <Pill aria-hidden />
+            {t("openChart")}
+          </LinkButton>
+          <LinkButton variant="outline" size="sm" className="h-tap" href={`/admissions/${admissionId}/summary`}>
+            <FileText aria-hidden />
+            {t("openSummary")}
+          </LinkButton>
+          {live && canTransfer ? (
+            <Button variant="outline" size="sm" className="h-tap" onClick={() => setTransferring(true)}>
+              <ArrowLeftRight aria-hidden />
+              {t("transfer")}
+            </Button>
+          ) : null}
+          {live && canDischarge && data.status === "ADMITTED" ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-tap"
+              disabled={initiate.isPending}
+              onClick={() => initiate.mutate()}
+            >
+              <ClipboardCheck aria-hidden />
+              {t("markFitForDischarge")}
+            </Button>
+          ) : null}
+          {live && canDischarge ? (
+            <Button size="sm" className="h-tap" onClick={() => setDischarging(true)} data-testid="discharge">
+              <LogOut aria-hidden />
+              {t("discharge")}
+            </Button>
+          ) : null}
+          {live ? (
+            <div className="ml-auto">
+              <VisitOutcomeAction
+                encounterId={data.encounter_id}
+                patientName={data.patient_name ?? ""}
+                canRecordDeath={canRecordDeath}
+                canRecordReferral={canRecordReferral}
+                canRecordLama={canRecordLama}
+              />
+            </div>
+          ) : null}
+        </nav>
       </header>
 
-      {/* The two screens that make up the rest of the stay. Links rather
-          than tabs: a nurse opens the chart forty times a shift and wants it
-          bookmarkable, and the summary is a different person's job entirely. */}
-      <nav className="flex flex-wrap gap-2" aria-label={t("stayNav")}>
-        <LinkButton variant="outline" className="h-tap" href={`/admissions/${admissionId}/chart`}>
-          {t("openChart")}
-        </LinkButton>
-        <LinkButton variant="outline" className="h-tap" href={`/admissions/${admissionId}/summary`}>
-          {t("openSummary")}
-        </LinkButton>
-      </nav>
-
-      <section className="space-y-3 rounded-lg border p-4" aria-labelledby="stay-heading">
-        <h2 id="stay-heading" className="text-sm font-semibold">
-          {t("stayDetails")}
-        </h2>
-        <dl className="grid gap-3 text-sm sm:grid-cols-2">
-          <Detail label={t("provisionalDiagnosis")} value={data.provisional_diagnosis} />
-          <Detail label={t("admittedAt")} value={new Date(data.admitted_at).toLocaleString()} />
-          <Detail
-            label={t("attendantName")}
-            value={
-              data.attendant_name
-                ? `${data.attendant_name}${data.attendant_phone ? ` · ${data.attendant_phone}` : ""}`
-                : null
-            }
-          />
-          <Detail label={t("admissionNotes")} value={data.admission_notes} />
-        </dl>
-      </section>
-
-      {canReadVitals ? (
-        <LatestVitals
-          encounterId={data.encounter_id}
-          patientName={data.patient_name ?? ""}
-          canRecord={canRecordVitals}
-          live={live}
-        />
-      ) : null}
-
-      <ItemsUsedPanel
-        admissionId={admissionId}
-        encounterId={data.encounter_id}
-        canIssue={canIssue}
-        live={live}
-      />
-
-      {canSeeCost ? <StayCostPanel encounterId={data.encounter_id} /> : null}
-
-      {live ? (
-        <section className="space-y-3 rounded-lg border p-4" aria-labelledby="actions-heading">
-          <h2 id="actions-heading" className="text-sm font-semibold">
-            {t("actions")}
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            {canTransfer ? (
-              <Button variant="outline" className="h-tap" onClick={() => setTransferring(true)}>
-                {t("transfer")}
-              </Button>
-            ) : null}
-
-            {canDischarge && data.status === "ADMITTED" ? (
-              <Button
-                variant="outline"
-                className="h-tap"
-                disabled={initiate.isPending}
-                onClick={() => initiate.mutate()}
-              >
-                {t("markFitForDischarge")}
-              </Button>
-            ) : null}
-
-            {canDischarge ? (
-              <Button
-                className="h-tap"
-                onClick={() => setDischarging(true)}
-                data-testid="discharge"
-              >
-                {t("discharge")}
-              </Button>
-            ) : null}
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-muted-foreground text-xs">{t("terminalOutcomesHint")}</p>
-            <VisitOutcomeAction
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="min-w-0 space-y-4">
+          {canReadChart ? (
+            <DueNowPanel admissionId={admissionId} canAdminister={canAdminister} live={live} />
+          ) : null}
+          {canReadVitals ? (
+            <LatestVitals
               encounterId={data.encounter_id}
               patientName={data.patient_name ?? ""}
-              canRecordDeath={canRecordDeath}
-              canRecordReferral={canRecordReferral}
-              canRecordLama={canRecordLama}
+              canRecord={canRecordVitals}
+              live={live}
             />
-          </div>
-        </section>
-      ) : null}
+          ) : null}
+          <ClinicalPanel admission={data} canEdit={editable} />
+        </div>
+        <div className="min-w-0 space-y-4">
+          <StayPanel admission={data} canEdit={editable} />
+          {canSeeCost ? <StayCostPanel encounterId={data.encounter_id} /> : null}
+          <ItemsUsedPanel
+            admissionId={admissionId}
+            encounterId={data.encounter_id}
+            canIssue={canIssue}
+            live={live}
+          />
+          <DischargeReadiness admission={data} />
+        </div>
+      </div>
 
       {transferring ? (
         <TransferDialog
@@ -295,16 +305,6 @@ export function AdmissionScreen({
           }}
         />
       ) : null}
-    </div>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string | null | undefined }) {
-  const common = useTranslations("common");
-  return (
-    <div>
-      <dt className="text-muted-foreground text-xs">{label}</dt>
-      <dd>{value || common("notRecorded")}</dd>
     </div>
   );
 }

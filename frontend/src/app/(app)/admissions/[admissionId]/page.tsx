@@ -53,6 +53,9 @@ export default async function AdmissionPage({
       canRecordLama={can(user, "encounter:record_lama")}
       canReadVitals={can(user, "vitals:read")}
       canRecordVitals={can(user, "vitals:record")}
+      canUpdate={can(user, "admission:update")}
+      canReadChart={can(user, "medication:read")}
+      canAdminister={can(user, "medication:administer")}
     />
   );
 }

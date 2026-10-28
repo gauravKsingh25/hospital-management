@@ -9,7 +9,7 @@ from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.modules.clinical.schemas import VitalsCreate
+from app.modules.clinical.schemas import SafetyBanner, VitalsCreate
 from app.modules.ipd.models import (
     AdmissionRequestStatus,
     AdmissionStatus,
@@ -407,6 +407,13 @@ class AdmissionRead(BaseModel):
     patient_age_years: int | None = None
     patient_gender: str | None = None
     patient_is_deceased: bool = False
+
+    # The stay screen's header, in the same response: allergies and other
+    # alerts (CLAUDE.md §7b), who is responsible, and whether the discharge
+    # summary is written (DRAFT) or signed (SIGNED) — null when not started.
+    safety_banner: SafetyBanner | None = None
+    attending_doctor_name: str | None = None
+    discharge_summary_status: str | None = None
 
 
 # ---------------------------------------------------------------------------

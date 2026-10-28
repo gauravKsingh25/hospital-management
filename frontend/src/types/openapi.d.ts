@@ -3929,6 +3929,8 @@ export interface components {
             attendant_relation: string | null;
             /** Attending Doctor Id */
             attending_doctor_id: string | null;
+            /** Attending Doctor Name */
+            attending_doctor_name?: string | null;
             bed?: components["schemas"]["BedRead"] | null;
             /** Bed Days Charged */
             bed_days_charged: number;
@@ -3938,6 +3940,8 @@ export interface components {
             department_id: string | null;
             /** Discharge Initiated At */
             discharge_initiated_at: string | null;
+            /** Discharge Summary Status */
+            discharge_summary_status?: string | null;
             discharge_type: components["schemas"]["DischargeType"] | null;
             /** Discharged At */
             discharged_at: string | null;
@@ -3976,6 +3980,7 @@ export interface components {
             patient_name?: string | null;
             /** Provisional Diagnosis */
             provisional_diagnosis: string | null;
+            safety_banner?: components["schemas"]["SafetyBanner"] | null;
             status: components["schemas"]["AdmissionStatus"];
             /** Uhid */
             uhid?: string | null;
