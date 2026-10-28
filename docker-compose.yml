@@ -9,13 +9,23 @@
 #   DIRECT_URL="postgresql://hospital:hospital@postgres:5432/hospital"
 
 # The api, worker and web services are in the `app` profile, so a bare
-# `docker compose up -d` starts only postgres and redis — what day-to-day
-# development needs, with the api and web run on the host. .env holds
-# host-machine values (`localhost:5432`), which inside a container point at the
-# container itself: started that way the api answers every login with a 500.
-# Run the containerised app only with a service-network .env, using
-# `docker compose --profile app up --build`.
+# `docker compose up -d` starts only postgres and redis, for running the api
+# and web on the host. `docker compose --profile app up -d --build` runs the
+# whole stack here as dev servers: the api with --reload and the web with
+# `next dev`, both on bind-mounted source, so edits are live.
+#
+# .env holds host-machine values (`localhost:5432`), which inside a container
+# point at the container itself. The app services therefore rebuild the
+# database URLs for the service network from the same .env's parts
+# (APP_DB_ROLE / APP_DB_PASSWORD for the app, POSTGRES_* for migrations).
 name: hospital-management
+
+x-container-db: &container-db
+  # Service-network overrides. .env holds host-machine values so the same
+  # file works for `uvicorn` run directly on the host.
+  DATABASE_URL: postgresql://${APP_DB_ROLE}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-hospital}
+  DIRECT_URL: postgresql://${POSTGRES_USER:-hospital}:${POSTGRES_PASSWORD:-hospital}@postgres:5432/${POSTGRES_DB:-hospital}
+  REDIS_URL: redis://redis:6379/0
 
 services:
   api:
@@ -26,9 +36,10 @@ services:
     env_file:
       - .env
     environment:
-      # Service-network overrides. .env holds host-machine values so the same
-      # file works for `uvicorn` run directly on the host.
-      REDIS_URL: redis://redis:6379/0
+      <<: *container-db
+      # --reload sees no file events on a Windows bind mount without polling.
+      WATCHFILES_FORCE_POLLING: "true"
+      PYTHONUTF8: "1"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -62,7 +73,7 @@ services:
     env_file:
       - .env
     environment:
-      REDIS_URL: redis://redis:6379/0
+      <<: *container-db
     volumes:
       - ./backend:/code
     command: ["arq", "app.workers.main.WorkerSettings"]
@@ -75,12 +86,28 @@ services:
 
   web:
     profiles: ["app"]
+    # The dev server, not the production image: the Dockerfile's `deps` stage
+    # (node_modules installed for Linux) runs `next dev` on the bind-mounted
+    # source. node_modules and .next stay in the container — the host's are
+    # built for Windows. The production image is still `docker build ./frontend`.
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: deps
+    # Webpack, not Turbopack: on a Windows bind mount no file events reach the
+    # container, and only webpack can poll (WATCHPACK_POLLING below). Under
+    # Turbopack, edits and new files are silently never recompiled.
+    command: ["npx", "next", "dev", "--webpack", "--hostname", "0.0.0.0", "--port", "3000"]
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
     env_file:
       - .env
     environment:
+      # Edits on a Windows bind mount raise no file events in the container.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
       # Service-network address. `.env` holds the host-machine value so the
       # same file works whether the frontend runs here or via `npm run dev`.
       #
