@@ -4,7 +4,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 
+import { LoadError } from "@/components/load-error";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { AddSuppressionDialog } from "@/features/messages/suppression-list";
 import { api } from "@/lib/api/client";
 import type { Page, Suppression } from "@/types/api";
@@ -57,8 +59,13 @@ export function PatientMessaging({
           Not offered at all once a death is recorded. There is nothing useful
           to add on top of a suppression that can never be lifted, and a button
           there would invite somebody to try.
+
+          Gated on having data, not on `isSuccess`: before the first load we
+          cannot know the patient is not deceased, but after a failed
+          *background* refetch TanStack keeps the last good data (and drops
+          `isSuccess`) — the panel still shows that data, so it keeps its button.
         */}
-        {canManage && !deceased && active.length === 0 ? (
+        {canManage && blocks.data !== undefined && !deceased && active.length === 0 ? (
           <Button
             variant="outline"
             size="sm"
@@ -71,7 +78,16 @@ export function PatientMessaging({
         ) : null}
       </div>
 
-      {active.length === 0 ? (
+      {/*
+        Never claim "messaging is on" before the blocks have loaded: for a
+        deceased patient that would be false, and it is the one statement this
+        panel must never get wrong.
+      */}
+      {blocks.isPending ? (
+        <Skeleton className="h-11 w-full rounded-lg" aria-busy="true" />
+      ) : blocks.isError && !blocks.data ? (
+        <LoadError onRetry={() => blocks.refetch()} />
+      ) : active.length === 0 ? (
         <p className="text-muted-foreground rounded-lg border px-4 py-3 text-sm">
           {t("messagingOn")}
         </p>

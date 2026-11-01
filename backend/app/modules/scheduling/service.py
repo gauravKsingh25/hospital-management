@@ -75,6 +75,7 @@ __all__ = [
     "get_appointment_by_number",
     "get_available_slots",
     "get_doctor",
+    "get_doctors_by_ids",
     "get_queue",
     "link_encounter",
     "list_appointments",
@@ -157,6 +158,32 @@ async def get_doctor(
     if doctor is None:
         raise NotFoundError("Doctor not found.", code="doctor_not_found")
     return doctor
+
+
+async def get_doctors_by_ids(
+    session: AsyncSession, doctor_ids: Collection[uuid.UUID], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, Doctor]:
+    """Many doctors in one query, keyed by id — for lists that name who saw whom.
+
+    Retired profiles are included on purpose. A patient's history names the
+    doctor who saw them in 2024 whether or not that doctor still practises
+    here; dropping the name would make the old visit read as "seen by nobody".
+    """
+    if not doctor_ids:
+        return {}
+    rows = (
+        (
+            await session.execute(
+                select(Doctor).where(
+                    col(Doctor.id).in_(set(doctor_ids)),
+                    col(Doctor.hospital_id) == hospital_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {doctor.id: doctor for doctor in rows}
 
 
 async def get_doctor_by_user(
@@ -1709,6 +1736,7 @@ async def search(
     hospital_id: uuid.UUID,
     limit: int = MAX_SEARCH_HITS,
     can_open_charts: bool = False,
+    mask_phones: bool = True,
 ) -> list[SearchHit]:
     """One box that resolves anything a member of staff is holding.
 
@@ -1878,7 +1906,16 @@ async def search(
             SearchHit(
                 kind=SearchHitKind.PATIENT,
                 title=view.full_name,
-                subtitle=f"{view.uhid} · {view.phone}",
+                # An unidentified emergency record has no mobile to show.
+                # Masked for a caller who does not ring patients (SEC-01).
+                subtitle=" · ".join(
+                    part
+                    for part in (
+                        view.uhid,
+                        patients_service.mask_phone(view.phone) if mask_phones else view.phone,
+                    )
+                    if part
+                ),
                 patient_id=view.id,
                 patient_uhid=view.uhid,
                 is_deceased=view.is_deceased,

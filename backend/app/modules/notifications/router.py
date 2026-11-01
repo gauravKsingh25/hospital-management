@@ -15,6 +15,7 @@ from typing import Annotated, Protocol
 from fastapi import APIRouter, Depends, Request, status
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
+from app.core.exceptions import PermissionDeniedError
 from app.core.pagination import Page, PageParams, page_params
 from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
@@ -43,6 +44,7 @@ from app.modules.notifications.schemas import (
     TemplatePreviewResult,
 )
 from app.modules.patients import service as patients_service
+from app.modules.patients.rbac import PatientPermissions
 from app.modules.patients.schemas import PatientRead
 
 notifications_router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -71,7 +73,9 @@ class _NamesAPatient(Protocol):
     uhid: str | None
 
 
-async def _render(session: SessionDep, notification: Notification) -> NotificationRead:
+async def _render(
+    session: SessionDep, notification: Notification, context: AuthContext
+) -> NotificationRead:
     """One response carrying the message and every rung tried for it.
 
     The attempt log is the point of the detail view — "we sent it" is not an
@@ -88,7 +92,46 @@ async def _render(session: SessionDep, notification: Notification) -> Notificati
         AttemptRead.model_validate(row)
         for row in await service.list_attempts(session, notification.id)
     ]
-    return rendered
+    return _shown(context, rendered)
+
+
+def _shown(context: AuthContext, message: NotificationRead) -> NotificationRead:
+    """The message as this caller may see it (SEC-03).
+
+    The lab can still say "it was sent at 14:31 and delivered"; it cannot read
+    what the patient was told, nor the number it went to. Whoever contacts
+    patients — or writes the hospital's message copy — reads it in full.
+    """
+    if context.has_permission(PatientPermissions.CONTACT) or context.has_permission(
+        NotificationPermissions.TEMPLATE_MANAGE
+    ):
+        return message
+    return message.model_copy(
+        update={
+            "recipient_phone": patients_service.mask_phone(message.recipient_phone),
+            "recipient_email": _mask_email(message.recipient_email),
+            "subject": None,
+            "body": None,
+            "attempt_log": [
+                attempt.model_copy(
+                    update={
+                        "address": _mask_email(attempt.address)
+                        if attempt.address and "@" in attempt.address
+                        else patients_service.mask_phone(attempt.address)
+                    }
+                )
+                for attempt in message.attempt_log
+            ],
+        }
+    )
+
+
+def _mask_email(email: str | None) -> str | None:
+    """`sunita.devi@example.com` -> `s•••@example.com`."""
+    if not email or "@" not in email:
+        return email
+    local, _, domain = email.partition("@")
+    return f"{local[:1]}•••@{domain}"
 
 
 async def _with_patients[TRow: _NamesAPatient](
@@ -192,15 +235,14 @@ async def list_templates(
 async def list_template_codes(context: CanReadTemplate) -> dict[str, list[str]]:
     """What an administrator needs before they can write anything useful.
 
-    Returns the codes and the placeholders each one's fallback copy expects, so
-    a template can be authored without reading the source.
+    Returns the codes and every placeholder each one's trigger supplies — the
+    same set a template is checked against when it is saved — so a template can
+    be authored without reading the source.
     """
-    codes = sorted(
-        value
-        for name, value in vars(templates.TemplateCode).items()
-        if not name.startswith("_") and isinstance(value, str)
-    )
-    return {code: list(templates.placeholders_in(templates.fallback_body(code))) for code in codes}
+    return {
+        code: sorted(templates.allowed_placeholders(code))
+        for code in sorted(templates.PLACEHOLDERS)
+    }
 
 
 @templates_router.get(
@@ -239,6 +281,38 @@ async def update_template(
     )
     await session.commit()
     return MessageTemplateRead.model_validate(updated)
+
+
+@templates_router.delete(
+    "/{template_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a template; the shipped wording applies again",
+)
+async def delete_template(
+    template_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    context: CanManageTemplate,
+    tenant_id: TenantId,
+) -> None:
+    template = await service.get_template(session, template_id, hospital_id=tenant_id)
+    await service.delete_template(session, template)
+    await identity_service.record_audit(
+        session,
+        action="notifications.template.delete",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="notification_template",
+        resource_id=template.id,
+        changes={
+            "code": template.code,
+            "channel": template.channel.value,
+            "language": template.language,
+            "body": template.body,
+        },
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
 
 
 @templates_router.post(
@@ -282,7 +356,22 @@ async def list_notifications(
     channel: NotificationChannel | None = None,
     needs_template: bool | None = None,
 ) -> Page[NotificationSummary]:
-    """The outbox, and — via `needs_template` — the missing-copy worklist."""
+    """The outbox, and — via `needs_template` — the missing-copy worklist.
+
+    Without a patient or a visit to narrow it, this is every message to every
+    patient — `notification:read_all` (SEC-03). With one, it is that patient's
+    messages, which anybody who reads messages may see.
+    """
+    if (
+        patient_id is None
+        and encounter_id is None
+        and not context.has_permission(NotificationPermissions.OUTBOX_READ)
+    ):
+        raise PermissionDeniedError(
+            "Choose a patient to see their messages.",
+            code="permission_denied",
+            details={"required": [NotificationPermissions.OUTBOX_READ]},
+        )
     rows, total = await service.list_notifications(
         session,
         params,
@@ -344,7 +433,7 @@ async def send_message(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render(session, notification)
+    return await _render(session, notification, context)
 
 
 @notifications_router.get(
@@ -354,7 +443,7 @@ async def get_notification(
     notification_id: uuid.UUID, session: SessionDep, context: CanRead, tenant_id: TenantId
 ) -> NotificationRead:
     notification = await service.get_notification(session, notification_id, hospital_id=tenant_id)
-    return await _render(session, notification)
+    return await _render(session, notification, context)
 
 
 @notifications_router.post(
@@ -382,7 +471,7 @@ async def retry_notification(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render(session, updated)
+    return await _render(session, updated, context)
 
 
 @notifications_router.post(
@@ -411,7 +500,7 @@ async def cancel_notification(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render(session, updated)
+    return await _render(session, updated, context)
 
 
 # ---------------------------------------------------------------------------

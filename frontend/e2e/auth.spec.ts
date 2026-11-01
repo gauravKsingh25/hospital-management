@@ -50,8 +50,12 @@ test.describe("signing in", () => {
   });
 
   test("each role lands on its own screen", async ({ page }) => {
+    // The doctor sees OPD patients in person and enters nothing: their screen
+    // is the queue, and there is no consultation screen to reach.
     await signIn(page, ACCOUNTS.doctor);
-    await expect(page).toHaveURL(/\/doctor/);
+    await expect(page).toHaveURL(/\/queue/);
+    await expect(page.getByRole("link", { name: "My patients" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /Start consultation/ })).toHaveCount(0);
   });
 
   test("reception lands on the counter screen", async ({ page }) => {

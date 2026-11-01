@@ -4,7 +4,10 @@ import {
   cameraFailureReason,
   cameraScanSupport,
   firstUhid,
-  newQrDetector,
+  hasCamera,
+  loadQrDetector,
+  nativeQrDetector,
+  type BarcodeDetectorLike,
   type ScanCapableWindow,
 } from "@/lib/camera-scan";
 import { normaliseUhid } from "@/lib/scanner";
@@ -18,21 +21,40 @@ import { normaliseUhid } from "@/lib/scanner";
  * (CLAUDE.md §14), and this does not.
  *
  * What can be tested here is everything except the camera and the decoder:
- * whether this browser can scan at all, which detected code is a card, and
- * what to tell somebody when the camera will not start. Those three are the
- * whole of the logic; the rest is the platform's.
+ * whether this browser can scan at all, which decoder it gets, which detected
+ * code is a card, and what to tell somebody when the camera will not start.
+ * Those are the whole of the logic; the rest is the platform's.
  */
 
-/** A `window` that can scan. Each test breaks exactly one condition. */
+/** A native decoder, as Chrome on Android provides one. */
+class NativeDetector {
+  async detect() {
+    return [];
+  }
+}
+
+/** A `window` that can scan natively. Each test breaks exactly one condition. */
 const CAPABLE: ScanCapableWindow = {
-  BarcodeDetector: class {
-    async detect() {
-      return [];
-    }
-  },
+  BarcodeDetector: NativeDetector,
   isSecureContext: true,
-  navigator: { mediaDevices: {} },
+  navigator: { mediaDevices: { getUserMedia: async () => undefined } },
 };
+
+/** Safari on an iPad: a camera, TLS, and no `BarcodeDetector`. */
+const IPAD: ScanCapableWindow = { ...CAPABLE, BarcodeDetector: undefined };
+
+/** Stands in for the downloaded decoder, and counts how often it was fetched. */
+function fallbackLoader() {
+  const fallback: BarcodeDetectorLike = { detect: async () => [] };
+  const loader = Object.assign(
+    async () => {
+      loader.calls += 1;
+      return fallback;
+    },
+    { calls: 0 },
+  );
+  return { fallback, loader };
+}
 
 test.describe("whether this browser can scan", () => {
   test("a capable browser can", () => {
@@ -44,14 +66,14 @@ test.describe("whether this browser can scan", () => {
     expect(cameraScanSupport(undefined)).toBe(false);
   });
 
-  test("without BarcodeDetector it cannot", () => {
+  test("without BarcodeDetector it still can", () => {
     /**
-     * The common case, not the exotic one. Windows desktop Chrome and every
-     * version of Firefox lack the API — which is to say the machine most
-     * likely to be at a reception counter. The button hides; the USB scanner
-     * and typing are untouched.
+     * The case this whole path was rebuilt for. Every browser on an iPhone or
+     * an iPad is Safari underneath, and Safari has no `BarcodeDetector` — nor
+     * do Firefox and Windows desktop Chrome. Those devices get a downloaded
+     * decoder instead, so a missing native one no longer hides the button.
      */
-    expect(cameraScanSupport({ ...CAPABLE, BarcodeDetector: undefined })).toBe(false);
+    expect(cameraScanSupport(IPAD)).toBe(true);
   });
 
   test("over plain HTTP it cannot", () => {
@@ -64,10 +86,16 @@ test.describe("whether this browser can scan", () => {
     expect(cameraScanSupport({ ...CAPABLE, navigator: {} })).toBe(false);
   });
 
-  test("a detector is only built where scanning is supported", () => {
-    expect(newQrDetector(CAPABLE)).not.toBeNull();
-    expect(newQrDetector(undefined)).toBeNull();
-    expect(newQrDetector({ ...CAPABLE, isSecureContext: false })).toBeNull();
+  test("without getUserMedia it cannot", () => {
+    // An embedded webview can expose `mediaDevices` with nothing on it.
+    expect(cameraScanSupport({ ...CAPABLE, navigator: { mediaDevices: {} } })).toBe(false);
+  });
+
+  test("a native detector is only built where scanning is supported", () => {
+    expect(nativeQrDetector(CAPABLE)).not.toBeNull();
+    expect(nativeQrDetector(undefined)).toBeNull();
+    expect(nativeQrDetector(IPAD)).toBeNull();
+    expect(nativeQrDetector({ ...CAPABLE, isSecureContext: false })).toBeNull();
   });
 
   test("a browser with the API but no QR support is caught", () => {
@@ -88,7 +116,78 @@ test.describe("whether this browser can scan", () => {
       },
     };
     expect(cameraScanSupport(noQr)).toBe(true);
-    expect(newQrDetector(noQr)).toBeNull();
+    expect(nativeQrDetector(noQr)).toBeNull();
+  });
+});
+
+test.describe("which decoder a device gets", () => {
+  test("a native decoder is used where there is one, and nothing is downloaded", async () => {
+    // Android Chrome pays nothing for the iPad's sake.
+    const { loader } = fallbackLoader();
+    const detector = await loadQrDetector(CAPABLE, loader);
+    expect(detector).toBeInstanceOf(NativeDetector);
+    expect(loader.calls).toBe(0);
+  });
+
+  test("an iPad downloads the decoder", async () => {
+    const { fallback, loader } = fallbackLoader();
+    expect(await loadQrDetector(IPAD, loader)).toBe(fallback);
+    expect(loader.calls).toBe(1);
+  });
+
+  test("a native API that cannot read QR falls back too", async () => {
+    const { fallback, loader } = fallbackLoader();
+    const noQr: ScanCapableWindow = {
+      ...CAPABLE,
+      BarcodeDetector: class {
+        constructor() {
+          throw new TypeError("qr_code is not a supported format");
+        }
+        async detect() {
+          return [];
+        }
+      },
+    };
+    expect(await loadQrDetector(noQr, loader)).toBe(fallback);
+  });
+
+  test("a native API that lists no QR support falls back too", async () => {
+    /**
+     * Desktop Chrome on Linux: the class exists, the constructor accepts
+     * `qr_code` without complaint, and every frame comes back empty. The only
+     * honest signal is `getSupportedFormats`, so it is asked.
+     */
+    const { fallback, loader } = fallbackLoader();
+    const silent: ScanCapableWindow = {
+      ...CAPABLE,
+      BarcodeDetector: Object.assign(class extends NativeDetector {}, {
+        getSupportedFormats: async () => [],
+      }),
+    };
+    expect(await loadQrDetector(silent, loader)).toBe(fallback);
+  });
+
+  test("nothing is downloaded where the camera cannot work anyway", async () => {
+    // Plain HTTP: no camera to point it at, so no reason to fetch a decoder.
+    const { loader } = fallbackLoader();
+    expect(await loadQrDetector({ ...IPAD, isSecureContext: false }, loader)).toBeNull();
+    expect(loader.calls).toBe(0);
+  });
+});
+
+test.describe("whether the device has a camera", () => {
+  test("a listed video input is a camera", () => {
+    expect(hasCamera([{ kind: "audioinput" }, { kind: "videoinput" }])).toBe(true);
+  });
+
+  test("a desktop with only a microphone has none", () => {
+    /**
+     * The counter PC. Without this the scanner icon would sit in its header
+     * all day and, when tapped, explain that it cannot work — the button
+     * staff learn to ignore.
+     */
+    expect(hasCamera([{ kind: "audioinput" }, { kind: "audiooutput" }])).toBe(false);
+    expect(hasCamera([])).toBe(false);
   });
 });
 

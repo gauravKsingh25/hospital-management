@@ -1,6 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, findOnBoard, registerAndQueue, signIn, signOut } from "./support";
+import {
+  ACCOUNTS,
+  doctorFinishesVisit,
+  findOnBoard,
+  openPatient,
+  recordDeath,
+  registerAndQueue,
+  signIn,
+  signOut,
+} from "./support";
 
 /**
  * The outbox, the block list, and the standing copy.
@@ -20,34 +29,32 @@ import { ACCOUNTS, findOnBoard, registerAndQueue, signIn, signOut } from "./supp
  * people quietly stop believing in.
  */
 
-/** Find a patient in the index and open their record. */
-async function openPatient(page: Page, name: string): Promise<void> {
-  await page.goto("/patients");
-  await page.getByLabel("Search").fill(name);
-  const row = page.getByTestId("patient-row").filter({ hasText: name });
-  await expect(row).toBeVisible({ timeout: 45_000 });
-  await row.getByRole("link", { name: "Open" }).click();
-  await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible({ timeout: 45_000 });
-}
-
 /** Register, queue, and let the doctor close the visit — which triggers messages. */
 async function visitWithMessages(page: Page): Promise<string> {
   const name = await registerAndQueue(page);
-
-  await signIn(page, ACCOUNTS.doctor);
-  const row = page.getByTestId("queue-row").filter({ hasText: name });
-  await row.getByRole("link", { name: /Start consultation/ }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-  await page.getByRole("button", { name: "Start consultation" }).click();
-
-  const note = page.getByRole("textbox", { name: "Clinical note" });
-  await expect(note).toBeEnabled({ timeout: 45_000 });
-  await note.fill("Seen and well. Review in a month.");
-  await note.press("Control+Enter");
-  await page.getByRole("button", { name: /Complete/ }).first().click();
-
-  await signOut(page);
+  await doctorFinishesVisit(page, name);
   return name;
+}
+
+/** The one template this spec writes. Marathi, so it shadows nobody's real copy. */
+const WRITTEN = { code: "APPOINTMENT_BOOKED", channel: "SMS", language: "mr" } as const;
+
+/**
+ * Delete every template matching `match`, through the API. Templates are
+ * configuration, which `reset_demo_data.py` rightly leaves alone — so a spec
+ * that writes one has to remove it itself.
+ */
+async function removeTemplates(
+  page: Page,
+  match: { code: string; channel: string; language: string },
+): Promise<void> {
+  const query = new URLSearchParams({ ...match, include_inactive: "true", limit: "100" });
+  const listing = await page.request.get(`/bff/notifications/templates?${query}`);
+  expect(listing.ok(), await listing.text()).toBeTruthy();
+  for (const { id } of ((await listing.json()) as { items: { id: string }[] }).items) {
+    const removed = await page.request.delete(`/bff/notifications/templates/${id}`);
+    expect(removed.ok(), await removed.text()).toBeTruthy();
+  }
 }
 
 test.describe("the outbox", () => {
@@ -160,20 +167,8 @@ test.describe("blocking", () => {
     const name = await registerAndQueue(page);
 
     await signIn(page, ACCOUNTS.doctor);
-    const row = page.getByTestId("queue-row").filter({ hasText: name });
-    await row.getByRole("link", { name: /Start consultation/ }).click();
-    await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-
-    await page.getByTestId("record-outcome").click();
-    const outcome = page.getByRole("dialog", { name: "How did this visit end?" });
-    await outcome.getByLabel("What happened").click();
-    await page.getByRole("option", { name: "The patient died" }).click();
-    await outcome.getByLabel("Certified by").click();
-    await page.getByRole("option", { name: /Vikram/ }).click();
-    await outcome.getByLabel("Cause of death").fill("Cardiac arrest.");
-    await outcome.getByTestId("confirm-outcome").click();
-    await expect(page.getByTestId("outcome-summary")).toBeVisible({ timeout: 45_000 });
-
+    await openPatient(page, name);
+    await recordDeath(page, "Cardiac arrest.");
     await signOut(page);
 
     await signIn(page, ACCOUNTS.reception);
@@ -227,43 +222,60 @@ test.describe("message templates", () => {
     await expect(page.getByText(/shipped English wording as a fallback/i)).toBeVisible();
   });
 
-  test("a template is written, then previewed before anybody receives it", async ({ page }) => {
+  test("a placeholder nothing supplies is refused, then the fixed copy previews clean", async ({
+    page,
+  }) => {
     /**
-     * The alternative way to discover a placeholder typo is to read it on a
-     * patient's phone — and the failure is quiet: a name the renderer does not
-     * recognise is substituted with nothing, so the message goes out with a
-     * hole in it rather than with visible gibberish. The preview is what makes
-     * that visible before anybody receives it.
+     * This test used to save `{{nonexistent}}` and show the preview warning
+     * about it. A warning was not enough: the same copy, saved on the demo
+     * tenant in English, went out to patients with the hole in it. So the save
+     * itself now refuses it, and only copy that renders can exist.
      *
-     * Note the syntax: `{{name}}`, which is what `PLACEHOLDER_PATTERN` matches.
-     * Writing single braces produced exactly the silent no-substitution this
-     * test now guards, and the screen's own hint had it wrong.
+     * It also used to leave a template behind on every run, in a made-up
+     * language so the next run would not collide with it — 33 of them by the
+     * audit. Now it writes in a real language and removes what it wrote,
+     * before (a previous run that died half-way) and after.
      */
     await signIn(page, ACCOUNTS.admin);
-    await page.goto("/admin/templates");
-    await page.getByRole("button", { name: "Add a template" }).click();
+    await removeTemplates(page, WRITTEN);
 
-    // A language unique to this run. Templates are *configuration*, so
-    // `reset_demo_data.py` rightly leaves them alone — which means a fixed
-    // code/channel/language would collide with the previous run and 409. The
-    // same reasoning as `uniquePatient`.
-    const language = `q${Date.now().toString().slice(-2)}`;
+    try {
+      await page.goto("/admin/templates");
+      await page.getByRole("button", { name: "Add a template" }).click();
 
-    const dialog = page.getByRole("dialog");
-    await dialog.getByLabel("Message").click();
-    await page.getByRole("option").first().click();
-    await dialog.getByLabel("Language").fill(language);
-    await dialog
-      .getByLabel("Wording")
-      .fill("Namaste {{patient_name}}, aapka {{nonexistent}} taiyar hai.");
-    await dialog.getByTestId("save-template").click();
-    await expect(page.getByText("Template saved.")).toBeVisible({ timeout: 45_000 });
+      const dialog = page.getByRole("dialog");
+      await dialog.getByLabel("Message").click();
+      await page.getByRole("option", { name: WRITTEN.code }).click();
+      await dialog.getByLabel("Channel").click();
+      await page.getByRole("option", { name: WRITTEN.channel }).click();
+      await dialog.getByLabel("Language").click();
+      await page.getByRole("option", { name: /मराठी/ }).click();
 
-    // Re-open this one and render it: nothing supplies `nonexistent`, so it is
-    // dropped and the sentence goes out with a hole where a word should be.
-    await page.locator(`[data-testid="template-row"][data-language="${language}"]`).click();
-    await page.getByTestId("preview-template").click();
-    await expect(page.getByTestId("missing-placeholders")).toBeVisible({ timeout: 45_000 });
-    await expect(page.getByTestId("missing-placeholders")).toContainText("nonexistent");
+      await dialog
+        .getByLabel("Wording")
+        .fill("Namaste {{patient_name}}, aapka {{nonexistent}} taiyar hai.");
+      await dialog.getByTestId("save-template").click();
+      // Refused, and the refusal names the word — the dialog stays open to fix it.
+      await expect(page.getByText(/does not supply {{nonexistent}}/)).toBeVisible({
+        timeout: 45_000,
+      });
+      await expect(dialog).toBeVisible();
+
+      await dialog
+        .getByLabel("Wording")
+        .fill("Namaste {{patient_name}}, {{doctor_name}} ki appointment {{appointment_time}} ko.");
+      await dialog.getByTestId("save-template").click();
+      await expect(page.getByText("Template saved.")).toBeVisible({ timeout: 45_000 });
+
+      await page
+        .locator(`[data-testid="template-row"][data-language="${WRITTEN.language}"]`)
+        .filter({ hasText: WRITTEN.code })
+        .click();
+      await page.getByTestId("preview-template").click();
+      await expect(page.getByText("<doctor_name>")).toBeVisible({ timeout: 45_000 });
+      await expect(page.getByTestId("missing-placeholders")).toHaveCount(0);
+    } finally {
+      await removeTemplates(page, WRITTEN);
+    }
   });
 });

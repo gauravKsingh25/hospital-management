@@ -93,7 +93,7 @@ test("dragging a patient to the top changes who the doctor sees first", async ({
   // The doctor's own list honours it — the reason the rank is server-side.
   await signOut(page);
   await signIn(page, ACCOUNTS.doctor);
-  await page.goto("/doctor");
+  await page.goto("/queue");
   const mine = page.getByTestId("queue-row");
   await expect(mine.filter({ hasText: second.name })).toBeVisible({ timeout: 30_000 });
   const doctorOrder = await mine.allInnerTexts();

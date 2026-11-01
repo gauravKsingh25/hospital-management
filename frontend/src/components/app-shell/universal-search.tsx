@@ -104,12 +104,10 @@ export function UniversalSearch() {
   /**
    * Where each kind of hit leads.
    *
-   * A token or a visit opens the chart — that is what somebody holding a token
-   * slip actually wants. Everything else opens the patient record, and a
-   * doctor opens the queue filtered to them.
+   * A patient, a token or a visit opens the patient record — their visits,
+   * and where each one stands. A doctor opens the queue.
    */
   const openHit = (hit: SearchHit) => {
-    if (hit.encounter_id) return go(`/consultation/${hit.encounter_id}`);
     if (hit.patient_id) return go(`/patients/${hit.patient_id}`);
     if (hit.doctor_id) return go("/queue");
     return go("/");
@@ -129,11 +127,14 @@ export function UniversalSearch() {
       <Button
         variant="outline"
         onClick={() => setOpen(true)}
-        className="text-muted-foreground h-tap w-full justify-start gap-2 px-3 font-normal sm:w-72 lg:w-96"
+        // On a phone, the space the top bar has left over — not all of it.
+        // `w-full` claimed the whole bar and pushed language, account and
+        // the camera scanner off the right edge of every phone screen.
+        className="text-muted-foreground h-tap min-w-0 flex-1 justify-start gap-2 px-3 font-normal sm:w-72 sm:flex-none lg:w-96"
       >
         <Search aria-hidden className="size-4 shrink-0" />
         <span className="truncate">{t("placeholder")}</span>
-        <kbd className="bg-muted text-muted-foreground ml-auto hidden rounded border px-1.5 py-0.5 text-[10px] font-medium lg:inline-block">
+        <kbd className="bg-muted text-muted-foreground ml-auto hidden rounded border px-1.5 py-0.5 text-xs font-medium lg:inline-block">
           F3
         </kbd>
       </Button>
@@ -169,7 +170,7 @@ export function UniversalSearch() {
                     onSelect={() => openHit(hit)}
                     className="flex items-center gap-3 py-2.5"
                   >
-                    <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] font-medium">
+                    <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-xs font-medium">
                       {t(`kind${hit.kind}` as "kindPATIENT")}
                     </span>
                     <div className="min-w-0 flex-1">
@@ -181,7 +182,7 @@ export function UniversalSearch() {
                       ) : null}
                     </div>
                     {hit.is_deceased ? (
-                      <span className="bg-foreground/85 text-background rounded px-1.5 py-0.5 text-[10px] font-medium">
+                      <span className="bg-foreground/85 text-background rounded px-1.5 py-0.5 text-xs font-medium">
                         {patient("deceased")}
                       </span>
                     ) : null}

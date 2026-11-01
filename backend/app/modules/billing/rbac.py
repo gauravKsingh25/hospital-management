@@ -55,10 +55,23 @@ class BillingPermissions:
     PAYMENT_RECORD = "payment:record"
     # Giving money back. Never bundled with taking it.
     PAYMENT_REVERSE = "payment:reverse"
+    # SEC-07. Record a payment as received before today: a cheque that
+    # cleared on Friday, entered on Monday. Accounts' decision, not the counter's.
+    PAYMENT_BACKDATE = "payment:backdate"
 
     # --- claims -----------------------------------------------------------
     CLAIM_READ = "claim:read"
     CLAIM_MANAGE = "claim:manage"
+
+    # --- the accountant ---------------------------------------------------
+    # An IPD stay's bill is the one that goes to the tax filing, so changing it
+    # by hand is its own power, held by the accountant and the hospital admin
+    # only. On a stay these replace charge:add / discount / waive and
+    # invoice:issue / cancel / write_off, whoever else holds those.
+    IPD_BILL_EDIT = "ipd_bill:edit"
+    IPD_BILL_FINALISE = "ipd_bill:finalise"
+    # The accounts dashboard, bill history, cost journey and printable bills.
+    ACCOUNTS_READ = "accounts:read"
 
 
 PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
@@ -78,8 +91,22 @@ PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
     PermissionDef(BillingPermissions.PAYMENT_READ, MODULE, "View payments and receipts."),
     PermissionDef(BillingPermissions.PAYMENT_RECORD, MODULE, "Record a payment."),
     PermissionDef(BillingPermissions.PAYMENT_REVERSE, MODULE, "Reverse a payment."),
+    PermissionDef(
+        BillingPermissions.PAYMENT_BACKDATE,
+        MODULE,
+        "Record a payment as received on an earlier day.",
+    ),
     PermissionDef(BillingPermissions.CLAIM_READ, MODULE, "View insurance and scheme claims."),
     PermissionDef(BillingPermissions.CLAIM_MANAGE, MODULE, "Raise and progress a claim."),
+    PermissionDef(
+        BillingPermissions.IPD_BILL_EDIT, MODULE, "Add, edit or remove charges on an IPD bill."
+    ),
+    PermissionDef(
+        BillingPermissions.IPD_BILL_FINALISE, MODULE, "Generate or cancel an IPD final bill."
+    ),
+    PermissionDef(
+        BillingPermissions.ACCOUNTS_READ, MODULE, "View the accounts dashboard and bill history."
+    ),
 )
 
 _ALL = tuple(perm.code for perm in PERMISSION_CATALOGUE)
@@ -121,6 +148,17 @@ _BILLING_STAFF = (
 # for the same reason.
 _RECEPTION = _CASHIER
 
+# The accountant corrects and finalises IPD bills and reads everything billed,
+# but takes no money: a person who sets the final figure and also pockets the
+# cash is the separation `payment:record` exists to prevent.
+_ACCOUNTANT = (
+    *_READ,
+    BillingPermissions.CLAIM_READ,
+    BillingPermissions.ACCOUNTS_READ,
+    BillingPermissions.IPD_BILL_EDIT,
+    BillingPermissions.IPD_BILL_FINALISE,
+)
+
 # A doctor should be able to see whether the patient in front of them has an
 # unpaid bill — it changes the conversation — without being able to alter it.
 _DOCTOR = (BillingPermissions.CHARGE_READ, BillingPermissions.INVOICE_READ)
@@ -145,4 +183,8 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.RADIOLOGIST: (BillingPermissions.SERVICE_READ, BillingPermissions.RATECARD_READ),
     Roles.RECORDS_OFFICER: (BillingPermissions.INVOICE_READ, BillingPermissions.CHARGE_READ),
     Roles.AUDITOR: (*_READ, BillingPermissions.CLAIM_READ),
+    # The cost of a stay, on the admission page. Reading it only: the desk
+    # records what was used (`medicine:issue`) and billing does the charging.
+    Roles.ADMISSION_DESK: (BillingPermissions.CHARGE_READ,),
+    Roles.ACCOUNTANT: _ACCOUNTANT,
 }

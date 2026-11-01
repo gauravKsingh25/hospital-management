@@ -20,13 +20,21 @@ import {
 import { formatLocalDate } from "@/features/reports/format";
 import { useQueueSnapshot } from "@/features/reports/queue-snapshot";
 import { Section } from "@/features/reports/stat";
-import { DEFAULT_TRAILING_DAYS, REPORT_WINDOWS } from "@/features/reports/windows";
+import { PERIODS, periodDays, type Period } from "@/features/reports/windows";
 import { api } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
-import type { Dashboard } from "@/types/api";
+import type { Dashboard, DateWindow } from "@/types/api";
 
 /**
  * The KPI dashboard (CLAUDE.md §13 step 10).
+ *
+ * ## Laid out by the question it is opened to answer
+ *
+ * "What came in today?" first: one period filter above everything, opening on
+ * Today, then the money, then patients, then what is happening right now,
+ * then beds and the clinical outcomes. Long lists fold away. The filter used
+ * to sit inside the Patients section while quietly changing the money below
+ * it as well, which is the kind of thing that makes a number untrustworthy.
  *
  * ## One request, not six
  *
@@ -40,7 +48,7 @@ import type { Dashboard } from "@/types/api";
  * The dashboard aggregates are expensive: a ninety-day footfall query, an ALOS
  * over every discharge, a revenue rollup. Polling all of that every thirty
  * seconds to keep a *waiting count* current would be a lot of database work to
- * move one number. So the report body is fetched once per window, and the live
+ * move one number. So the report body is fetched once per period, and the live
  * strip — today's queue, and the delay alerts on it — polls `/reports/queue`
  * on its own. That endpoint reads one day.
  *
@@ -48,7 +56,8 @@ import type { Dashboard } from "@/types/api";
  *
  * Recharts is the heaviest dependency in the frontend and only this screen uses
  * it, so it is behind `dynamic()` (CLAUDE.md §4: lazy-load heavy widgets). The
- * rest of the dashboard is drawn with `BarList`, which is CSS.
+ * rest of the dashboard is drawn with `BarList`, which is CSS. On Today there
+ * is no chart at all — one bar is not a trend — so the chunk is not even fetched.
  */
 
 const FootfallChart = dynamic(
@@ -61,20 +70,26 @@ const FootfallChart = dynamic(
   },
 );
 
-export function ReportsDashboard({ initial }: { initial: Dashboard }) {
+export function ReportsDashboard({
+  initial,
+  initialPeriod,
+}: {
+  initial: Dashboard;
+  initialPeriod: Period;
+}) {
   const t = useTranslations("reports");
-  const [trailingDays, setTrailingDays] = useState<number>(DEFAULT_TRAILING_DAYS);
+  const [period, setPeriod] = useState<Period>(initialPeriod);
 
   const dashboard = useQuery({
-    queryKey: ["reports", "dashboard", trailingDays],
+    queryKey: ["reports", "dashboard", period],
     queryFn: ({ signal }) =>
-      api.get<Dashboard>(`/reports/dashboard?trailing_days=${trailingDays}`, { signal }),
-    // Only the default window is server-rendered; the others are fetched.
-    initialData: trailingDays === DEFAULT_TRAILING_DAYS ? initial : undefined,
-    // Keep the previous window's numbers on screen while the new ones load.
-    // Without this the whole page empties on every click of the picker —
+      api.get<Dashboard>(`/reports/dashboard?trailing_days=${periodDays(period)}`, { signal }),
+    // Only the period the page was opened on is server-rendered.
+    initialData: period === initialPeriod ? initial : undefined,
+    // Keep the previous period's numbers on screen while the new ones load.
+    // Without this the whole page empties on every click of the filter —
     // headings and all — which reads as the dashboard breaking rather than
-    // thinking. The picker dims instead.
+    // thinking. The filter dims instead.
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });
@@ -86,40 +101,60 @@ export function ReportsDashboard({ initial }: { initial: Dashboard }) {
     enabled: initial.queue !== null && initial.queue !== undefined,
   });
 
+  /**
+   * Choose a period, and write it into the address.
+   *
+   * `replaceState` rather than a router navigation: a navigation would re-run
+   * the server component and fetch the dashboard a second time, on top of the
+   * query above. Next keeps `useSearchParams` in step with the native history
+   * API, and a replace rather than a push keeps Back meaning "the page before
+   * Reports" instead of stepping through every period somebody tried.
+   */
+  const choose = (next: Period) => {
+    setPeriod(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set("period", next);
+    window.history.replaceState(window.history.state, "", url);
+  };
+
   const data = dashboard.data;
   const footfall = data?.footfall;
+  const covered = reportWindow(data);
 
   return (
     <div className="space-y-8">
-      <TodaySection queue={queue.data ?? data?.queue} />
+      <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
+          {covered ? (
+            <p className="text-muted-foreground text-sm" data-testid="period-dates">
+              {covered.date_from === covered.date_to
+                ? t("datesOneDay", { date: formatLocalDate(covered.date_to) })
+                : t("datesRange", {
+                    from: formatLocalDate(covered.date_from),
+                    to: formatLocalDate(covered.date_to),
+                  })}
+            </p>
+          ) : null}
+        </div>
+        <PeriodPicker value={period} onChange={choose} busy={dashboard.isFetching} />
+      </header>
+
+      <RevenueSection report={data?.revenue} />
 
       {footfall ? (
-        <Section
-          id="report-footfall"
-          title={t("footfallTitle")}
-          hint={t("windowHint", {
-            from: formatLocalDate(footfall.window.date_from),
-            to: formatLocalDate(footfall.window.date_to),
-          })}
-          action={
-            <WindowPicker
-              value={trailingDays}
-              onChange={setTrailingDays}
-              busy={dashboard.isFetching}
-            />
-          }
-        >
+        <Section id="report-footfall" title={t("footfallTitle")}>
           <FootfallStats report={footfall} />
           <AutoClosedNote report={footfall} />
-          <FootfallChart days={footfall.by_day ?? []} />
+          {period === "today" ? null : <FootfallChart days={footfall.by_day ?? []} />}
           <FootfallBreakdown report={footfall} />
         </Section>
       ) : null}
 
+      <TodaySection queue={queue.data ?? data?.queue} />
       <OccupancySection report={data?.occupancy} />
       <InpatientSection report={data?.inpatient} />
       <FollowUpSection report={data?.follow_up} />
-      <RevenueSection report={data?.revenue} />
 
       {data ? (
         <p className="text-muted-foreground text-xs">
@@ -131,36 +166,51 @@ export function ReportsDashboard({ initial }: { initial: Dashboard }) {
 }
 
 /**
- * How far back the report looks.
- *
- * Three fixed windows rather than a date-range picker. A manager asking "how
- * was last month" wants one click, and the arbitrary range — which the API
- * supports on the individual report endpoints — is a different, rarer job.
+ * The dates the numbers cover, from the response rather than from the button
+ * that was pressed — so the line under the title can never claim a period the
+ * server did not answer for. Every windowed report shares one window; footfall
+ * is always present (the page requires `report:operational`), the rest are
+ * fallbacks.
  */
-function WindowPicker({
+function reportWindow(data: Dashboard | undefined): DateWindow | null {
+  return (
+    data?.footfall?.window ??
+    data?.revenue?.window ??
+    data?.inpatient?.window ??
+    data?.follow_up?.window ??
+    null
+  );
+}
+
+/**
+ * Today, 7, 30 or 90 days. Fixed choices rather than a date-range picker: a
+ * manager asking "how was today" or "how was last month" wants one click, and
+ * the arbitrary range — which the API supports on the individual report
+ * endpoints — is a different, rarer job.
+ */
+function PeriodPicker({
   value,
   onChange,
   busy,
 }: {
-  value: number;
-  onChange: (days: number) => void;
+  value: Period;
+  onChange: (period: Period) => void;
   busy: boolean;
 }) {
   const t = useTranslations("reports");
 
   return (
-    <div className="flex gap-1" role="group" aria-label={t("window")}>
-      {REPORT_WINDOWS.map((days) => (
+    <div className="flex flex-wrap gap-1" role="group" aria-label={t("period")}>
+      {PERIODS.map((period) => (
         <Button
-          key={days}
-          size="sm"
-          variant={days === value ? "default" : "outline"}
-          className={cn("h-tap", busy && days === value && "opacity-70")}
-          aria-pressed={days === value}
-          onClick={() => onChange(days)}
-          data-testid={`window-${days}`}
+          key={period}
+          variant={period === value ? "default" : "outline"}
+          className={cn("h-tap min-w-tap px-4", busy && period === value && "opacity-70")}
+          aria-pressed={period === value}
+          onClick={() => onChange(period)}
+          data-testid={`period-${period}`}
         >
-          {t("lastDays", { days })}
+          {period === "today" ? t("periodToday") : t("periodDays", { days: periodDays(period) })}
         </Button>
       ))}
     </div>

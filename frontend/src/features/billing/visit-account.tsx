@@ -68,6 +68,15 @@ export function VisitAccountScreen({
     onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
   });
 
+  const rebill = useMutation({
+    mutationFn: () => api.post<Invoice>(`/billing/accounts/${encounterId}/pre-admission-bill`),
+    onSuccess: (invoice) => {
+      toast.success(t("preAdmissionIssued", { number: invoice.invoice_number }));
+      void account.refetch();
+    },
+    onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
+  });
+
   const issue = useMutation({
     mutationFn: (invoiceId: string) =>
       api.post<Invoice>(`/billing/invoices/${invoiceId}/issue`, {}),
@@ -176,7 +185,7 @@ export function VisitAccountScreen({
               </table>
             </div>
 
-            {canCreateInvoice ? (
+            {canCreateInvoice && !data.is_stay ? (
               <Button
                 className="h-tap"
                 disabled={assemble.isPending}
@@ -184,6 +193,25 @@ export function VisitAccountScreen({
               >
                 {t("assembleInvoice")}
               </Button>
+            ) : null}
+            {/*
+              A stay's bill is the accounts office's. What the visit owed
+              before the admission is still an OPD bill the counter issues —
+              after it was cancelled to correct it.
+            */}
+            {data.is_stay ? (
+              <div className="space-y-2">
+                <p className="text-muted-foreground text-sm">{t("stayNote")}</p>
+                {data.pre_admission_pending && canIssueInvoice ? (
+                  <Button
+                    className="h-tap"
+                    disabled={rebill.isPending}
+                    onClick={() => rebill.mutate()}
+                  >
+                    {t("reissuePreAdmission")}
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </>
         )}
@@ -220,7 +248,9 @@ export function VisitAccountScreen({
                 </div>
 
                 <div className="flex gap-2">
-                  {invoice.status === "DRAFT" && canIssueInvoice ? (
+                  {invoice.status === "DRAFT" &&
+                  canIssueInvoice &&
+                  !(data.is_stay && invoice.scope === "IPD") ? (
                     <Button
                       size="sm"
                       className="h-tap"

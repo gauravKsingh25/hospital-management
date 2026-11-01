@@ -38,8 +38,11 @@ export type RegistrationResult = Schemas["RegistrationResponse"];
 export type DuplicateCandidate = Schemas["DuplicateCandidate"];
 export type PatientAlert = Schemas["PatientAlertRead"];
 export type Gender = Schemas["Gender"];
+export type PatientSort = Schemas["PatientSort"];
 export type BloodGroup = Schemas["BloodGroup"];
 export type AlertSeverity = Schemas["AlertSeverity"];
+/** Naming an unidentified emergency patient: a new person, or an existing record. */
+export type PatientIdentifyRequest = Schemas["PatientIdentify"];
 
 // --- Scheduling ------------------------------------------------------------
 export type Doctor = Schemas["DoctorRead"];
@@ -52,6 +55,8 @@ export type DoctorQueue = Schemas["DoctorQueue"];
 export type QueueReassignRequest = Schemas["QueueReassignRequest"];
 export type QuickOpdRequest = Schemas["QuickOpdRequest"];
 export type QuickOpdResult = Schemas["QuickOpdResponse"];
+/** The token slip for an unidentified emergency arrival, plus its EM tag. */
+export type EmergencyResult = Schemas["EmergencyResponse"];
 export type QueueStatus = Schemas["QueueStatus"];
 export type QueuePriority = Schemas["QueuePriority"];
 
@@ -97,6 +102,15 @@ export type Dose = Schemas["DoseRead"];
 export type DoseStatus = Schemas["DoseStatus"];
 export type DischargeSummary = Schemas["SummaryRead"];
 export type SummaryStatus = Schemas["SummaryStatus"];
+/** A preset on the medicine list, with its price from the default rate card. */
+export type MedicineItem = Schemas["MedicineItemRead"];
+export type MedicineItemInput = Schemas["MedicineItemCreate"];
+export type MedicineForm = Schemas["MedicineForm"];
+/** Something from the medicine list used on an inpatient outside the chart. */
+export type MedicineIssue = Schemas["MedicineIssueRead"];
+/** What a visit has cost so far, grouped by item. */
+export type CostBreakdown = Schemas["CostBreakdown"];
+export type CostLine = Schemas["CostLine"];
 
 // --- Clinical --------------------------------------------------------------
 export type Encounter = Schemas["EncounterRead"];
@@ -119,6 +133,13 @@ export type OrderInput = Schemas["OrderCreate"];
 export type OrderType = Schemas["OrderType"];
 export type OrderPriority = Schemas["OrderPriority"];
 export type CompleteConsultation = Schemas["CompleteConsultationRequest"];
+/** The head of the patient record: counts, the open visit, problems, vitals. */
+export type PatientClinicalSummary = Schemas["PatientClinicalSummary"];
+/** One visit in the patient's history, numbered, with what it was for. */
+export type PatientVisit = Schemas["PatientVisit"];
+export type ProblemEntry = Schemas["ProblemEntry"];
+/** The directory row's visit columns. */
+export type PatientVisitStats = Schemas["PatientVisitStats"];
 
 // --- Diagnostics -----------------------------------------------------------
 /** One open lab or radiology request, with the one thing it is waiting for. */
@@ -145,6 +166,25 @@ export type Charge = Schemas["ChargeRead"];
 export type Payment = Schemas["PaymentRead"];
 export type PaymentRequest = Schemas["PaymentRequest"];
 export type PaymentMethod = Schemas["PaymentMethod"];
+/** Reception's one-tap collection: method and reference, never an amount. */
+export type CollectPayment = Schemas["CollectPayment"];
+export type CollectPaymentResult = Schemas["CollectPaymentResult"];
+
+// --- Accounts (the accountant's dashboard) ---------------------------------
+export type InvoiceScope = Schemas["InvoiceScope"];
+export type AccountsSummary = Schemas["AccountsSummary"];
+export type BillRow = Schemas["BillRow"];
+export type PaymentRow = Schemas["PaymentRow"];
+export type PatientRow = Schemas["PatientRow"];
+export type BillHistory = Schemas["BillHistory"];
+export type VisitBills = Schemas["VisitBills"];
+export type Journey = Schemas["Journey"];
+export type JourneyLine = Schemas["JourneyLine"];
+/** A stay's running bill, as the IPD bill editor loads and saves it. */
+export type IpdBill = Schemas["IpdBill"];
+export type BillChangesRequest = Schemas["BillChangesRequest"];
+export type PrintableBill = Schemas["PrintableBill"];
+export type Stay = Schemas["StayRead"];
 
 // --- Notifications ---------------------------------------------------------
 /** One outbox row, carrying enough identity to find the person who complained. */
@@ -165,6 +205,7 @@ export type SuppressionReason = Schemas["SuppressionReason"];
 // --- Reporting -------------------------------------------------------------
 /** Every section the caller's permissions allow, in one round trip. */
 export type Dashboard = Schemas["Dashboard"];
+export type DateWindow = Schemas["DateWindow"];
 export type FootfallReport = Schemas["FootfallReport"];
 export type DailyCount = Schemas["DailyCount"];
 export type DepartmentLoad = Schemas["DepartmentLoad"];

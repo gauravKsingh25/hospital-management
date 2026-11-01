@@ -8,19 +8,38 @@
 #   DATABASE_URL="postgresql://hospital:hospital@postgres:5432/hospital"
 #   DIRECT_URL="postgresql://hospital:hospital@postgres:5432/hospital"
 
+# The api, worker and web services are in the `app` profile, so a bare
+# `docker compose up -d` starts only postgres and redis, for running the api
+# and web on the host. `docker compose --profile app up -d --build` runs the
+# whole stack here as dev servers: the api with --reload and the web with
+# `next dev`, both on bind-mounted source, so edits are live.
+#
+# .env holds host-machine values (`localhost:5432`), which inside a container
+# point at the container itself. The app services therefore rebuild the
+# database URLs for the service network from the same .env's parts
+# (APP_DB_ROLE / APP_DB_PASSWORD for the app, POSTGRES_* for migrations).
 name: hospital-management
+
+x-container-db: &container-db
+  # Service-network overrides. .env holds host-machine values so the same
+  # file works for `uvicorn` run directly on the host.
+  DATABASE_URL: postgresql://${APP_DB_ROLE}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-hospital}
+  DIRECT_URL: postgresql://${POSTGRES_USER:-hospital}:${POSTGRES_PASSWORD:-hospital}@postgres:5432/${POSTGRES_DB:-hospital}
+  REDIS_URL: redis://redis:6379/0
 
 services:
   api:
+    profiles: ["app"]
     build:
       context: ./backend
       dockerfile: Dockerfile
     env_file:
       - .env
     environment:
-      # Service-network overrides. .env holds host-machine values so the same
-      # file works for `uvicorn` run directly on the host.
-      REDIS_URL: redis://redis:6379/0
+      <<: *container-db
+      # --reload sees no file events on a Windows bind mount without polling.
+      WATCHFILES_FORCE_POLLING: "true"
+      PYTHONUTF8: "1"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -43,6 +62,7 @@ services:
     restart: unless-stopped
 
   worker:
+    profiles: ["app"]
     # Its own process, not a thread inside the api. A background job sharing
     # the web process competes with request handling for the event loop, and
     # the first thing that suffers is the latency of the screen a receptionist
@@ -53,10 +73,20 @@ services:
     env_file:
       - .env
     environment:
-      REDIS_URL: redis://redis:6379/0
+      <<: *container-db
     volumes:
       - ./backend:/code
     command: ["arq", "app.workers.main.WorkerSettings"]
+    # ARQ serves no HTTP, so the image's `curl :8000/health` could never pass
+    # and the worker sat "unhealthy" for ever — on Render or Fly, a restart
+    # loop or a real failure hidden in the noise (OPS-01). `arq --check` reads
+    # the heartbeat the worker writes to Redis every minute.
+    healthcheck:
+      test: ["CMD", "arq", "--check", "app.workers.main.WorkerSettings"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,12 +95,35 @@ services:
     restart: unless-stopped
 
   web:
+    profiles: ["app"]
+    # The dev server, not the production image: the Dockerfile's `deps` stage
+    # (node_modules installed for Linux) runs `next dev` on the bind-mounted
+    # source. node_modules and .next stay in the container — the host's are
+    # built for Windows. The production image is still `docker build ./frontend`.
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: deps
+    # Webpack, not Turbopack: on a Windows bind mount no file events reach the
+    # container, and only webpack can poll (WATCHPACK_POLLING below). Under
+    # Turbopack, edits and new files are silently never recompiled.
+    command: ["npx", "next", "dev", "--webpack", "--hostname", "0.0.0.0", "--port", "3000"]
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+      # Playwright, run on the host, writes here throughout a run. Seen by the
+      # dev server, every write recompiled the CSS and stalled the page under
+      # test mid-navigation; masked, the container never sees them.
+      - /app/test-results
+      - /app/playwright-report
+      - /app/blob-report
     env_file:
       - .env
     environment:
+      # Edits on a Windows bind mount raise no file events in the container.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
       # Service-network address. `.env` holds the host-machine value so the
       # same file works whether the frontend runs here or via `npm run dev`.
       #

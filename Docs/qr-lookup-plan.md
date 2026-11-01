@@ -296,6 +296,25 @@ confirmed to fail when detection and camera release were each broken on purpose.
 **Still not covered, by construction:** whether a real lens reads a real
 printed code. Same hardware gate as §7.
 
+#### Revised 2026-11-01 — the scanner moved to the top bar, and works on iOS
+
+Two findings reversed parts of the above:
+
+- **`Permissions-Policy: camera=()` blocked the camera everywhere**, our own
+  origin included, so this path had never worked outside stubbed tests. Now
+  `camera=(self)`.
+- **`BarcodeDetector`-only hid the button on every iPhone and iPad** — all iOS
+  browsers are Safari underneath, and Safari has none. Those are the devices a
+  ward round actually carries. A decoder is now downloaded where the native one
+  is missing: `jsqr` 1.4.0, pinned, loaded by dynamic `import()` on first tap
+  only (46 kB gzipped, its own chunk). `getSupportedFormats` is also checked,
+  because Linux desktop Chrome has the class and decodes nothing.
+
+The button left `/reception` and `/queue` for the app's top bar, gated on
+`patient:read`, and hides when `enumerateDevices` lists no camera. The camera
+also stops when the page is hidden and after sixty seconds without a read —
+the idle lock does not close dialogs under it.
+
 ### 5.7 Documentation — **done**
 
 - README has a "Scanning a card" section: payload format, why it is the UHID,

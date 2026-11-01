@@ -1,36 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Frontend — Next.js 16 · React 19 · Tailwind v4 · shadcn/ui
 
-## Getting Started
+The staff-facing web app. The full manual is the root [README](../README.md#frontend);
+this page gets you running and tells you where things go.
 
-First, run the development server:
+## Run it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev               # http://localhost:3000 — needs the API on API_BASE_URL
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`.env.local` needs one variable, `API_BASE_URL` (for example
+`http://127.0.0.1:8000/api/v1`). It is server-side only: the browser never
+talks to FastAPI directly, only to this app's `/bff` proxy.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Commands
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Command | What it does |
+|---|---|
+| `npm run dev` | dev server (Turbopack) |
+| `npm run verify` | **run before every commit** — codegen check, lint, typecheck, build |
+| `npm run codegen` | regenerate API + permission types from the backend |
+| `npm run test:e2e` | Playwright, against a real running backend |
 
-## Learn More
+## Where code goes
 
-To learn more about Next.js, take a look at the following resources:
+| Folder | Holds | Rule |
+|---|---|---|
+| `src/app/` | routes only | thin pages: check `can(user, …)`, then render a feature |
+| `src/features/<domain>/` | screens, dialogs, hooks for one domain | mirrors a backend module |
+| `src/components/ui/` | shadcn primitives | generated — edit sparingly |
+| `src/components/` | shared building blocks (`load-error`, `pager`, `status-chip`…) | used by two or more features |
+| `src/lib/` | API client, session, permissions, shortcuts | no JSX screens |
+| `src/types/` | **generated** API and RBAC types | never hand-edit — run `npm run codegen` |
+| `src/i18n/messages/` | `en.json`, `hi.json` | every string in both, same keys |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Rules that are not preferences
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **No token in the browser.** Sessions live in an httpOnly cookie; `/bff`
+  attaches the JWT server-side.
+- **`lib/permissions.ts` decides what to render, never what is allowed.** The
+  backend enforces access; hiding a button is courtesy, not security.
+- **Every list screen has three states**: loading (`Skeleton`), failed
+  (`<LoadError />`), and empty. Never treat a failed request as "no rows".
+- **No new heavy dependencies.** Ask first; check `next build` output.
+- **Read `AGENTS.md`** — this Next.js version differs from older docs.

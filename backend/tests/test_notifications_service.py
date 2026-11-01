@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import database as db
 from app.core.config import settings
-from app.core.exceptions import ConflictError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import PageParams
 from app.modules.identity.models import User
 from app.modules.identity.rbac import Roles
@@ -724,6 +724,159 @@ async def test_a_duplicate_template_is_refused(session: AsyncSession, tenant: Ho
 
     with pytest.raises(ConflictError, match="already exists"):
         await service.create_template(session, payload, hospital_id=tenant.id)
+
+
+async def test_a_template_asking_for_a_value_nothing_supplies_is_refused(
+    session: AsyncSession, tenant: Hospital
+) -> None:
+    """The audit's corrupted APPOINTMENT_BOOKED copy. A preview warning was not
+    enough: it was saved, and patients received the hole."""
+    with pytest.raises(ValidationError) as refused:
+        await service.create_template(
+            session,
+            MessageTemplateCreate(
+                code=TemplateCode.APPOINTMENT_BOOKED,
+                channel=NotificationChannel.WHATSAPP,
+                language="en",
+                body="Namaste {{patient_name}}, aapka {{nonexistent}} taiyar hai.",
+            ),
+            hospital_id=tenant.id,
+        )
+
+    assert refused.value.code == "unknown_placeholder"
+    assert refused.value.details["unknown"] == ["nonexistent"]
+    assert "doctor_name" in refused.value.details["allowed"]
+
+
+async def test_a_single_braced_placeholder_is_refused(
+    session: AsyncSession, tenant: Hospital
+) -> None:
+    with pytest.raises(ValidationError) as refused:
+        await service.create_template(
+            session,
+            MessageTemplateCreate(
+                code=TemplateCode.APPOINTMENT_BOOKED,
+                channel=NotificationChannel.SMS,
+                language="en",
+                body="Namaste {patient_name}, your booking is confirmed.",
+            ),
+            hospital_id=tenant.id,
+        )
+
+    assert refused.value.code == "malformed_placeholder"
+    assert refused.value.details["malformed"] == ["{patient_name}"]
+
+
+async def test_an_email_subject_is_checked_like_the_body(
+    session: AsyncSession, tenant: Hospital
+) -> None:
+    with pytest.raises(ValidationError) as refused:
+        await service.create_template(
+            session,
+            MessageTemplateCreate(
+                code=TemplateCode.REPORT_READY,
+                channel=NotificationChannel.EMAIL,
+                language="en",
+                subject="Report for {{patient}}",
+                body="{{patient_name}}, your report is ready.",
+            ),
+            hospital_id=tenant.id,
+        )
+
+    assert refused.value.code == "unknown_placeholder"
+    assert refused.value.details["field"] == "subject"
+
+
+async def test_a_template_in_an_unknown_language_is_refused(
+    session: AsyncSession, tenant: Hospital
+) -> None:
+    """The e2e suite left 33 templates in languages like `q06` and `quv5oxdh`.
+    No patient has those as a preferred language, so the rows could never be
+    sent — only clutter the screen."""
+    with pytest.raises(ValidationError) as refused:
+        await service.create_template(
+            session,
+            MessageTemplateCreate(
+                code=TemplateCode.REPORT_READY,
+                channel=NotificationChannel.SMS,
+                language="quv5oxdh",
+                body="{{patient_name}}, your report is ready.",
+            ),
+            hospital_id=tenant.id,
+        )
+
+    assert refused.value.code == "unsupported_language"
+
+
+async def test_a_regional_language_is_accepted(session: AsyncSession, tenant: Hospital) -> None:
+    template = await service.create_template(
+        session,
+        MessageTemplateCreate(
+            code=TemplateCode.REPORT_READY,
+            channel=NotificationChannel.SMS,
+            language=" TA ",
+            body="{{patient_name}}, உங்கள் {{test_name}} அறிக்கை தயார்.",
+        ),
+        hospital_id=tenant.id,
+    )
+
+    assert template.language == "ta"
+
+
+async def test_an_edit_cannot_introduce_an_unknown_placeholder(
+    session: AsyncSession, tenant: Hospital
+) -> None:
+    template = await service.create_template(
+        session,
+        MessageTemplateCreate(
+            code=TemplateCode.FOLLOW_UP_REMINDER,
+            channel=NotificationChannel.SMS,
+            language="en",
+            body="Dear {{patient_name}}, your visit is complete.",
+        ),
+        hospital_id=tenant.id,
+    )
+    await session.commit()
+
+    with pytest.raises(ValidationError) as refused:
+        await service.update_template(
+            session, template, MessageTemplateUpdate(body="Dear {{patient_name}}, {{report}}.")
+        )
+
+    assert refused.value.code == "unknown_placeholder"
+    await session.refresh(template)
+    assert template.body == "Dear {{patient_name}}, your visit is complete."
+
+
+async def test_a_deleted_template_gives_way_to_the_shipped_copy(
+    session: AsyncSession, tenant: Hospital, recipient: Recipient
+) -> None:
+    """Deleting a hospital's override is how its shipped wording is restored —
+    and the slot is free for a corrected one."""
+    payload = MessageTemplateCreate(
+        code=TemplateCode.FOLLOW_UP_REMINDER,
+        channel=NotificationChannel.WHATSAPP,
+        language="en",
+        body="Override for {{patient_name}}.",
+    )
+    template = await service.create_template(session, payload, hospital_id=tenant.id)
+    await service.delete_template(session, template)
+    await session.commit()
+
+    notification = await service.notify(
+        session,
+        hospital_id=tenant.id,
+        code=TemplateCode.FOLLOW_UP_REMINDER,
+        recipient=recipient,
+        context={"hospital_name": "Sunrise", "patient_name": "Sunita"},
+        gateway=RecordingGateway(),
+    )
+    assert notification.body.startswith("Sunrise: Dear Sunita, your visit is complete.")
+
+    with pytest.raises(NotFoundError):
+        await service.get_template(session, template.id, hospital_id=tenant.id)
+    # The same code/channel/language can be written again.
+    await service.create_template(session, payload, hospital_id=tenant.id)
 
 
 async def test_only_an_email_template_may_carry_a_subject() -> None:

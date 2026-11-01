@@ -58,6 +58,9 @@ class MessageTemplateCreate(BaseModel):
 
 
 class MessageTemplateUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     category: NotificationCategory | None = None
     subject: Annotated[str | None, Field(max_length=200)] = None
     body: Annotated[str | None, Field(min_length=1, max_length=4000)] = None
@@ -146,7 +149,9 @@ class AttemptRead(BaseModel):
     id: uuid.UUID
     attempt: int
     channel: NotificationChannel
-    address: str
+    # Masked like the recipient's phone for a caller who does not contact
+    # patients (SEC-03).
+    address: str | None
     succeeded: bool
     gateway: str
     provider_message_id: str | None
@@ -199,7 +204,9 @@ class NotificationRead(BaseModel):
     recipient_email: str | None
 
     subject: str | None
-    body: str
+    # None for a caller who does not contact patients (SEC-03): what was said
+    # to a patient is for the people who talk to them.
+    body: str | None
 
     status: NotificationStatus
     channel: NotificationChannel | None
@@ -247,6 +254,10 @@ class SuppressionCreate(BaseModel):
             raise ValueError(
                 "DISABLED describes the deployment configuration, not a patient. "
                 "Set NOTIFICATIONS_ENABLED instead."
+            )
+        if self.reason is SuppressionReason.UNIDENTIFIED:
+            raise ValueError(
+                "UNIDENTIFIED follows the patient record and ends when the patient is identified."
             )
         return self
 

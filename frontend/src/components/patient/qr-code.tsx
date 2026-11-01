@@ -1,4 +1,4 @@
-import qrcode from "qrcode-generator";
+import { QrSvg } from "@/components/qr-svg";
 
 /**
  * A QR code, rendered to SVG on the server.
@@ -60,42 +60,7 @@ export function PatientQr({
   // free-text field and print a QR containing something else.
   if (!UHID_PATTERN.test(value)) return null;
 
-  const qr = qrcode(0, "M");
-  qr.addData(value);
-  qr.make();
-
-  const count = qr.getModuleCount();
-  const margin = 4; // the quiet zone, in modules
-  const extent = count + margin * 2;
-
-  // One path for every dark module rather than a rect element each: ~200
-  // elements become one attribute, which keeps the printed document small and
-  // renders identically.
-  let path = "";
-  for (let row = 0; row < count; row += 1) {
-    for (let column = 0; column < count; column += 1) {
-      if (qr.isDark(row, column)) {
-        path += `M${column + margin} ${row + margin}h1v1h-1z`;
-      }
-    }
-  }
-
-  return (
-    <svg
-      viewBox={`0 0 ${extent} ${extent}`}
-      width={size}
-      height={size}
-      shapeRendering="crispEdges"
-      className={className}
-      role="img"
-      // Read aloud as the identifier it encodes, not as "image". A screen
-      // reader user holding this slip should learn their own UHID from it.
-      aria-label={value}
-    >
-      {/* White explicitly, not transparent: a scanner needs the contrast, and
-          a transparent code on coloured paper is a code that does not read. */}
-      <rect width={extent} height={extent} fill="#fff" />
-      <path d={path} fill="#000" />
-    </svg>
-  );
+  // Read aloud as the identifier it encodes, not as "image". A screen reader
+  // user holding this slip should learn their own UHID from it.
+  return <QrSvg value={value} size={size} label={value} className={className} />;
 }

@@ -8,6 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
+from app.core.config import settings
 from app.core.deps import CurrentUser, SessionDep, get_client_ip, require, resolve_target_hospital
 from app.core.exceptions import NotFoundError
 from app.core.pagination import Page, PageParams, page_params
@@ -26,6 +27,13 @@ from app.modules.identity.schemas import (
     RoleDetail,
     RoleRead,
     TokenPair,
+    TwoFactorChallengeRead,
+    TwoFactorCode,
+    TwoFactorDisable,
+    TwoFactorEnrolStart,
+    TwoFactorSecretRead,
+    TwoFactorStatusRead,
+    TwoFactorVerify,
     UserCreate,
     UserRead,
     UserUpdate,
@@ -51,15 +59,32 @@ CanReadAudit = Annotated[AuthContext, Depends(require(Permissions.AUDIT_READ))]
 # ---------------------------------------------------------------------------
 # Authentication — the only unauthenticated routes in the system
 # ---------------------------------------------------------------------------
-@auth_router.post("/login", response_model=TokenPair, summary="Exchange credentials for tokens")
-async def login(payload: LoginRequest, session: SessionDep, request: Request) -> TokenPair:
-    user, access_token, refresh_token, expires_in = await service.login(
-        session,
-        email=payload.email,
-        password=payload.password,
-        ip_address=await get_client_ip(request),
-        user_agent=request.headers.get("user-agent"),
-    )
+@auth_router.post(
+    "/login",
+    response_model=TokenPair | TwoFactorChallengeRead,
+    summary="Exchange credentials for tokens",
+)
+async def login(
+    payload: LoginRequest, session: SessionDep, request: Request
+) -> TokenPair | TwoFactorChallengeRead:
+    """Tokens — or, when an authenticator code is needed next (SEC-05), a
+    five-minute challenge to finish at `/auth/2fa/verify` or, for someone who
+    has yet to set the app up, `/auth/2fa/enrol/*`."""
+    try:
+        user, access_token, refresh_token, expires_in = await service.login(
+            session,
+            email=payload.email,
+            password=payload.password,
+            ip_address=await get_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            device_token=payload.device_token,
+        )
+    except service.TwoFactorChallenge as challenge:
+        return TwoFactorChallengeRead(
+            enrol=challenge.enrol,
+            challenge_token=challenge.token,
+            expires_in=challenge.expires_in,
+        )
     await session.commit()
     return TokenPair(
         access_token=access_token,
@@ -108,8 +133,104 @@ async def me(context: CurrentUser) -> CurrentUserRead:
             **context.user.model_dump(),
             "roles": sorted(context.roles),
             "permissions": sorted(context.permissions),
+            "two_factor_required": bool(context.roles & settings.two_factor_roles),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Two-step sign-in (SEC-05)
+# ---------------------------------------------------------------------------
+def _signed_in(
+    user: User, access_token: str, refresh_token: str, expires_in: int, device_token: str | None
+) -> TokenPair:
+    return TokenPair(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=expires_in,
+        must_change_password=user.must_change_password,
+        device_token=device_token,
+    )
+
+
+@auth_router.post("/2fa/verify", response_model=TokenPair, summary="Finish signing in with a code")
+async def verify_two_factor(
+    payload: TwoFactorVerify, session: SessionDep, request: Request
+) -> TokenPair:
+    result = await service.verify_two_factor(
+        session,
+        challenge_token=payload.challenge_token,
+        code=payload.code,
+        remember_device=payload.remember_device,
+        ip_address=await get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    await session.commit()
+    return _signed_in(*result)
+
+
+@auth_router.post(
+    "/2fa/enrol/start",
+    response_model=TwoFactorSecretRead,
+    summary="First sign-in of a required role: the secret to scan",
+)
+async def start_enrolment(payload: TwoFactorEnrolStart, session: SessionDep) -> TwoFactorSecretRead:
+    secret, uri = await service.start_enrolment(session, challenge_token=payload.challenge_token)
+    await session.commit()
+    return TwoFactorSecretRead(secret=secret, otpauth_uri=uri)
+
+
+@auth_router.post(
+    "/2fa/enrol/confirm",
+    response_model=TokenPair,
+    summary="Prove the app works, switch two-step on, and sign in",
+)
+async def confirm_enrolment(
+    payload: TwoFactorVerify, session: SessionDep, request: Request
+) -> TokenPair:
+    result = await service.confirm_enrolment(
+        session,
+        challenge_token=payload.challenge_token,
+        code=payload.code,
+        remember_device=payload.remember_device,
+        ip_address=await get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    await session.commit()
+    return _signed_in(*result)
+
+
+@auth_router.post(
+    "/2fa/setup", response_model=TwoFactorSecretRead, summary="Turn two-step on: the secret"
+)
+async def setup_two_factor(session: SessionDep, context: CurrentUser) -> TwoFactorSecretRead:
+    secret, uri = await service.setup_two_factor(session, context.user)
+    await session.commit()
+    return TwoFactorSecretRead(secret=secret, otpauth_uri=uri)
+
+
+@auth_router.post(
+    "/2fa/enable", response_model=TwoFactorStatusRead, summary="Turn two-step on: confirm"
+)
+async def enable_two_factor(
+    payload: TwoFactorCode, session: SessionDep, context: CurrentUser
+) -> TwoFactorStatusRead:
+    await service.enable_two_factor(session, context.user, code=payload.code)
+    await session.commit()
+    return TwoFactorStatusRead(
+        enabled=True, required=bool(context.roles & settings.two_factor_roles)
+    )
+
+
+@auth_router.post("/2fa/disable", response_model=TwoFactorStatusRead, summary="Turn two-step off")
+async def disable_two_factor(
+    payload: TwoFactorDisable, session: SessionDep, context: CurrentUser
+) -> TwoFactorStatusRead:
+    await service.disable_two_factor(
+        session, context.user, password=payload.password, code=payload.code
+    )
+    await session.commit()
+    return TwoFactorStatusRead(enabled=False, required=False)
 
 
 @auth_router.post(

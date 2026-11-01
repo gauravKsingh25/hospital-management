@@ -5,7 +5,7 @@ import { ReportsDashboard } from "@/features/reports/dashboard";
 // From `windows.ts`, not from the client component that also uses it — a
 // constant re-exported through a `"use client"` module arrives here as a
 // client-reference stub, not a number.
-import { DEFAULT_TRAILING_DAYS } from "@/features/reports/windows";
+import { parsePeriod, periodDays } from "@/features/reports/windows";
 import { getCurrentUser, serverFetch } from "@/lib/api/server";
 import { can } from "@/lib/permissions";
 import type { Dashboard } from "@/types/api";
@@ -26,26 +26,25 @@ export async function generateMetadata() {
  *
  * Server-rendered so the first paint holds real numbers. This is a screen
  * somebody opens, glances at, and closes — a spinner would be most of the
- * time they spend on it.
+ * time they spend on it. The period comes from the address, so a refresh or
+ * a shared link renders the same view straight away.
  */
-export default async function ReportsPage() {
-  const t = await getTranslations("reports");
+export default async function ReportsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ period?: string | string[] }>;
+}) {
   const user = await getCurrentUser();
 
   if (!can(user, "report:operational")) return <NoPermission />;
 
+  const period = parsePeriod((await searchParams).period);
   const dashboard = await serverFetch<Dashboard>(
-    `/reports/dashboard?trailing_days=${DEFAULT_TRAILING_DAYS}`,
+    `/reports/dashboard?trailing_days=${periodDays(period)}`,
   );
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-        <p className="text-muted-foreground text-sm">{t("subtitle")}</p>
-      </div>
-
-      <ReportsDashboard initial={dashboard} />
-    </div>
-  );
+  // Keyed on the period, so arriving by a link to a different one — the
+  // sidebar's plain `/reports`, say — starts the dashboard afresh rather than
+  // keeping the period it was last showing.
+  return <ReportsDashboard key={period} initial={dashboard} initialPeriod={period} />;
 }

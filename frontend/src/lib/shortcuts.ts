@@ -37,6 +37,8 @@ export type Shortcut = {
   action: ShortcutAction;
   /** Hidden when the user holds none of these. Empty means always shown. */
   permissions?: Permission[];
+  /** Hidden when the user holds any of these — mirrors `NavItem.hiddenWith`. */
+  hiddenWith?: Permission[];
 };
 
 export const DEFAULT_SHORTCUTS: Shortcut[] = [
@@ -45,6 +47,15 @@ export const DEFAULT_SHORTCUTS: Shortcut[] = [
     key: "F2",
     labelKey: "newPatient",
     action: { kind: "navigate", href: "/reception/register" },
+    permissions: ["patient:create"],
+  },
+  {
+    // UX-01: an unconscious patient with no name and no mobile. From any
+    // screen, because casualty does not wait for somebody to find Reception.
+    id: "emergency",
+    key: "F9",
+    labelKey: "emergency",
+    action: { kind: "navigate", href: "/reception/emergency" },
     permissions: ["patient:create"],
   },
   {
@@ -60,6 +71,8 @@ export const DEFAULT_SHORTCUTS: Shortcut[] = [
     labelKey: "queue",
     action: { kind: "navigate", href: "/queue" },
     permissions: ["queue:read"],
+    // Reception has no Queue screen; its queue is the Reception screen.
+    hiddenWith: ["patient:create"],
   },
   {
     id: "help",

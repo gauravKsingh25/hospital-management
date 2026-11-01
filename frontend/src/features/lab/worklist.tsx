@@ -15,7 +15,7 @@ import { api } from "@/lib/api/client";
 import { BOARD_PAGE_SIZE } from "@/lib/pagination";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
-import type { CatalogueItem, Page, WorklistEntry } from "@/types/api";
+import type { CatalogueItem, DiagnosticReport, Page, WorklistEntry } from "@/types/api";
 
 import { AccessionDialog } from "@/features/lab/accession-dialog";
 
@@ -30,8 +30,14 @@ import { AccessionDialog } from "@/features/lab/accession-dialog";
  * Every row carries exactly one action, chosen by its `stage`, and that
  * choice is made on the server (`WorklistStage`). The technician does not read
  * three status enums and work out what is next; the row says what is next.
- * Three of the five stages are a single click — CLAUDE.md §7b's quick actions
- * — and only result entry opens a screen.
+ * Four of the six stages are a single click — CLAUDE.md §7b's quick actions
+ * — and only mapping a free-text request and result entry open anything.
+ *
+ * An order whose own code names a catalogue test is accessioned in one click:
+ * the test is shown on the row, so there is nothing left to choose. A
+ * free-text request ("Complete Blood Count", no code) sits in `NEEDS_MAPPING`
+ * until the lab says which test it means — that is the one judgement this
+ * screen still asks for.
  */
 export function LabWorklist({
   initial,
@@ -152,6 +158,21 @@ function WorklistRow({
     onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
   });
 
+  // The order already names its test; the server fills it in from the code.
+  const accession = useMutation({
+    mutationFn: () =>
+      api.post<DiagnosticReport>("/diagnostics/reports", { order_id: entry.order_id }),
+    onSuccess: (report) => {
+      toast.success(
+        report.specimen
+          ? t("accessionedWithSample", { accession: report.specimen.accession_number })
+          : t("accessioned", { report: report.report_number }),
+      );
+      onDone();
+    },
+    onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
+  });
+
   const urgent = entry.priority !== "ROUTINE";
 
   return (
@@ -169,6 +190,11 @@ function WorklistRow({
 
       <td className="px-4 py-3">
         <div className="font-medium">{entry.item_name}</div>
+        {entry.stage === "AWAITING_ACCESSION" && entry.matched_catalogue_item_name ? (
+          <div className="text-muted-foreground text-xs" data-testid="matched-test">
+            {t("matchedAs", { name: entry.matched_catalogue_item_name })}
+          </div>
+        ) : null}
         <div className="text-muted-foreground text-xs">
           {t(`discipline${entry.order_type}` as "disciplineLAB")}
           {entry.accession_number ? ` · ${entry.accession_number}` : ""}
@@ -192,9 +218,20 @@ function WorklistRow({
 
       <td className="px-4 py-3 text-right">
         {entry.stage === "AWAITING_ACCESSION" && canAccession ? (
+          <Button
+            size="sm"
+            className="h-tap"
+            disabled={accession.isPending}
+            onClick={() => accession.mutate()}
+          >
+            {t("accession")}
+          </Button>
+        ) : null}
+
+        {entry.stage === "NEEDS_MAPPING" && canAccession ? (
           <>
             <Button size="sm" className="h-tap" onClick={() => setAccessioning(true)}>
-              {t("accession")}
+              {t("mapTest")}
             </Button>
             <AccessionDialog
               open={accessioning}

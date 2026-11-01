@@ -24,7 +24,7 @@ export function Sidebar({ permissions }: { permissions: readonly string[] }) {
   return (
     <nav
       aria-label={t("openMenu")}
-      className="bg-sidebar hidden w-60 shrink-0 flex-col border-r md:flex"
+      className="bg-sidebar hidden w-60 shrink-0 flex-col border-r lg:flex"
     >
       <Link
         href="/"

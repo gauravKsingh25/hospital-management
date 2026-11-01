@@ -61,14 +61,14 @@ export function FootfallChart({ days }: { days: DailyCount[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
           <XAxis
             dataKey="short"
-            tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+            tick={{ fontSize: 13, fill: "var(--muted-foreground)" }}
             tickLine={false}
             axisLine={false}
             interval="preserveStartEnd"
             minTickGap={16}
           />
           <YAxis
-            tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+            tick={{ fontSize: 13, fill: "var(--muted-foreground)" }}
             tickLine={false}
             axisLine={false}
             allowDecimals={false}
@@ -79,14 +79,14 @@ export function FootfallChart({ days }: { days: DailyCount[] }) {
               background: "var(--popover)",
               border: "1px solid var(--border)",
               borderRadius: "var(--radius-md)",
-              fontSize: 12,
+              fontSize: 13,
             }}
             labelFormatter={(_label, payload) => {
               const day = payload?.[0]?.payload as { day?: string } | undefined;
               return day?.day ? formatLocalDate(day.day) : "";
             }}
           />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Legend wrapperStyle={{ fontSize: 13 }} />
           <Bar dataKey="seen" name={t("seen")} stackId="a" fill="var(--chart-1)" />
           <Bar dataKey="other" name={t("openOrClosed")} stackId="a" fill="var(--chart-3)" />
           <Bar dataKey="lost" name={t("lost")} stackId="a" fill="var(--chart-5)" />

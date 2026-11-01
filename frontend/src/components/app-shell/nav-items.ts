@@ -3,13 +3,13 @@ import {
   BedDouble,
   BedSingle,
   ChartColumn,
-  ClipboardList,
   Contact,
   FlaskConical,
   Home,
   IndianRupee,
   MessageSquareText,
   Pill,
+  PillBottle,
   Settings,
   UserPlus,
   Users,
@@ -48,20 +48,16 @@ export type NavItem = {
   icon: LucideIcon;
   /** Shown when the user holds ANY of these. */
   permissions: Permission[];
+  /**
+   * …and hidden again when they hold any of these: for a screen that another
+   * one this user has already does better.
+   */
+  hiddenWith?: Permission[];
   /** Match child routes too — `/consultation/abc` should light up its parent. */
   prefix?: boolean;
 };
 
 export const NAV_ITEMS: NavItem[] = [
-  {
-    href: "/doctor",
-    labelKey: "myPatients",
-    icon: ClipboardList,
-    // The doctor's own worklist. Gated on completing a consultation rather
-    // than on reading a queue, because that is what distinguishes the person
-    // who sees patients from everyone else who can watch the queue.
-    permissions: ["encounter:complete"],
-  },
   {
     href: "/reception",
     labelKey: "reception",
@@ -79,6 +75,10 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "queue",
     icon: Users,
     permissions: ["queue:read"],
+    // Reception works the queue from its own screen — a column per doctor,
+    // with Seen, Move and payment on every row. The flat list stays for
+    // nurses and doctors, for whom it is home.
+    hiddenWith: ["patient:create"],
   },
   {
     // The admission desk: patients the OPD has sent for admission. Its own
@@ -88,6 +88,16 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "admissionDesk",
     icon: BedSingle,
     permissions: ["admission:desk"],
+  },
+  {
+    // The medicine list. In the sidebar for the people who keep it — the
+    // desk, pharmacy, administrators. Doctors and nurses reach the same list
+    // from the chart and the admission page, where they actually use it, and
+    // their sidebars stay short.
+    href: "/medicines",
+    labelKey: "medicines",
+    icon: PillBottle,
+    permissions: ["medicine:manage"],
   },
   {
     href: "/lab",
@@ -129,7 +139,11 @@ export const NAV_ITEMS: NavItem[] = [
     // box and from a worklist far more often than from this index, and
     // lighting "Patients" while a doctor is reading a chart mislabels where
     // they are.
-    permissions: ["patient:read"],
+    //
+    // `patient:list`, not `patient:read` (SEC-01): browsing the whole
+    // directory belongs to the front desk, records and admin. Everybody else
+    // reaches a patient from the visit or the search box.
+    permissions: ["patient:list"],
   },
   {
     href: "/messages",
@@ -138,7 +152,8 @@ export const NAV_ITEMS: NavItem[] = [
     // `notification:read`, not `send`: the common case is looking, and the
     // question ("did it go out?") is asked far more often than a message is
     // composed by hand.
-    permissions: ["notification:read"],
+    // The whole outbox is reception's, records' and admin's (SEC-03).
+    permissions: ["notification:read_all"],
     prefix: true,
   },
   {
@@ -183,5 +198,9 @@ export const PLANNED: readonly { href: string; permission: Permission }[] = [];
  */
 export function visibleNavItems(permissions: readonly string[]): NavItem[] {
   const held = new Set(permissions);
-  return NAV_ITEMS.filter((item) => item.permissions.some((permission) => held.has(permission)));
+  return NAV_ITEMS.filter(
+    (item) =>
+      item.permissions.some((permission) => held.has(permission)) &&
+      !item.hiddenWith?.some((permission) => held.has(permission)),
+  );
 }

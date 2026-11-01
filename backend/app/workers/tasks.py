@@ -1,6 +1,6 @@
 """Scheduled maintenance jobs.
 
-Six safety nets live here. Most exist because real staff on a real shift forget
+Seven safety nets live here. Most exist because real staff on a real shift forget
 clicks, and the rest because providers have bad afternoons and money accrues
 whether or not anybody remembers to charge for it:
 
@@ -15,6 +15,10 @@ whether or not anybody remembers to charge for it:
   resilience on an existing record rather than a second delivery path. The
   dispatcher re-checks suppression before every send, which is what makes it
   safe for a message queued days ago to go out now.
+* **Follow-up reminders** — the day before the follow-up date a doctor set, the
+  patient is reminded, once, and never after a death (the dispatcher's
+  suppression check). Without this the date was recorded and never reached the
+  one person who had to act on it.
 * **Bed-day accrual** — one room charge per inpatient per night, so the running
   bill is live rather than assembled in a panic at discharge. Keyed on a
   deterministic UUID of (admission, date), which is what makes a re-run harmless.
@@ -25,7 +29,7 @@ whether or not anybody remembers to charge for it:
 * **Chart top-up** — extends every active medication order to the materialisation
   horizon, so tomorrow's doses exist before tomorrow's night shift needs them.
 
-All six are *idempotent* and *per tenant*. Idempotent because a job that runs
+All seven are *idempotent* and *per tenant*. Idempotent because a job that runs
 twice after a restart must not do damage; per tenant because they run under
 row-level security like everything else, with no cross-hospital query anywhere.
 """
@@ -90,9 +94,18 @@ async def sweep_hospital(hospital_id: uuid.UUID) -> dict[str, int]:
         messages = await notifications_service.retry_failed(
             session, hospital_id=hospital_id, older_than=NOTIFICATION_RETRY_AFTER
         )
+        follow_ups = await notifications_service.send_follow_up_reminders(
+            session, hospital_id=hospital_id
+        )
         inpatient = await _sweep_ipd(hospital_id, session)
 
-    return {**encounters, "appointments_no_show": no_shows, **messages, **inpatient}
+    return {
+        **encounters,
+        "appointments_no_show": no_shows,
+        **messages,
+        "follow_up_reminders": follow_ups,
+        **inpatient,
+    }
 
 
 async def _sweep_ipd(hospital_id: uuid.UUID, session: Any) -> dict[str, int]:

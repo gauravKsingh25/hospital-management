@@ -59,11 +59,13 @@ from app.modules.clinical.events import EncounterClosed, PatientDeceased
 from app.modules.clinical.models import EncounterStatus
 from app.modules.diagnostics.events import CriticalResultFlagged, ReportReady, SpecimenRejected
 from app.modules.identity import service as identity_service
+from app.modules.identity.rbac import Roles
 from app.modules.notifications import service
 from app.modules.notifications.models import NotificationCategory, RecipientType
 from app.modules.notifications.service import Recipient
 from app.modules.notifications.templates import DEFAULT_LANGUAGE, TemplateCode
 from app.modules.patients import service as patients_service
+from app.modules.patients.events import PatientBulkReadDetected
 from app.modules.scheduling import service as scheduling_service
 from app.modules.scheduling.events import AppointmentBooked, AppointmentCancelled
 from app.modules.tenancy import service as tenancy_service
@@ -451,6 +453,9 @@ async def notify_follow_up(event: EncounterClosed) -> None:
     deceased nor completed, and "please book your follow-up" to a patient who
     discharged themselves against advice, or who was sent to another hospital, is
     wrong in a way no suppression rule would catch.
+
+    When the doctor set a date, the message names it; the worker's sweep then
+    reminds the patient the day before (`service.send_follow_up_reminders`).
     """
     assert event.hospital_id is not None
     if event.final_status != EncounterStatus.COMPLETED.value:
@@ -458,11 +463,15 @@ async def notify_follow_up(event: EncounterClosed) -> None:
 
     async with tenant_session(event.hospital_id) as session:
         recipient, context = await _for_patient(session, event.hospital_id, event.patient_id)
+        code = TemplateCode.FOLLOW_UP_REMINDER
+        if event.follow_up_date is not None:
+            code = TemplateCode.FOLLOW_UP_SCHEDULED
+            context["follow_up_date"] = service.format_day(event.follow_up_date)
 
         await service.notify(
             session,
             hospital_id=event.hospital_id,
-            code=TemplateCode.FOLLOW_UP_REMINDER,
+            code=code,
             recipient=recipient,
             context=context,
             category=NotificationCategory.FOLLOW_UP,
@@ -513,6 +522,45 @@ async def suppress_on_death(event: PatientDeceased, session: AsyncSession) -> No
     )
 
 
+@_guard("notify_bulk_patient_read")
+async def notify_bulk_patient_read(event: PatientBulkReadDetected) -> None:
+    """Tell the hospital's administrators that one person read an unusual
+    number of patients in an hour (SEC-01).
+
+    Staff-directed. Idempotent per administrator on the event's id, so a
+    re-delivered event does not page them twice.
+    """
+    assert event.hospital_id is not None
+    async with tenant_session(event.hospital_id) as session:
+        hospital = await tenancy_service.get_hospital(session, event.hospital_id)
+        admins = await identity_service.users_with_role(
+            session, hospital_id=event.hospital_id, role_code=Roles.HOSPITAL_ADMIN
+        )
+        for admin in admins:
+            await service.notify(
+                session,
+                hospital_id=event.hospital_id,
+                code=TemplateCode.BULK_PATIENT_READ,
+                recipient=Recipient(
+                    recipient_type=RecipientType.STAFF,
+                    name=admin.full_name,
+                    phone=admin.phone,
+                    email=admin.email,
+                    user_id=admin.id,
+                ),
+                context={
+                    "hospital_name": hospital.name,
+                    "user_name": event.user_name,
+                    "distinct_patients": str(event.distinct_patients),
+                },
+                category=NotificationCategory.CRITICAL_ALERT,
+                source_module="patients",
+                source_type="bulk_read",
+                source_id=uuid.uuid5(event.event_id, str(admin.id)),
+            )
+        await session.commit()
+
+
 def register_handlers() -> None:
     """Wire notifications into the rest of the system. Called once, at import.
 
@@ -528,6 +576,7 @@ def register_handlers() -> None:
     event_bus.subscribe(InvoiceIssued, notify_invoice_issued)
     event_bus.subscribe(SettlementRequired, notify_settlement_required)
     event_bus.subscribe(EncounterClosed, notify_follow_up)
+    event_bus.subscribe(PatientBulkReadDetected, notify_bulk_patient_read)
 
     # The one exception. See the module docstring.
     event_bus.subscribe_transactional(PatientDeceased, suppress_on_death)

@@ -33,6 +33,12 @@ Where this module stops
 `clinical.service` do that, and `ipd` calls them — the state machine belongs to
 the module that owns it (CLAUDE.md §14).
 
+Prices are not this module's either. The medicine list keeps what an item *is*
+here and asks `billing.service` to keep what it *costs* — the one synchronous
+call into billing, because whoever sets a price needs to see it saved. Charging
+for what a stay *used* goes the other way, over the event bus, like every other
+charge in the system.
+
 A **death** or a **self-discharge** on the ward does not come through
 `discharge_patient` at all. Those are `clinical.record_death` and
 `record_lama`, which capture the structured metadata §6 requires; this module
@@ -43,12 +49,16 @@ event. One way to record a death, not two.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import ColumnElement, func, text
+from sqlalchemy import ColumnElement, and_, func, or_, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +70,8 @@ from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.ids import new_id
 from app.core.models import utc_now
 from app.core.pagination import MAX_PAGE_SIZE, PageParams
+from app.modules.billing import service as billing_service
+from app.modules.billing.stays import StayInfo
 from app.modules.clinical import service as clinical_service
 from app.modules.clinical.models import Encounter, EncounterStatus, EncounterType
 from app.modules.diagnostics import service as diagnostics_service
@@ -72,6 +84,8 @@ from app.modules.ipd.events import (
     DischargeSummarySigned,
     MedicationAdministered,
     MedicationDoseMissed,
+    MedicineIssued,
+    MedicineIssueReversed,
     PatientAdmitted,
     PatientDischarged,
     PatientTransferred,
@@ -91,6 +105,9 @@ from app.modules.ipd.models import (
     DoseStatus,
     MedicationAdministration,
     MedicationOrder,
+    MedicineIssue,
+    MedicineIssueStatus,
+    MedicineItem,
     SummaryStatus,
     Ward,
 )
@@ -103,31 +120,41 @@ from app.modules.ipd.schemas import (
     DischargeRequest,
     DoseRecord,
     MedicationOrderCreate,
+    MedicineIssueCreate,
+    MedicineItemCreate,
+    MedicineItemUpdate,
     SummaryUpdate,
     WardCreate,
     WardUpdate,
 )
 from app.modules.ipd.transitions import assert_admission_transition, assert_bed_transition
 from app.modules.patients import service as patients_service
+from app.modules.patients.models import Patient, PatientAlert
 from app.modules.scheduling import service as scheduling_service
+from app.modules.tenancy import service as tenancy_service
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DoseAllergies",
     "accrual_key",
     "accrue_bed_days",
+    "accrue_for_admission",
     "admit_from_request",
     "admit_patient",
     "assign_bed",
     "build_board",
     "cancel_admission",
     "cancel_admission_request",
+    "census_nights",
     "close_admission_for_terminal_encounter",
     "compile_summary",
     "create_bed",
+    "create_medicine_item",
     "create_ward",
     "current_assignment",
     "discharge_patient",
+    "dose_allergies",
     "get_admission",
     "get_admission_by_encounter",
     "get_admission_request",
@@ -135,22 +162,30 @@ __all__ = [
     "get_current_beds",
     "get_dose",
     "get_medication_order",
+    "get_medicine_issue",
+    "get_medicine_item",
+    "get_medicine_items_by_ids",
     "get_summary",
     "get_summary_by_id",
     "get_ward",
     "get_wards_by_ids",
     "initiate_discharge",
+    "issue_medicine",
     "length_of_stay",
     "list_admission_requests",
     "list_admissions",
     "list_beds",
     "list_doses",
     "list_medication_orders",
+    "list_medicine_issues",
+    "list_medicine_items",
     "list_summaries",
     "list_wards",
     "mark_bed_cleaned",
     "mark_missed_doses",
+    "medicine_prices",
     "occupancy",
+    "order_allergy_conflicts",
     "pending_admission_request",
     "prescribe",
     "record_dose",
@@ -158,6 +193,7 @@ __all__ = [
     "request_admission",
     "reserve_bed",
     "restore_bed",
+    "reverse_medicine_issue",
     "sign_summary",
     "stop_medication",
     "take_bed_out_of_service",
@@ -165,6 +201,7 @@ __all__ = [
     "transfer_patient",
     "update_admission",
     "update_bed",
+    "update_medicine_item",
     "update_summary",
     "update_ward",
 ]
@@ -844,7 +881,10 @@ async def admit_patient(
         admission_number=await _next_admission_number(session, hospital_id),
         encounter_id=encounter.id,
         patient_id=encounter.patient_id,
-        attending_doctor_id=payload.attending_doctor_id,
+        # The doctor who saw them unless the desk names another consultant — a
+        # stay with nobody attending shows no consultant on the ward list or
+        # the discharge summary.
+        attending_doctor_id=payload.attending_doctor_id or encounter.doctor_id,
         department_id=payload.department_id or ward.department_id or encounter.department_id,
         admitted_at=payload.admitted_at or utc_now(),
         provisional_diagnosis=payload.provisional_diagnosis,
@@ -878,6 +918,18 @@ async def admit_patient(
     if encounter.encounter_type is not EncounterType.IPD:
         encounter.encounter_type = EncounterType.IPD
         session.add(encounter)
+
+    # A visit that carries on into the stay would carry its consultation fee
+    # with it. That fee is an OPD bill and stays one: frozen now, payable at
+    # the counter, never part of the IPD bill the accountant edits. A fresh IPD
+    # visit has nothing captured before the admission, so this is a no-op.
+    await billing_service.split_pre_admission(
+        session,
+        encounter,
+        admitted_at=admission.admitted_at,
+        actor=actor,
+        hospital_id=hospital_id,
+    )
 
     await session.flush()
     await session.refresh(admission)
@@ -1188,7 +1240,7 @@ async def admit_from_request(
             details={"status": encounter.status.value},
         )
 
-    return await admit_patient(
+    admission = await admit_patient(
         session,
         AdmissionCreate(
             encounter_id=target.id,
@@ -1205,6 +1257,17 @@ async def admit_from_request(
         hospital_id=request.hospital_id,
         actor=actor,
     )
+
+    # The desk's vitals, on the stay's own visit. After the admission rather
+    # than before: when the OPD visit had already closed, the stay runs on a
+    # new IPD visit, and that is the one the ward will read them from.
+    vitals = payload.vitals
+    if vitals is not None and vitals.model_dump(exclude_none=True, exclude={"recorded_at"}):
+        stay_visit = await clinical_service.get_encounter(
+            session, admission.encounter_id, hospital_id=request.hospital_id
+        )
+        await clinical_service.record_vitals(session, stay_visit, vitals, actor=actor)
+    return admission
 
 
 async def _fulfil_pending_request(
@@ -1313,6 +1376,96 @@ async def get_admission_by_encounter(
         .scalars()
         .first()
     )
+
+
+async def stay_info_for(
+    session: AsyncSession, encounter_ids: Collection[uuid.UUID], hospital_id: uuid.UUID
+) -> dict[uuid.UUID, StayInfo]:
+    """`ipd`'s answer to billing's "which of these visits are stays?".
+
+    Registered as billing's stay provider (`ipd/handlers.py`), because billing
+    cannot import this module. Four queries for any number of visits — the
+    admissions, their latest bed, the beds' wards, the doctors — so an accounts
+    page of fifty bills costs the same as one.
+
+    The bed is the *latest* assignment, released or not: a discharged patient's
+    bill still names the bed they were in.
+    """
+    if not encounter_ids:
+        return {}
+    admissions = (
+        (
+            await session.execute(
+                select(Admission).where(
+                    col(Admission.encounter_id).in_(set(encounter_ids)),
+                    col(Admission.hospital_id) == hospital_id,
+                    col(Admission.status) != AdmissionStatus.CANCELLED,
+                    col(Admission.deleted_at).is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not admissions:
+        return {}
+
+    assignments = (
+        (
+            await session.execute(
+                select(BedAssignment)
+                .where(
+                    col(BedAssignment.admission_id).in_({row.id for row in admissions}),
+                    col(BedAssignment.hospital_id) == hospital_id,
+                    col(BedAssignment.deleted_at).is_(None),
+                )
+                .order_by(col(BedAssignment.assigned_at))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Ordered oldest first, so the last write per admission is its latest bed.
+    latest_bed = {row.admission_id: row.bed_id for row in assignments}
+    beds = (
+        (
+            await session.execute(
+                select(Bed).where(
+                    col(Bed.id).in_(set(latest_bed.values())), col(Bed.hospital_id) == hospital_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if latest_bed
+        else []
+    )
+    beds_by_id = {bed.id: bed for bed in beds}
+    wards = await get_wards_by_ids(session, {bed.ward_id for bed in beds}, hospital_id=hospital_id)
+    doctors = await scheduling_service.get_doctors_by_ids(
+        session,
+        {row.attending_doctor_id for row in admissions if row.attending_doctor_id},
+        hospital_id=hospital_id,
+    )
+
+    found: dict[uuid.UUID, StayInfo] = {}
+    for admission in admissions:
+        bed_id = latest_bed.get(admission.id)
+        bed = beds_by_id.get(bed_id) if bed_id else None
+        ward = wards.get(bed.ward_id) if bed else None
+        doctor = (
+            doctors.get(admission.attending_doctor_id) if admission.attending_doctor_id else None
+        )
+        found[admission.encounter_id] = StayInfo(
+            admission_id=admission.id,
+            admission_number=admission.admission_number,
+            status=admission.status.value,
+            admitted_at=admission.admitted_at,
+            discharged_at=admission.discharged_at,
+            ward_bed=(f"{ward.name}, {bed.code}" if ward else bed.code) if bed else None,
+            attending_doctor=doctor.display_name if doctor else None,
+        )
+    return found
 
 
 async def list_admissions(
@@ -1504,6 +1657,9 @@ async def discharge_patient(
     admission.discharged_by_id = actor.id if actor else None
     session.add(admission)
     await session.flush()
+    # Before the Encounter closes: closing it is what assembles the final bill,
+    # and the last night has to be on it.
+    await accrue_for_admission(session, admission, now=now)
 
     summary = await get_summary(session, admission.id)
     if summary is None:
@@ -1614,6 +1770,9 @@ async def close_admission_for_terminal_encounter(
     admission.discharged_by_id = actor_id
     session.add(admission)
     await session.flush()
+    # The stay's last nights are still owed; they land as pending charges on
+    # the bill the settlement flow is gathering.
+    await accrue_for_admission(session, admission, now=now)
 
     if await get_summary(session, admission.id) is None:
         # A death still needs a summary — it is what the family and the
@@ -1657,6 +1816,26 @@ async def prescribe(
     _assert_open(admission)
     starts = payload.starts_at or utc_now()
 
+    # Picked from the medicine list: the order carries the item's code, and
+    # every dose given is billed against it.
+    item: MedicineItem | None = None
+    if payload.medicine_item_id is not None:
+        item = await get_medicine_item(
+            session, payload.medicine_item_id, hospital_id=admission.hospital_id
+        )
+        _assert_item_active(item)
+
+    # SAFE-01: the typed name, and the medicine list's own name and code — a
+    # doctor who types "Tab X" against the item "Aspirin 75 mg" is still caught.
+    clashes = await patients_service.drug_allergy_conflicts(
+        session,
+        admission.patient_id,
+        [payload.drug_name, item.name if item else None, item.code if item else None],
+    )
+    patients_service.assert_no_allergy_clash(
+        clashes, override_reason=payload.allergy_override_reason
+    )
+
     order = MedicationOrder(
         hospital_id=admission.hospital_id,
         admission_id=admission.id,
@@ -1675,6 +1854,13 @@ async def prescribe(
         ends_at=payload.ends_at,
         instructions=payload.instructions,
         prescribed_by_id=actor.id if actor else None,
+        medicine_item_id=item.id if item else None,
+        item_code=item.code if item else None,
+        units_per_dose=payload.units_per_dose,
+        # Kept only when it overrode something: a chart must not claim a
+        # decision nobody had to make.
+        allergy_override_reason=payload.allergy_override_reason if clashes else None,
+        allergy_acknowledged_ids=[str(alert.id) for alert in clashes],
     )
     session.add(order)
     await session.flush()
@@ -1682,6 +1868,91 @@ async def prescribe(
     await materialise_doses(session, order)
     await session.refresh(order)
     return order
+
+
+@dataclass(frozen=True, slots=True)
+class DoseAllergies:
+    """What the nurse needs to know about allergies, beside one dose."""
+
+    # Every drug allergy the patient has, clashing or not.
+    patient_allergies: list[str]
+    # The ones this dose clashes with.
+    conflicts: list[str]
+    # A clash the prescriber was not shown: the dose cannot be signed as given.
+    unreviewed: bool
+
+
+async def dose_allergies(
+    session: AsyncSession,
+    doses: Sequence[MedicationAdministration],
+    *,
+    hospital_id: uuid.UUID,
+    patients: Mapping[uuid.UUID, Patient] | None = None,
+) -> dict[uuid.UUID, DoseAllergies]:
+    """Allergies beside every dose on a round, in two queries for the round.
+
+    Computed when the round is read, not when the drug was charted, so an
+    allergy recorded this morning shows against last week's prescription.
+    """
+    allergies = await patients_service.drug_allergies_by_patient(
+        session, {dose.patient_id for dose in doses}, hospital_id=hospital_id, records=patients
+    )
+    order_ids = {dose.medication_order_id for dose in doses if allergies.get(dose.patient_id)}
+    orders = (
+        {
+            order.id: order
+            for order in (
+                await session.execute(
+                    select(MedicationOrder).where(
+                        col(MedicationOrder.id).in_(order_ids),
+                        col(MedicationOrder.hospital_id) == hospital_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        if order_ids
+        else {}
+    )
+
+    views: dict[uuid.UUID, DoseAllergies] = {}
+    for dose in doses:
+        alerts = allergies.get(dose.patient_id, [])
+        order = orders.get(dose.medication_order_id)
+        clashes = patients_service.clashing_allergies(
+            alerts, [dose.drug_name, order.item_code if order else None]
+        )
+        views[dose.id] = DoseAllergies(
+            patient_allergies=[alert.label for alert in alerts],
+            conflicts=[alert.label for alert in clashes],
+            unreviewed=bool(order and unreviewed_allergies(order, clashes)),
+        )
+    return views
+
+
+async def order_allergy_conflicts(
+    session: AsyncSession, orders: Sequence[MedicationOrder], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, list[str]]:
+    """For each drug on the chart, the patient's drug allergies it clashes with now."""
+    allergies = await patients_service.drug_allergies_by_patient(
+        session, {order.patient_id for order in orders}, hospital_id=hospital_id
+    )
+    return {
+        order.id: [
+            alert.label
+            for alert in patients_service.clashing_allergies(
+                allergies.get(order.patient_id, []), [order.drug_name, order.item_code]
+            )
+        ]
+        for order in orders
+    }
+
+
+def unreviewed_allergies(order: MedicationOrder, clashes: list[PatientAlert]) -> list[PatientAlert]:
+    """The clashing allergies the prescriber was not shown when overriding."""
+    acknowledged = set(order.allergy_acknowledged_ids or [])
+    return [alert for alert in clashes if str(alert.id) not in acknowledged]
 
 
 def _slot_times(order: MedicationOrder) -> list[time]:
@@ -2003,6 +2274,28 @@ async def record_dose(
             details={"status": dose.status.value},
         )
 
+    if payload.status is DoseStatus.GIVEN:
+        # SAFE-01 at the bedside. An allergy the doctor overrode for is
+        # theirs to have weighed; one recorded since was weighed by nobody,
+        # so the dose waits for the drug to be reviewed. Holding it, with a
+        # reason, stays open to the nurse.
+        order = await get_medication_order(
+            session, dose.medication_order_id, hospital_id=dose.hospital_id
+        )
+        unreviewed = unreviewed_allergies(
+            order,
+            await patients_service.drug_allergy_conflicts(
+                session, dose.patient_id, [dose.drug_name, order.item_code]
+            ),
+        )
+        if unreviewed:
+            raise ConflictError(
+                "This patient has a drug allergy recorded since this drug was prescribed. "
+                "Hold the dose and ask the doctor to review the drug.",
+                code="allergy_conflict",
+                details={"allergies": patients_service.allergy_details(unreviewed)},
+            )
+
     dose.status = payload.status
     dose.reason = payload.reason
     dose.notes = payload.notes
@@ -2031,6 +2324,8 @@ async def record_dose(
                 dose=dose.dose,
                 route=dose.route.value,
                 administered_by_id=dose.administered_by_id,
+                item_code=order.item_code,
+                quantity=order.units_per_dose,
             ),
             session=session,
         )
@@ -2115,6 +2410,420 @@ async def top_up_charts(session: AsyncSession, *, hospital_id: uuid.UUID) -> int
 
 
 # ---------------------------------------------------------------------------
+# The medicine list
+# ---------------------------------------------------------------------------
+_CODE_PREFIX = "MED-"
+
+
+def _clean(value: str | None) -> str | None:
+    """Collapse whitespace; an empty string means "not given"."""
+    if value is None:
+        return None
+    collapsed = " ".join(value.split())
+    return collapsed or None
+
+
+def _code_stem(name: str) -> str:
+    """`Ceftriaxone 1 g` -> `MED-CEFTRIAXONE-1-G`, short enough to take a suffix."""
+    stem = re.sub(r"[^A-Z0-9]+", "-", name.upper()).strip("-")[:24].rstrip("-")
+    return _CODE_PREFIX + (stem or "ITEM")
+
+
+async def _free_code(session: AsyncSession, name: str, *, hospital_id: uuid.UUID) -> str:
+    """A code nobody holds — on this list *or* on billing's price list.
+
+    Checked against both because the code is the join between them: reusing a
+    code billing already knows would quietly attach this item to somebody
+    else's price.
+    """
+    stem = _code_stem(name)
+    for attempt in range(1, 1000):
+        candidate = stem if attempt == 1 else f"{stem}-{attempt}"
+        on_list = (
+            await session.execute(
+                select(func.count())
+                .select_from(MedicineItem)
+                .where(
+                    col(MedicineItem.hospital_id) == hospital_id,
+                    col(MedicineItem.code) == candidate,
+                    col(MedicineItem.deleted_at).is_(None),
+                )
+            )
+        ).scalar_one()
+        if on_list:
+            continue
+        if (
+            await billing_service.get_service_item_by_code(
+                session, candidate, hospital_id=hospital_id, include_inactive=True
+            )
+            is not None
+        ):
+            continue
+        return candidate
+    raise ConflictError("Could not find a free code for this item.", code="medicine_code_exhausted")
+
+
+async def _assert_name_free(
+    session: AsyncSession,
+    name: str,
+    *,
+    hospital_id: uuid.UUID,
+    except_id: uuid.UUID | None = None,
+) -> None:
+    """One item per name. Two "NS 500 ml" entries at two prices is a list that
+    charges whichever one the nurse happened to pick."""
+    filters: list[ColumnElement[bool]] = [
+        col(MedicineItem.hospital_id) == hospital_id,
+        func.lower(col(MedicineItem.name)) == name.lower(),
+        col(MedicineItem.deleted_at).is_(None),
+    ]
+    if except_id is not None:
+        filters.append(col(MedicineItem.id) != except_id)
+    existing = (await session.execute(select(MedicineItem).where(*filters))).scalars().first()
+    if existing is not None:
+        raise ConflictError(
+            f"'{existing.name}' is already on the medicine list"
+            + ("" if existing.is_active else " (switched off — switch it back on instead)")
+            + ".",
+            code="medicine_exists",
+            details={"medicine_item_id": str(existing.id)},
+        )
+
+
+def _assert_item_active(item: MedicineItem) -> None:
+    if not item.is_active:
+        raise ConflictError(
+            f"'{item.name}' has been taken off the medicine list.", code="medicine_inactive"
+        )
+
+
+async def create_medicine_item(
+    session: AsyncSession, payload: MedicineItemCreate, *, hospital_id: uuid.UUID
+) -> MedicineItem:
+    """Put a preset on the list, priced, in one transaction.
+
+    Both halves or neither: the item here, and its service and price in
+    billing. An item that saved without its price would sit on the list
+    charging patients nothing.
+    """
+    name = _clean(payload.name) or payload.name
+    await _assert_name_free(session, name, hospital_id=hospital_id)
+
+    item = MedicineItem(
+        hospital_id=hospital_id,
+        code=await _free_code(session, name, hospital_id=hospital_id),
+        name=name,
+        form=payload.form,
+        dose=_clean(payload.dose),
+        route=payload.route,
+        unit=_clean(payload.unit) or payload.unit,
+        drug_schedule=payload.drug_schedule,
+    )
+    session.add(item)
+    await session.flush()
+
+    await billing_service.sync_catalogue_item(
+        session,
+        hospital_id=hospital_id,
+        code=item.code,
+        name=item.name,
+        unit=item.unit,
+        is_active=True,
+        price=payload.price,
+    )
+    await session.refresh(item)
+    return item
+
+
+async def get_medicine_item(
+    session: AsyncSession, item_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> MedicineItem:
+    item = (
+        (
+            await session.execute(
+                select(MedicineItem).where(
+                    col(MedicineItem.id) == item_id,
+                    col(MedicineItem.hospital_id) == hospital_id,
+                    col(MedicineItem.deleted_at).is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if item is None:
+        raise NotFoundError("That item is not on the medicine list.", code="medicine_not_found")
+    return item
+
+
+async def get_medicine_items_by_ids(
+    session: AsyncSession, item_ids: Collection[uuid.UUID], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, MedicineItem]:
+    """Several items in one query, for rendering a chart of them."""
+    if not item_ids:
+        return {}
+    rows = (
+        (
+            await session.execute(
+                select(MedicineItem).where(
+                    col(MedicineItem.hospital_id) == hospital_id,
+                    col(MedicineItem.id).in_(list(item_ids)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.id: row for row in rows}
+
+
+async def list_medicine_items(
+    session: AsyncSession,
+    params: PageParams,
+    *,
+    hospital_id: uuid.UUID,
+    search: str | None = None,
+    form: str | None = None,
+    include_inactive: bool = False,
+) -> tuple[list[MedicineItem], int]:
+    filters: list[ColumnElement[bool]] = [
+        col(MedicineItem.hospital_id) == hospital_id,
+        col(MedicineItem.deleted_at).is_(None),
+    ]
+    if not include_inactive:
+        filters.append(col(MedicineItem.is_active).is_(True))
+    if form is not None:
+        filters.append(col(MedicineItem.form) == form)
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            col(MedicineItem.name).ilike(pattern) | col(MedicineItem.code).ilike(pattern)
+        )
+
+    total = (
+        await session.execute(select(func.count()).select_from(MedicineItem).where(*filters))
+    ).scalar_one()
+    rows = (
+        (
+            await session.execute(
+                select(MedicineItem)
+                .where(*filters)
+                .order_by(col(MedicineItem.name))
+                .limit(params.limit)
+                .offset(params.offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
+# Fields that cannot be cleared: sending null for one of these means "leave it".
+_REQUIRED_ITEM_FIELDS = frozenset({"name", "form", "unit", "drug_schedule", "is_active"})
+
+
+async def update_medicine_item(
+    session: AsyncSession, item: MedicineItem, payload: MedicineItemUpdate
+) -> MedicineItem:
+    """Edit an item, and its price when one is given.
+
+    A price change reaches future charges only. Every charge already captured
+    snapshotted the price it was captured at, so raising the price of saline
+    today does not rewrite what yesterday's patient owes.
+    """
+    changes = payload.model_dump(exclude_unset=True)
+    price = changes.pop("price", None)
+
+    for field, value in changes.items():
+        if value is None and field in _REQUIRED_ITEM_FIELDS:
+            continue
+        if field == "name":
+            value = _clean(value) or item.name
+            if value.lower() != item.name.lower():
+                await _assert_name_free(
+                    session, value, hospital_id=item.hospital_id, except_id=item.id
+                )
+        elif field in ("dose", "unit"):
+            value = _clean(value)
+            if field == "unit" and value is None:
+                continue
+        setattr(item, field, value)
+    item.updated_at = utc_now()
+    session.add(item)
+    await session.flush()
+
+    await billing_service.sync_catalogue_item(
+        session,
+        hospital_id=item.hospital_id,
+        code=item.code,
+        name=item.name,
+        unit=item.unit,
+        is_active=item.is_active,
+        price=price,
+    )
+    await session.refresh(item)
+    return item
+
+
+async def medicine_prices(
+    session: AsyncSession, codes: Collection[str], *, hospital_id: uuid.UUID
+) -> dict[str, Decimal]:
+    """The current price of each code, from billing's default rate card."""
+    return await billing_service.catalogue_prices(session, codes, hospital_id=hospital_id)
+
+
+# ---------------------------------------------------------------------------
+# What a stay used from the list
+# ---------------------------------------------------------------------------
+async def issue_medicine(
+    session: AsyncSession,
+    admission: Admission,
+    payload: MedicineIssueCreate,
+    *,
+    actor: User | None = None,
+) -> MedicineIssue:
+    """Record an item used on an inpatient. `billing` charges it, in this transaction.
+
+    Only while the stay is open. After discharge the bill is being settled,
+    and something discovered afterwards is a correction for the billing desk
+    — `charge:add` — not a line the ward slips onto a closing account.
+    """
+    _assert_open(admission)
+    item = await get_medicine_item(
+        session, payload.medicine_item_id, hospital_id=admission.hospital_id
+    )
+    _assert_item_active(item)
+
+    issue = MedicineIssue(
+        hospital_id=admission.hospital_id,
+        admission_id=admission.id,
+        encounter_id=admission.encounter_id,
+        patient_id=admission.patient_id,
+        medicine_item_id=item.id,
+        item_code=item.code,
+        item_name=item.name,
+        unit=item.unit,
+        quantity=payload.quantity,
+        note=_clean(payload.note),
+        issued_at=utc_now(),
+        issued_by_id=actor.id if actor else None,
+        issued_by_name=actor.full_name if actor else None,
+    )
+    session.add(issue)
+    await session.flush()
+
+    await event_bus.publish(
+        MedicineIssued(
+            hospital_id=admission.hospital_id,
+            actor_id=actor.id if actor else None,
+            issue_id=issue.id,
+            admission_id=admission.id,
+            encounter_id=admission.encounter_id,
+            patient_id=admission.patient_id,
+            item_code=issue.item_code,
+            item_name=issue.item_name,
+            quantity=issue.quantity,
+        ),
+        session=session,
+    )
+    await session.refresh(issue)
+    return issue
+
+
+async def get_medicine_issue(
+    session: AsyncSession, issue_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> MedicineIssue:
+    issue = (
+        (
+            await session.execute(
+                select(MedicineIssue).where(
+                    col(MedicineIssue.id) == issue_id,
+                    col(MedicineIssue.hospital_id) == hospital_id,
+                    col(MedicineIssue.deleted_at).is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if issue is None:
+        raise NotFoundError("That entry no longer exists.", code="medicine_issue_not_found")
+    return issue
+
+
+async def list_medicine_issues(
+    session: AsyncSession,
+    params: PageParams,
+    *,
+    hospital_id: uuid.UUID,
+    admission_id: uuid.UUID,
+) -> tuple[list[MedicineIssue], int]:
+    """Everything recorded against a stay, newest first — reversed entries included,
+    because "why is this not on the bill?" has an answer only if they are."""
+    filters: list[ColumnElement[bool]] = [
+        col(MedicineIssue.hospital_id) == hospital_id,
+        col(MedicineIssue.admission_id) == admission_id,
+        col(MedicineIssue.deleted_at).is_(None),
+    ]
+    total = (
+        await session.execute(select(func.count()).select_from(MedicineIssue).where(*filters))
+    ).scalar_one()
+    rows = (
+        (
+            await session.execute(
+                select(MedicineIssue)
+                .where(*filters)
+                .order_by(col(MedicineIssue.issued_at).desc())
+                .limit(params.limit)
+                .offset(params.offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
+async def reverse_medicine_issue(
+    session: AsyncSession,
+    issue: MedicineIssue,
+    *,
+    reason: str,
+    actor: User | None = None,
+) -> MedicineIssue:
+    """Take back an entry made in error, and its charge with it.
+
+    Refused — the whole thing, not half of it — once the charge is on an issued
+    invoice: `billing` raises from inside this transaction, so the entry stays
+    ISSUED and still agrees with the printout the patient holds.
+    """
+    if issue.status is not MedicineIssueStatus.ISSUED:
+        raise ConflictError("That entry has already been reversed.", code="issue_already_reversed")
+
+    issue.status = MedicineIssueStatus.REVERSED
+    issue.reversed_at = utc_now()
+    issue.reversed_by_id = actor.id if actor else None
+    issue.reversal_reason = reason.strip()
+    issue.updated_at = utc_now()
+    session.add(issue)
+    await session.flush()
+
+    await event_bus.publish(
+        MedicineIssueReversed(
+            hospital_id=issue.hospital_id,
+            actor_id=actor.id if actor else None,
+            issue_id=issue.id,
+            admission_id=issue.admission_id,
+            reason=issue.reversal_reason,
+        ),
+        session=session,
+    )
+    await session.refresh(issue)
+    return issue
+
+
+# ---------------------------------------------------------------------------
 # Bed-day accrual
 # ---------------------------------------------------------------------------
 def accrual_key(admission_id: uuid.UUID, service_date: date) -> uuid.UUID:
@@ -2129,68 +2838,79 @@ def accrual_key(admission_id: uuid.UUID, service_date: date) -> uuid.UUID:
     return uuid.uuid5(_ACCRUAL_NAMESPACE, f"{admission_id}:{service_date.isoformat()}")
 
 
-async def accrue_bed_days(
-    session: AsyncSession, *, hospital_id: uuid.UUID, upto: date | None = None
-) -> dict[str, int]:
-    """Emit one `BedDayAccrued` per admission per night not yet accrued.
+def census_nights(
+    admitted_at: datetime,
+    discharged_at: datetime | None,
+    *,
+    zone: ZoneInfo,
+    now: datetime,
+) -> tuple[date, date]:
+    """The first and last night a stay is charged for, by midnight census.
 
-    Nightly rather than at discharge, so the running bill is live — a family
-    asking on day four what the stay has cost gets an answer, which is most of
-    what CLAUDE.md §7b's "automatic billing" is worth in an inpatient setting.
+    A night is named by the date it starts on, and it is charged when the
+    patient is in a bed at the hospital's midnight that ends it — so admission
+    day counts and discharge day does not. Monday to Wednesday is two nights,
+    the same number `length_of_stay` gives and the number a family expects.
 
-    The bed class charged for a night is the one the patient was in at the
-    *end* of it. A patient stepped down from ICU at 4pm is charged the ward rate
-    for that night, which is both the common convention and the one that does
-    not reward a late transfer.
+    The one exception is the admission night itself, which is always charged:
+    a day-case still occupied a bed, and is one night, not zero. That is also
+    what lets the running bill show the room from the hour the patient arrives
+    rather than from the next morning.
+
+    Dates are the *hospital's*, never the server's. In `Asia/Kolkata` the UTC
+    date is still yesterday until 05:30, so a patient admitted at 2 a.m. would
+    otherwise be billed a night that ended before they arrived.
     """
-    through = upto or utc_now().date()
-    admissions, _ = await list_admissions(
-        session, PageParams(limit=MAX_PAGE_SIZE), hospital_id=hospital_id, open_only=True
+    first = admitted_at.astimezone(zone).date()
+    leaving = discharged_at or now
+    last = leaving.astimezone(zone).date() - timedelta(days=1)
+    return first, max(first, last)
+
+
+async def accrue_bed_days(
+    session: AsyncSession, *, hospital_id: uuid.UUID, now: datetime | None = None
+) -> dict[str, int]:
+    """Emit one `BedDayAccrued` per admission per census night not yet accrued.
+
+    On the sweep rather than only at discharge, so the running bill is live — a
+    family asking on day four what the stay has cost gets an answer, which is
+    most of what CLAUDE.md §7b's "automatic billing" is worth in an inpatient
+    setting.
+
+    Every open stay is visited, not the first page of them: a hospital with more
+    inpatients than one page would otherwise silently stop charging the rest.
+    Stays that closed in the last few days are included too, so a night whose
+    charge failed to land at discharge is still picked up.
+    """
+    moment = now or utc_now()
+    zone = await tenancy_service.local_zone(session, hospital_id)
+    recently = moment - timedelta(days=3)
+
+    candidates = (
+        (
+            await session.execute(
+                select(Admission)
+                .where(
+                    col(Admission.hospital_id) == hospital_id,
+                    col(Admission.deleted_at).is_(None),
+                    or_(
+                        col(Admission.status).in_(_OPEN_ADMISSION_STATUSES),
+                        and_(
+                            col(Admission.status) == AdmissionStatus.DISCHARGED,
+                            col(Admission.discharged_at) >= recently,
+                        ),
+                    ),
+                )
+                .order_by(col(Admission.admitted_at))
+            )
+        )
+        .scalars()
+        .all()
     )
-    # Stays that closed today still owe their final nights.
-    closed, _ = await list_admissions(
-        session,
-        PageParams(limit=MAX_PAGE_SIZE),
-        hospital_id=hospital_id,
-        status=AdmissionStatus.DISCHARGED,
-    )
-    candidates = admissions + [
-        row
-        for row in closed
-        if row.discharged_at is not None and row.discharged_at.date() >= through - timedelta(days=2)
-    ]
 
     emitted = 0
     for admission in candidates:
-        last_billed = admission.admitted_at.date() + timedelta(days=admission.bed_days_charged)
-        end = min(through, (admission.discharged_at or utc_now()).date())
-        day = last_billed
-        while day <= end:
-            assignment = await _assignment_on(session, admission.id, day)
-            bed_class = assignment.bed_class if assignment else BedClass.GENERAL
-            tariff = assignment.tariff_item_code if assignment else None
-
-            await event_bus.publish(
-                BedDayAccrued(
-                    hospital_id=hospital_id,
-                    admission_id=admission.id,
-                    encounter_id=admission.encounter_id,
-                    patient_id=admission.patient_id,
-                    accrual_key=accrual_key(admission.id, day),
-                    service_date=day,
-                    bed_class=bed_class.value,
-                    tariff_item_code=tariff,
-                    nights=1,
-                    description=(
-                        f"{bed_class.value.replace('_', ' ').title()} bed — {day.isoformat()}"
-                    ),
-                ),
-                session=session,
-            )
-            admission.bed_days_charged += 1
-            emitted += 1
-            day += timedelta(days=1)
-        session.add(admission)
+        emitted += await _accrue_admission(session, admission, zone=zone, now=moment)
 
     if emitted:
         await session.flush()
@@ -2198,18 +2918,88 @@ async def accrue_bed_days(
     return {"bed_days_accrued": emitted}
 
 
-async def _assignment_on(
-    session: AsyncSession, admission_id: uuid.UUID, day: date
+async def accrue_for_admission(
+    session: AsyncSession, admission: Admission, *, now: datetime | None = None
+) -> int:
+    """Bring one stay's room charges up to date, now, rather than on the sweep.
+
+    Called when a stay is ending, so the final bill has every night on it when
+    it is assembled instead of the last one arriving as a loose charge after the
+    patient has gone.
+    """
+    zone = await tenancy_service.local_zone(session, admission.hospital_id)
+    emitted = await _accrue_admission(session, admission, zone=zone, now=now or utc_now())
+    if emitted:
+        await session.flush()
+    return emitted
+
+
+async def _accrue_admission(
+    session: AsyncSession, admission: Admission, *, zone: ZoneInfo, now: datetime
+) -> int:
+    """Charge every census night of one stay that has not been charged yet.
+
+    The bed class charged for a night is the one the patient was in at the
+    midnight that ends it. A patient stepped down from ICU at 4pm is charged the
+    ward rate for that night, which is both the common convention and the one
+    that does not reward a late transfer.
+    """
+    first, last = census_nights(admission.admitted_at, admission.discharged_at, zone=zone, now=now)
+    night = first + timedelta(days=admission.bed_days_charged)
+
+    emitted = 0
+    ward_names: dict[uuid.UUID, str] = {}
+    while night <= last:
+        midnight = datetime.combine(night + timedelta(days=1), time(0), tzinfo=zone)
+        assignment = await _assignment_at(session, admission.id, midnight)
+        bed_class = assignment.bed_class if assignment else BedClass.GENERAL
+        tariff = assignment.tariff_item_code if assignment else None
+        # The bill line names the ward, because that is what the family chose
+        # and what they will look for ("AC Ward"), not the tariff class behind it.
+        label = bed_class.value.replace("_", " ").title()
+        if assignment is not None:
+            if assignment.bed_id not in ward_names:
+                bed = await get_bed(session, assignment.bed_id, hospital_id=admission.hospital_id)
+                ward = await get_ward(session, bed.ward_id, hospital_id=admission.hospital_id)
+                ward_names[assignment.bed_id] = ward.name
+            label = ward_names[assignment.bed_id]
+
+        await event_bus.publish(
+            BedDayAccrued(
+                hospital_id=admission.hospital_id,
+                admission_id=admission.id,
+                encounter_id=admission.encounter_id,
+                patient_id=admission.patient_id,
+                accrual_key=accrual_key(admission.id, night),
+                service_date=night,
+                bed_class=bed_class.value,
+                tariff_item_code=tariff,
+                nights=1,
+                description=f"{label} bed — {night.isoformat()}",
+            ),
+            session=session,
+        )
+        admission.bed_days_charged += 1
+        emitted += 1
+        night += timedelta(days=1)
+
+    if emitted:
+        session.add(admission)
+    return emitted
+
+
+async def _assignment_at(
+    session: AsyncSession, admission_id: uuid.UUID, moment: datetime
 ) -> BedAssignment | None:
-    """Where the patient was at the end of `day`."""
-    end_of_day = datetime.combine(day, time(23, 59, 59), tzinfo=UTC)
+    """The bed the patient was in at `moment` — or their last one, if they had
+    already left by then (a day-case's admission night)."""
     return (
         (
             await session.execute(
                 select(BedAssignment)
                 .where(
                     col(BedAssignment.admission_id) == admission_id,
-                    col(BedAssignment.assigned_at) <= end_of_day,
+                    col(BedAssignment.assigned_at) <= moment,
                     col(BedAssignment.deleted_at).is_(None),
                 )
                 .order_by(col(BedAssignment.assigned_at).desc())

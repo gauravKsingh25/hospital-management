@@ -16,10 +16,11 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
 from app.core.exceptions import NotFoundError, ValidationError
-from app.core.pagination import Page, PageParams, page_params
+from app.core.pagination import MAX_PAGE_SIZE, Page, PageParams, page_params
 from app.modules.clinical import service
 from app.modules.clinical.models import (
     Encounter,
+    EncounterEvent,
     EncounterStatus,
     OrderStatus,
     OrderType,
@@ -48,6 +49,9 @@ from app.modules.clinical.schemas import (
     OrderCancelRequest,
     OrderCreate,
     OrderRead,
+    PatientClinicalSummary,
+    PatientVisit,
+    PatientVisitStats,
     PendingItems,
     ReferralRecord,
     VitalsCreate,
@@ -55,6 +59,8 @@ from app.modules.clinical.schemas import (
 )
 from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
+from app.modules.scheduling import service as scheduling_service
+from app.modules.tenancy import service as tenancy_service
 
 encounters_router = APIRouter(prefix="/encounters", tags=["clinical"])
 orders_router = APIRouter(prefix="/orders", tags=["clinical"])
@@ -91,7 +97,9 @@ CanReadTemplate = Annotated[AuthContext, Depends(require(ClinicalPermissions.TEM
 CanManageTemplate = Annotated[AuthContext, Depends(require(ClinicalPermissions.TEMPLATE_MANAGE))]
 
 
-async def _render_encounter(session: SessionDep, encounter: Encounter) -> EncounterRead:
+async def _render_encounter(
+    session: SessionDep, encounter: Encounter, context: AuthContext
+) -> EncounterRead:
     """An encounter, with the certifying doctor named if there is one.
 
     The lookup only happens on a deceased encounter, which is rare — so this is
@@ -107,6 +115,17 @@ async def _render_encounter(session: SessionDep, encounter: Encounter) -> Encoun
     death record unreadable.
     """
     rendered = EncounterRead.model_validate(encounter)
+    if not context.has_permission(ClinicalPermissions.DIAGNOSIS_READ):
+        # SEC-02, as on the timeline: that the visit ended in a death, a
+        # referral or LAMA is for everyone who reads the visit; why is not.
+        rendered = rendered.model_copy(
+            update={
+                "cause_of_death": None,
+                "death_place": None,
+                "referral_reason": None,
+                "lama_reason": None,
+            }
+        )
     if encounter.death_certified_by_id is not None:
         try:
             certifier = await identity_service.get_user(session, encounter.death_certified_by_id)
@@ -158,7 +177,7 @@ async def open_encounter(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render_encounter(session, encounter)
+    return await _render_encounter(session, encounter, context)
 
 
 @encounters_router.get("", response_model=Page[EncounterSummary], summary="List visits")
@@ -188,6 +207,42 @@ async def list_encounters(
     )
 
 
+# The terminal outcomes whose *why* is clinical, and the metadata keys that
+# carry it. Whoever can read diagnoses reads these; everyone else sees that the
+# visit ended and how, but not why (SEC-02).
+_CLINICAL_OUTCOMES: frozenset[EncounterStatus] = frozenset(
+    {EncounterStatus.DECEASED, EncounterStatus.REFERRED_OUT, EncounterStatus.LAMA}
+)
+_CLINICAL_EVENT_KEYS: frozenset[str] = frozenset(
+    {"cause_of_death", "death_place", "referral_reason", "lama_reason"}
+)
+
+
+def _event_view(context: AuthContext, event: EncounterEvent) -> EncounterEventRead:
+    """A timeline row as this caller may read it.
+
+    The cashier must still see that the patient died — the bill goes to the
+    family — and the referral's destination and date. The cause of death, and
+    why a patient was referred or left, are clinical facts the visit list
+    already keeps from the lab and the counter; the timeline now agrees.
+    """
+    view = EncounterEventRead.model_validate(event)
+    if context.has_permission(ClinicalPermissions.DIAGNOSIS_READ):
+        return view
+    metadata = (
+        {
+            key: value
+            for key, value in view.event_metadata.items()
+            if key not in _CLINICAL_EVENT_KEYS
+        }
+        if view.event_metadata is not None
+        else None
+    )
+    # The transition's free-text reason is the same clinical sentence again.
+    reason = None if view.to_status in _CLINICAL_OUTCOMES else view.reason
+    return view.model_copy(update={"event_metadata": metadata, "reason": reason})
+
+
 @encounters_router.get(
     "/patient/{patient_id}/timeline",
     response_model=Page[EncounterEventRead],
@@ -207,9 +262,130 @@ async def get_patient_timeline(
     events, total = await service.get_patient_timeline(
         session, params, patient_id=patient_id, hospital_id=tenant_id
     )
-    return Page.build(
-        [EncounterEventRead.model_validate(event) for event in events], total=total, params=params
+    return Page.build([_event_view(context, event) for event in events], total=total, params=params)
+
+
+async def _name_visits(
+    session: SessionDep, visits: list[PatientVisit], *, hospital_id: uuid.UUID
+) -> list[PatientVisit]:
+    """Put the doctor's and department's names on a page of history.
+
+    Here rather than in the service because the names belong to `scheduling`
+    and `tenancy`, asked through their service interfaces (CLAUDE.md §2) — two
+    queries for the page, never one per row.
+    """
+    doctors = await scheduling_service.get_doctors_by_ids(
+        session,
+        {visit.doctor_id for visit in visits if visit.doctor_id is not None},
+        hospital_id=hospital_id,
     )
+    departments = {
+        department.id: department
+        for department in await tenancy_service.get_departments_by_ids(
+            session,
+            {visit.department_id for visit in visits if visit.department_id is not None},
+            hospital_id=hospital_id,
+        )
+    }
+    for visit in visits:
+        if visit.doctor_id in doctors:
+            visit.doctor_name = doctors[visit.doctor_id].display_name
+        if visit.department_id in departments:
+            visit.department_name = departments[visit.department_id].name
+    return visits
+
+
+@encounters_router.get(
+    "/patient/{patient_id}/summary",
+    response_model=PatientClinicalSummary,
+    summary="The patient's history at a glance",
+)
+async def get_patient_summary(
+    patient_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    context: CanReadEncounter,
+    tenant_id: TenantId,
+) -> PatientClinicalSummary:
+    """Visit counts, the visit in progress, the next follow-up — and, for the
+    roles that read the chart, the problem list and the latest vitals.
+
+    One permission opens the route and the finer ones decide what is in it, so
+    reception and a doctor open the same record and see what their role may.
+    """
+    summary = await service.build_patient_summary(
+        session,
+        patient_id,
+        hospital_id=tenant_id,
+        today=await tenancy_service.local_today(session, tenant_id),
+        include_problems=context.has_permission(ClinicalPermissions.DIAGNOSIS_READ),
+        include_vitals=context.has_permission(ClinicalPermissions.VITALS_READ),
+    )
+    # A history is a read of personal health data: traceable, like the record.
+    await identity_service.record_audit(
+        session,
+        action="patient.history.view",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="patient",
+        resource_id=summary.patient_id,
+        changes={"part": "summary"},
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return summary
+
+
+@encounters_router.get(
+    "/patient/{patient_id}/visits",
+    response_model=Page[PatientVisit],
+    summary="Every visit, numbered, with what it was for",
+)
+async def list_patient_visits(
+    patient_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    context: CanReadEncounter,
+    tenant_id: TenantId,
+    params: Annotated[PageParams, Depends(page_params)],
+) -> Page[PatientVisit]:
+    visits, total = await service.list_patient_visits(
+        session,
+        params,
+        patient_id,
+        hospital_id=tenant_id,
+        include_diagnoses=context.has_permission(ClinicalPermissions.DIAGNOSIS_READ),
+        include_orders=context.has_permission(ClinicalPermissions.ORDER_READ),
+    )
+    await identity_service.record_audit(
+        session,
+        action="patient.history.view",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="patient",
+        resource_id=patient_id,
+        changes={"part": "visits", "offset": params.offset},
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return Page.build(
+        await _name_visits(session, visits, hospital_id=tenant_id), total=total, params=params
+    )
+
+
+@encounters_router.get(
+    "/visit-stats",
+    response_model=list[PatientVisitStats],
+    summary="Visit counts for a page of the patient directory",
+)
+async def get_visit_stats(
+    session: SessionDep,
+    context: CanReadEncounter,
+    tenant_id: TenantId,
+    patient_id: Annotated[list[uuid.UUID], Query(min_length=1, max_length=MAX_PAGE_SIZE)],
+) -> list[PatientVisitStats]:
+    """Bounded by the page size: the directory asks for the rows it shows."""
+    return await service.visit_stats_for_patients(session, patient_id, hospital_id=tenant_id)
 
 
 @encounters_router.get("/{encounter_id}", response_model=EncounterRead, summary="Get a visit")
@@ -217,7 +393,7 @@ async def get_encounter(
     encounter_id: uuid.UUID, session: SessionDep, context: CanReadEncounter, tenant_id: TenantId
 ) -> EncounterRead:
     return await _render_encounter(
-        session, await service.get_encounter(session, encounter_id, hospital_id=tenant_id)
+        session, await service.get_encounter(session, encounter_id, hospital_id=tenant_id), context
     )
 
 
@@ -238,7 +414,7 @@ async def get_chart(
     chart = EncounterChart.model_validate(await service.build_chart(session, encounter))
     # The chart is what the consultation screen renders, including the outcome
     # panel on a closed visit — so the certifier has to be named here too.
-    chart.encounter = await _render_encounter(session, encounter)
+    chart.encounter = await _render_encounter(session, encounter, context)
     return chart
 
 
@@ -253,8 +429,7 @@ async def get_timeline(
     """CLAUDE.md §7b — the event feed rendered chronologically."""
     await service.get_encounter(session, encounter_id, hospital_id=tenant_id)
     return [
-        EncounterEventRead.model_validate(event)
-        for event in await service.get_timeline(session, encounter_id)
+        _event_view(context, event) for event in await service.get_timeline(session, encounter_id)
     ]
 
 
@@ -281,7 +456,7 @@ async def update_encounter(
     encounter = await service.get_encounter(session, encounter_id, hospital_id=tenant_id)
     updated = await service.update_encounter(session, encounter, payload)
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 # --- transitions -----------------------------------------------------------
@@ -297,7 +472,7 @@ async def start_consultation(
     encounter = await service.get_encounter(session, encounter_id, hospital_id=tenant_id)
     updated = await service.start_consultation(session, encounter, actor=context.user)
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 @encounters_router.post(
@@ -339,7 +514,7 @@ async def complete_consultation(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 @encounters_router.post(
@@ -371,7 +546,7 @@ async def admit(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 @encounters_router.post(
@@ -400,7 +575,7 @@ async def cancel_encounter(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 # --- the three edge cases (CLAUDE.md §6) -----------------------------------
@@ -422,14 +597,10 @@ async def record_death(
     """
     encounter = await service.get_encounter(session, encounter_id, hospital_id=tenant_id)
 
-    # The certifying doctor must be a real user in this hospital — loaded
-    # through identity's service, never by joining its table (CLAUDE.md §2).
-    certifier = await identity_service.get_user(session, payload.death_certified_by_id)
-    if certifier.hospital_id != tenant_id:
-        raise ValidationError(
-            "The certifying doctor must be a clinician at this hospital.",
-            code="certifier_not_found",
-        )
+    # Checked again inside `record_death`; loaded here for the audit row's email.
+    certifier = await service.get_certifying_doctor(
+        session, payload.death_certified_by_id, hospital_id=tenant_id
+    )
 
     updated = await service.record_death(session, encounter, payload, actor=context.user)
     await identity_service.record_audit(
@@ -447,7 +618,7 @@ async def record_death(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 @encounters_router.post(
@@ -474,7 +645,7 @@ async def record_referral(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 @encounters_router.post(
@@ -503,7 +674,7 @@ async def record_lama(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return await _render_encounter(session, updated)
+    return await _render_encounter(session, updated, context)
 
 
 # ---------------------------------------------------------------------------
@@ -625,12 +796,25 @@ async def list_diagnoses(
 async def place_order(
     encounter_id: uuid.UUID,
     payload: OrderCreate,
+    request: Request,
     session: SessionDep,
     context: CanPlaceOrder,
     tenant_id: TenantId,
 ) -> OrderRead:
     encounter = await service.get_encounter(session, encounter_id, hospital_id=tenant_id)
     order = await service.place_order(session, encounter, payload, actor=context.user)
+    if order.allergy_override_reason:
+        # SAFE-01: a drug ordered past a recorded allergy, on its own row.
+        await identity_service.record_audit(
+            session,
+            action="order.allergy_override",
+            actor=context.user,
+            hospital_id=tenant_id,
+            resource_type="order",
+            resource_id=order.id,
+            changes={"drug": order.item_name, "reason": order.allergy_override_reason},
+            ip_address=await get_client_ip(request),
+        )
     await session.commit()
     return OrderRead.model_validate(order)
 

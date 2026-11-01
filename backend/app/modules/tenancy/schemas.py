@@ -12,6 +12,20 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from app.modules.tenancy.models import DepartmentType
 
 _CODE_PATTERN = re.compile(r"^[A-Z0-9]{2,16}$")
+# handle@psp — what NPCI issues. Letters, digits, dot, hyphen, underscore.
+_UPI_VPA_PATTERN = re.compile(r"^[a-z0-9._-]{2,256}@[a-z][a-z0-9]{1,63}$")
+
+
+def _normalise_vpa(value: str | None) -> str | None:
+    if value is None:
+        return None
+    vpa = value.strip().lower()
+    if not vpa:
+        return None
+    if not _UPI_VPA_PATTERN.match(vpa):
+        raise ValueError("A UPI ID looks like name@bank, e.g. hospital@okicici.")
+    return vpa
+
 
 __all__ = [
     "DepartmentCreate",
@@ -36,7 +50,13 @@ class HospitalBase(BaseModel):
     phone: Annotated[str | None, Field(max_length=20)] = None
     email: EmailStr | None = None
     gstin: Annotated[str | None, Field(max_length=15)] = None
+    upi_vpa: Annotated[str | None, Field(max_length=100)] = None
     timezone: Annotated[str, Field(max_length=64)] = "Asia/Kolkata"
+
+    @field_validator("upi_vpa")
+    @classmethod
+    def _validate_upi_vpa(cls, value: str | None) -> str | None:
+        return _normalise_vpa(value)
 
 
 class HospitalCreate(HospitalBase):
@@ -65,6 +85,9 @@ class HospitalUpdate(BaseModel):
     it change would orphan records that are already on paper.
     """
 
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=2, max_length=200)] = None
     legal_name: Annotated[str | None, Field(max_length=200)] = None
     hfr_facility_id: Annotated[str | None, Field(max_length=64)] = None
@@ -77,7 +100,13 @@ class HospitalUpdate(BaseModel):
     phone: Annotated[str | None, Field(max_length=20)] = None
     email: EmailStr | None = None
     gstin: Annotated[str | None, Field(max_length=15)] = None
+    upi_vpa: Annotated[str | None, Field(max_length=100)] = None
     timezone: Annotated[str | None, Field(max_length=64)] = None
+
+    @field_validator("upi_vpa")
+    @classmethod
+    def _validate_upi_vpa(cls, value: str | None) -> str | None:
+        return _normalise_vpa(value)
 
 
 class HospitalRead(HospitalBase):
@@ -86,8 +115,13 @@ class HospitalRead(HospitalBase):
     id: uuid.UUID
     code: str
     is_active: bool
+    logo_version: int | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class LogoUploaded(BaseModel):
+    version: int
 
 
 class DepartmentCreate(BaseModel):
@@ -106,6 +140,9 @@ class DepartmentCreate(BaseModel):
 
 
 class DepartmentUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=2, max_length=120)] = None
     department_type: DepartmentType | None = None
     description: Annotated[str | None, Field(max_length=500)] = None

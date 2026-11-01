@@ -117,7 +117,11 @@ export function MessageDetail({
             <div className="space-y-1.5">
               <p className="text-muted-foreground text-xs">{t("body")}</p>
               <p className="bg-muted/40 rounded-lg border p-3 text-sm whitespace-pre-wrap">
-                {data.body}
+                {/* Null for a role that does not contact patients (SEC-03): what
+                    was said is for the people who talk to them. */}
+                {data.body ?? (
+                  <span className="text-muted-foreground italic">{t("bodyHidden")}</span>
+                )}
               </p>
             </div>
 

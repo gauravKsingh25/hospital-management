@@ -64,6 +64,8 @@ const QUEUE_TONES: Record<QueueStatus, string> = {
  * patient's visit open.
  */
 const STAGE_TONES: Record<WorklistStage, string> = {
+  // The lab has to decide something before anything else can happen.
+  NEEDS_MAPPING: "bg-caution/15 text-caution-foreground border-caution/40",
   AWAITING_ACCESSION: "bg-critical/10 text-critical border-critical/30",
   AWAITING_COLLECTION: "bg-caution/15 text-caution-foreground border-caution/40",
   AWAITING_RECEIPT: "bg-info/10 text-info border-info/25",

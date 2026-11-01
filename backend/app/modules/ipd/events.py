@@ -21,6 +21,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 
 from app.core.events import DomainEvent
 
@@ -30,6 +31,8 @@ __all__ = [
     "DischargeSummarySigned",
     "MedicationAdministered",
     "MedicationDoseMissed",
+    "MedicineIssueReversed",
+    "MedicineIssued",
     "PatientAdmitted",
     "PatientDischarged",
     "PatientTransferred",
@@ -102,7 +105,12 @@ class BedReleased(DomainEvent):
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class MedicationAdministered(DomainEvent):
-    """A dose was given. `billing` will want this once pharmacy lands."""
+    """A dose was given.
+
+    `billing` charges it when the drug came from the medicine list:
+    `item_code` names the priced item and `quantity` how many units one dose
+    uses. A free-typed drug carries no code and is not charged.
+    """
 
     administration_id: uuid.UUID
     admission_id: uuid.UUID
@@ -112,6 +120,8 @@ class MedicationAdministered(DomainEvent):
     dose: str
     route: str
     administered_by_id: uuid.UUID | None
+    item_code: str | None = None
+    quantity: Decimal = Decimal("1")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -154,3 +164,33 @@ class DischargeSummarySigned(DomainEvent):
     admission_id: uuid.UUID
     patient_id: uuid.UUID
     signed_by_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MedicineIssued(DomainEvent):
+    """Something from the medicine list was used on an inpatient.
+
+    `billing` puts it on the running bill, keyed on `issue_id`, so a retried
+    request cannot charge the patient twice for one IV set.
+    """
+
+    issue_id: uuid.UUID
+    admission_id: uuid.UUID
+    encounter_id: uuid.UUID
+    patient_id: uuid.UUID
+    item_code: str
+    item_name: str
+    quantity: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MedicineIssueReversed(DomainEvent):
+    """An issue recorded in error was taken back.
+
+    `billing` takes the charge off the bill — or refuses, and with it the whole
+    reversal, when the charge is already on an issued invoice.
+    """
+
+    issue_id: uuid.UUID
+    admission_id: uuid.UUID
+    reason: str

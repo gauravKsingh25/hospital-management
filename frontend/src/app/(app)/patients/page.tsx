@@ -12,7 +12,8 @@ export async function generateMetadata() {
 
 export default async function PatientsPage() {
   const user = await getCurrentUser();
-  if (!can(user, "patient:read")) return <NoPermission />;
+  // The directory itself (SEC-01). One patient is still open to `patient:read`.
+  if (!can(user, "patient:list")) return <NoPermission />;
 
-  return <PatientIndex />;
+  return <PatientIndex canSeeVisits={can(user, "encounter:read")} />;
 }

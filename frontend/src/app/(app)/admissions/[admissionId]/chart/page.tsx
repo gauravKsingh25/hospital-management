@@ -57,6 +57,7 @@ export default async function ChartPage({
       // and does not prescribe it.
       canPrescribe={can(user, "medication:prescribe")}
       canAdminister={can(user, "medication:administer")}
+      canPickMedicine={can(user, "medicine:read")}
     />
   );
 }

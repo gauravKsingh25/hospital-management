@@ -40,6 +40,8 @@ export type TokenPair = {
   token_type: string;
   expires_in: number;
   must_change_password: boolean;
+  /** SEC-05: set when the person asked to remember this device. */
+  device_token?: string | null;
 };
 
 export function sessionFromTokens(tokens: TokenPair): Session {

@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:https": "next dev --experimental-https --hostname 0.0.0.0",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -12,7 +13,8 @@
     "codegen:check": "node scripts/codegen.mjs --check",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "verify": "npm run codegen:check && npm run lint && npm run typecheck && npm run build"
+    "verify": "npm run codegen:check && npm run lint && npm run typecheck && npm run test:unit && npm run build",
+    "test:unit": "node --test \"src/**/*.test.mjs\""
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -27,6 +29,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "jsqr": "1.4.0",
     "lucide-react": "^1.31.0",
     "next": "^16.3.1",
     "next-intl": "^4.13.6",

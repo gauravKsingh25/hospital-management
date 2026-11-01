@@ -180,6 +180,11 @@ class RevenueReport(BaseModel):
     waived: Decimal = Decimal("0.00")
     collected: Decimal = Decimal("0.00")
     reversed_amount: Decimal = Decimal("0.00")
+    # Everything the hospital let go of: discounts, waived lines and payments
+    # handed back. A different kind of total from the three above — it adds
+    # like with like — and summed here because the frontend does no arithmetic
+    # on money.
+    given_up: Decimal = Decimal("0.00")
     # Not windowed: an outstanding balance is a fact about now, and restricting
     # it to a date range would quietly hide the oldest and most worrying debt.
     outstanding_total: Decimal = Decimal("0.00")

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, chooseGender, signIn, uniquePatient } from "./support";
+import { ACCOUNTS, chooseGender, openLine, signIn, signOut, uniquePatient } from "./support";
 
 /**
  * Reception's "Seen" button (CLAUDE.md §7b).
@@ -36,14 +36,18 @@ test.describe("marking a patient as seen", () => {
     const row = page.getByTestId("queue-row").filter({ hasText: name });
     await expect(row).toBeVisible({ timeout: 30_000 });
 
+    await openLine(row);
     await row.getByTestId("mark-seen").click();
     await expect(row.getByTestId("patient-name")).toHaveCSS("text-decoration-line", "line-through");
+    // The line closes; Undo sits on the line itself, no second tap needed.
+    await expect(row.getByTestId("row-actions")).toHaveCount(0);
 
     await row.getByRole("button", { name: /^Undo marking/ }).click();
     await expect(row.getByTestId("patient-name")).not.toHaveCSS(
       "text-decoration-line",
       "line-through",
     );
+    await openLine(row);
     await expect(row.getByTestId("mark-seen")).toBeVisible();
 
     // Still in the line after the undo window would have closed.
@@ -60,6 +64,7 @@ test.describe("marking a patient as seen", () => {
 
     const row = page.getByTestId("queue-row").filter({ hasText: name });
     await expect(row).toBeVisible({ timeout: 30_000 });
+    await openLine(row);
     await row.getByTestId("mark-seen").click();
 
     // Out of the line and into "Seen today", struck through.
@@ -79,7 +84,10 @@ test.describe("marking a patient as seen", () => {
         .filter({ hasText: name }),
     ).toBeVisible({ timeout: 30_000 });
 
-    // And gone from the nurse's live queue.
+    // And gone from the nurse's live queue — looked at as the nurse, since
+    // reception no longer has that screen.
+    await signOut(page);
+    await signIn(page, ACCOUNTS.nurse);
     await page.goto("/queue");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expect(page.getByTestId("queue-row").filter({ hasText: name })).toHaveCount(0);

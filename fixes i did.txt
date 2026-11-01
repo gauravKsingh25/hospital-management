@@ -1,0 +1,358 @@
+FIXES I DID — CODEBASE CLEANUP, 2026-10-05
+==========================================
+
+Who this is for: every developer on this repo, especially anyone newer to it.
+It records what was changed in the cleanup pass, what was deliberately NOT
+changed, and why. Read the "why" parts. They are the useful bit.
+
+Branch: version2 (nothing committed; all changes are in the working tree).
+
+
+0. GROUND RULES I FOLLOWED
+--------------------------
+
+* Nothing was lost. Before touching anything I snapshotted the whole working
+  tree, including your uncommitted work, into a git ref:
+
+      refs/backup/pre-cleanup   (commit 1fa723b)
+
+  To see everything this cleanup changed:   git diff refs/backup/pre-cleanup
+  To get one file back as it was:           git checkout refs/backup/pre-cleanup -- <path>
+
+* I measured before and after. Every check was green before I started, and
+  every check must still be green after:
+
+      backend   ruff check · ruff format --check · mypy (strict) · pytest
+      frontend  codegen:check · eslint · tsc · next build
+
+  Baseline before cleanup: 956 backend tests passed, 0 failed.
+
+* I did not rewrite working code to suit my taste. This codebase is already
+  well structured: modular monolith, typed, documented, tested. A "cleanup"
+  that churns 3,000-line files without fixing anything only creates merge
+  conflicts with work in progress. I changed things that were wrong, stale, or
+  dead, and left the rest alone.
+
+* I treated the archify audit report as a list of claims to check against the
+  code, not as instructions. It is auto-generated and several of its claims are
+  false for this codebase. For example, it calls this a "microservices
+  architecture" when it is a modular monolith. Section 3 goes through it point
+  by point.
+
+
+1. BUGS FIXED
+-------------
+
+1.1  List screens showed "nothing here" while loading AND when the request failed
+     Files: frontend/src/features/chart/medication-round.tsx
+            frontend/src/features/messages/patient-messaging.tsx
+            frontend/src/features/messages/outbox.tsx
+            frontend/src/features/patients/patient-index.tsx
+            frontend/src/components/load-error.tsx   (new)
+
+     The pattern  `query.data?.items ?? []`  fed straight into an empty state
+     means "still loading" and "server error" both render as "no rows". How
+     serious that is depends on the screen:
+
+       - Medication round: a failed fetch read as "Round clear — no doses due".
+         A nurse could walk away from doses that were in fact due.
+       - Patient messaging: while loading, a DECEASED patient's record briefly
+         said "messages are on" and offered the block button. The system's
+         hard rule is never to message a deceased patient. The backend still
+         enforced it, but the screen said the opposite.
+       - Patient index and outbox: "No patients registered yet" / "empty" when
+         the API was down.
+
+     Fix: every one of these screens now renders three distinct states:
+       loading -> Skeleton,  failed -> <LoadError onRetry/>,  empty -> as before.
+     The error state is shown only when there is NO data. If a background
+     refresh fails, TanStack Query keeps the last good data, and showing that is
+     better than hiding it. The new shared component uses existing i18n keys
+     (common.somethingWentWrong, common.retry), which are already in en + hi.
+
+1.2  Global error page: the button said "Go to my home screen" but retried
+     File: frontend/src/app/error.tsx
+     The button calls reset(), which re-renders the failed screen. That is a
+     retry, not navigation. The label now says "Try again" (common.retry).
+
+1.3  Flaky e2e test: "a template is written, then previewed…"
+     File: frontend/e2e/messages.spec.ts
+     It failed during my verification run on a screen I had not touched, so I
+     traced it rather than ignoring it. The test made a "unique" language code
+     from the LAST TWO DIGITS of Date.now(), which gives only 100 possible
+     codes. Templates are configuration, so reset_demo_data.py rightly keeps
+     them, and the dev database already held 24 codes from earlier runs. Each
+     run therefore had about a 1-in-4 chance of a 409 conflict, and the odds
+     rose with every run. It now uses seven base-36 digits (unique to the
+     millisecond for ~2.5 years, still inside the backend's 8-character limit).
+     Re-ran the spec: 8/8 pass.
+
+
+2. IMPROVEMENTS ADDED
+---------------------
+
+2.1  Request (correlation) IDs, end to end
+     Files: backend/app/core/request_id.py      (new)
+            backend/app/core/logging.py
+            backend/app/core/exceptions.py
+            backend/app/main.py
+            frontend/src/app/bff/[...path]/route.ts
+            frontend/src/lib/api/error.ts
+            backend/tests/test_request_id.py     (new, 9 tests)
+
+     Before: no way to connect "billing failed at 11:40" to a log line.
+     After:
+       - every response has an X-Request-ID header
+       - every log line prints it:   11:40:02 ERROR [3f9c…] app.x : message
+       - a 500 response body includes "request_id", and the header too
+       - the BFF proxy passes the header through to the browser
+       - ApiError.requestId holds it on the frontend
+
+     Design decisions worth knowing:
+       - It is a pure ASGI middleware, not BaseHTTPMiddleware. BaseHTTPMiddleware
+         runs the app in a separate task, which breaks ContextVars and buffers
+         streaming responses.
+       - Starlette handles crashes in its OUTERMOST middleware, outside ours,
+         so the ID is also kept on the request scope and the 500 handler
+         re-binds it from there. (Revised after CodeRabbit review, see CR-4.
+         The first version never reset the ContextVar, and that could leak.)
+       - An incoming X-Request-ID is accepted only if it matches
+         [A-Za-z0-9._-]{1,64}. Anything else is replaced. This stops log
+         injection, e.g. a header containing a newline and a fake log line.
+       - Event-bus handlers run inside the request, so they inherit the ID for
+         free.
+       - To see it locally, RESTART the API process. On Windows, uvicorn
+         --reload started from a background shell can keep serving old code
+         (see Docs/runbook.md).
+
+2.2  Runbook for operations
+     File: Docs/runbook.md   (new)
+     Symptom-first fixes for the failures this system actually has: Postgres
+     down ("sign-in fails but /health says ok"), Redis down ("every request
+     takes 4s"), Neon cold start, RLS-bypass role, stale --reload on Windows,
+     Docker api cannot reach DB, empty Alembic migration, e2e board clutter,
+     stale codegen. Also how to trace a failure by request ID, the health
+     endpoints, and the pre-commit checks. It is linked from the README.
+
+
+3. THE AUDIT REPORT — CLAIM BY CLAIM
+------------------------------------
+
+ACCEPTED (real problem, fixed):
+  - Inconsistent correlation IDs ............ there were none. Fixed (2.1).
+  - Missing loading indicators .............. real, and worse than reported:
+                                              errors looked like empty lists.
+                                              Fixed (1.1).
+  - Lack of runbooks ........................ added Docs/runbook.md (2.2).
+
+REJECTED (checked, and the claim is false or does not apply here):
+  - "Potential N+1 queries in patients/models.py"
+      There are NO ORM relationships anywhere, so no lazy loading, so no
+      classic N+1. I audited loops containing awaits: they are bounded (2
+      tables in a patient merge, a code-collision probe) and list endpoints
+      already batch (e.g. get_roles_for_users is one query). Nothing to fix.
+  - "Missing database indexes"
+      I wrote a script that walks the SQLAlchemy metadata (59 tables). Every
+      FK used in a WHERE clause is indexed, plus hospital_id, deleted_at, UHID
+      and phone. The 37 FKs without an index are all "who did it" audit pointers
+      (recorded_by_id, issued_by_id, ...). I searched every service, and no
+      query filters on any of them. Indexing them would slow inserts on the
+      hottest tables (encounter_events, vitals, charges) for no read benefit.
+      Add an index the day a screen filters on one, in that feature's migration.
+  - "Lack of connection pooling"
+      False. core/database.py uses a sized pool with pre_ping and recycle tuned
+      for Neon, and switches off asyncpg's statement cache behind PgBouncer.
+  - "No viewport meta tag"
+      False. app/layout.tsx exports `viewport`.
+  - "No message queue"
+      False. ARQ on Redis, with a separate worker process (docker-compose).
+  - "Microservices architecture" (used throughout the report)
+      It is a modular monolith, on purpose (CLAUDE.md §2).
+  - Database sharding, GC tuning, jitter budgets
+      Premature for one mid-size hospital. Revisit only with measurements.
+  - HTTP cache headers / multi-layer caching
+      The BFF deliberately sends Cache-Control: no-store, private. Responses
+      are patient data and must not sit in shared or browser caches.
+  - Webhooks, feature flags, plugin architecture
+      Not needed now (YAGNI). Outbound integration already has a seam
+      (notifications/gateways.py), and behaviour is env-configured.
+  - Docker resource limits / cost monitoring
+      docker-compose.yml is the LOCAL dev stack. Limits there only make builds
+      fail on smaller laptops. Set them in the production deploy manifests
+      (Railway/Render/Fly) when those exist.
+
+DEFERRED (reasonable, but a product or infra decision, not cleanup):
+  - Onboarding flow for new staff (product feature)
+  - Load-testing suite (k6/Locust). The Playwright speed-gate already
+    measures CLAUDE.md §7b's targets; add load tests before go-live.
+  - OpenTelemetry tracing. Request IDs (2.1) are the cheap first step.
+
+
+4. WORKSPACE TIDY-UP
+--------------------
+
+  - Removed 5 unused create-next-app SVGs from frontend/public (vercel.svg,
+    next.svg, globe.svg, file.svg, window.svg). Nothing referenced them.
+  - Removed 7 unused shadcn/ui primitives: badge, card, popover, radio-group,
+    scroll-area, separator, tabs. Nothing imported them. They were not in the
+    bundle anyway, but every unused file is something a newcomer has to read
+    and wonder about. Re-add any of them with:  npx shadcn add <name>
+  - Replaced frontend/README.md. It was the stock create-next-app text, which
+    told readers to "edit app/page.tsx" and "deploy on Vercel". It now says how
+    to run the frontend, where each kind of code goes, and the rules that are
+    not preferences.
+  - README.md: fixed facts that were stale:
+      * the status paragraph said modules have "no screens yet" (they all do)
+      * the Layout tree listed the deleted doctor/consultation routes
+      * the Layout tree was missing core/rbac_registry.py, core/request_id.py,
+        scripts/reset_demo_data.py, components/patient/, load-error
+      * the "What is built" table was missing /admissions and /medicines
+    Added: a "new here? read in this order" pointer, and two conventions (the
+    three-state list screen; debugging by request ID).
+  - main.py: replaced the stale docstring ("Phase 0 exposes health endpoints
+    only") with a reading guide; removed an obsolete "routers mount here as they
+    are built" comment (they are all built).
+  - .gitignore: added .archify/ (generated audit output, and it describes the
+    system's weak points, so it should stay off the remote).
+  - tests/test_security.py: the forged-signature test used a 24-byte key, which
+    made PyJWT print an InsecureKeyLengthWarning on every run. It now uses a
+    32+ byte wrong key. The test is unchanged in meaning, and the suite runs
+    with zero warnings.
+
+
+5. DELIBERATELY NOT CHANGED (and why)
+-------------------------------------
+
+  - Big service files (ipd/service.py ~3,000 lines, billing ~2,400).
+    They are already navigable: each opens with a docstring giving the reading
+    order and is split by 10–23 section banners. CLAUDE.md §10 makes
+    service.py the module's single public interface, and both files have
+    uncommitted edits in progress. Splitting now would mean big merge conflicts
+    and no behaviour gained.
+    When to split: when a file passes ~3,000 lines (ipd is there now), turn
+    service.py into a service/ package whose __init__.py re-exports the same
+    names. Callers then do not change.
+  - components/patient/safety-banner.tsx is imported by nothing, but I KEPT it.
+    See 6.1. It is required by CLAUDE.md §7b and should be wired back in, not
+    deleted.
+  - Line endings. git has core.autocrlf=true and the working files are LF.
+    Adding a .gitattributes (`* text=auto eol=lf`) is the right long-term fix,
+    but it renormalises every file in one huge diff. Do it in its own commit,
+    on a quiet day, not mixed into feature work.
+  - Two virtualenvs exist (./.venv and ./backend/.venv). Both are gitignored.
+    The tooling uses ./.venv. I did not delete backend/.venv in case your editor
+    points at it. Delete it once you have checked your interpreter setting.
+  - frontend/.env.local contains pasted notes, including the demo password, as
+    comments. It is gitignored and local only, so I did not touch it. Worth
+    tidying by hand.
+  - "Docs/" keeps its capital D. Renaming it is cosmetic, and on Windows a
+    case-only rename needs a two-step git mv. Not worth the risk.
+
+
+6. THINGS I FOUND THAT YOU SHOULD DECIDE ON
+-------------------------------------------
+
+6.1  The patient SAFETY BANNER is no longer shown anywhere.
+     Your in-progress work deletes the consultation screen, which was the only
+     place <SafetyBanner> was rendered. The patient record page still lists
+     active alerts inline, but the IPD medication chart, where drugs are
+     prescribed and signed for, has never shown allergies. CLAUDE.md §7b
+     requires a persistent banner on patient screens. Suggested fix: render
+     <SafetyBanner> at the top of chart-screen.tsx and admission-screen.tsx.
+     I did not do this myself because it is a feature change inside files you
+     are actively editing.
+
+6.2  Commit your work. 71 files of in-progress work (medicines, admission-desk
+     vitals, two new migrations) exist only in the working tree.
+     refs/backup/pre-cleanup protects them for now, but commit them in their
+     own commit(s), separate from this cleanup.
+
+
+6b. CODERABBIT REVIEW — ALL 5 COMMENTS CHECKED AND FIXED
+-------------------------------------------------------
+
+Source: the CodeRabbit VS Code extension's local review of the working tree
+(the run that completed at 2026-10-05 17:59 UTC; the 3 other runs were
+cancelled and had no comments). There is no CodeRabbit review on GitHub: the
+repo has no pull requests. Each comment was checked against the code before
+it was fixed. All 5 held up.
+
+CR-1  Switching a medicine off left running courses unpriced   [your WIP]
+      backend/app/modules/billing/service.py  (capture_charge)
+      Deactivating a medicine is mirrored onto its billing ServiceItem. The
+      active check happens only at prescribe/issue time, so courses already
+      running keep producing doses. capture_charge looked the item up
+      active-only, so every later dose landed at ₹0 on the exception list.
+      That contradicts the screen's own promise ("can no longer be picked").
+      Fix: for named catalogue items (fallback_to_category_default=False,
+      i.e. only the medicine paths) the lookup now includes inactive items.
+      Consultations and other categories are unchanged.
+      Test: test_a_medicine_switched_off_mid_course_is_still_charged_at_its_price
+      (I confirmed it FAILS without the fix and passes with it.)
+      Knock-on: tests/test_medicines.py::test_a_missing_price_is_flagged_rather_than_borrowed
+      used "switch the item off" as a shortcut for "no price", and so failed
+      once switched-off items kept their price. Its real point is still true
+      and still guarded: a missing price is never BORROWED from another drug.
+      Its setup now creates a genuinely missing price (the hospital moves to a
+      new default price list where ceftriaxone is not priced yet but another
+      drug is). The assertions are unchanged.
+
+CR-2  Discharge test could fail at random near midnight         [your WIP]
+      backend/tests/test_ipd_service.py
+      The test read `today` before discharging, and the service has no
+      injectable clock. If hospital-local midnight passed between the two, the
+      stay really did span 3 nights, so the hard-coded `== 2` failed. It now
+      derives the night count from the admission's actual discharged_at, which
+      tests the same rule without racing the clock.
+
+CR-3  Messaging panel lost its button after a failed refetch    [my cleanup]
+      frontend/src/features/messages/patient-messaging.tsx
+      I had gated the block button on `isSuccess`. In TanStack v5 a failed
+      *background* refetch keeps the data but drops isSuccess, so the panel
+      said "messaging on" with no button and no retry. The button is now gated
+      on `data !== undefined`, which still hides it before the first load
+      (when we cannot yet know whether the patient is deceased).
+
+CR-4  Request ID could outlive its request                       [my cleanup]
+      backend/app/core/request_id.py, backend/app/core/exceptions.py
+      My earlier design (see 2.1) did not reset the ContextVar, on the
+      assumption that each request runs in its own task. That holds for
+      uvicorn but is not guaranteed by ASGI. HTTPX's ASGITransport runs the
+      app in the caller's task, so the ID leaked onto later, unrelated log
+      lines. CodeRabbit was right and my reasoning was too narrow.
+      New design: the middleware stores the ID on the scope
+      (request.state.request_id), binds the ContextVar only for the duration
+      of the request and then restores it. The outermost 500 handler re-binds
+      the ID from the scope for its log line and response.
+      Test: test_the_id_does_not_outlive_its_request.
+
+CR-5  Vitals panel showed "No vitals recorded yet" on a failed request
+      frontend/src/features/vitals/latest-vitals.tsx             [your WIP]
+      The same bug class as 1.1, in a new file. Now renders <LoadError/>.
+
+
+7. HOW TO VERIFY THIS YOURSELF
+------------------------------
+
+  cd backend   && ruff check . && ruff format --check . && mypy app && pytest
+  cd frontend  && npm run verify
+  cd frontend  && npx playwright test e2e/messages.spec.ts e2e/chart.spec.ts
+
+  Results of the final run are at the bottom of this file.
+
+
+8. FINAL VERIFICATION RESULTS
+-----------------------------
+
+  backend   ruff check ............ All checks passed
+            ruff format --check ... 179 files already formatted
+            mypy app (strict) ..... no issues in 102 source files
+            pytest ................ 967 passed, 0 failed, 0 warnings
+                                    (baseline 956 + 9 request-ID tests from the
+                                    cleanup + 2 from the CodeRabbit fixes)
+  frontend  npm run verify ........ passed (codegen up to date, eslint, tsc,
+                                    next build)
+  e2e       chart, messages, outcomes, search specs (the screens touched):
+            30/30 pass after fixing the flaky template test (1.3).
+            After the CodeRabbit fixes: admission-desk, messages, outcomes
+            (the vitals and messaging panels): 16/16 pass.

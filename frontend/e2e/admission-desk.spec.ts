@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import {
   ACCOUNTS,
   chooseGender,
+  openLine,
   releaseTrackedBeds,
   signIn,
   signOut,
@@ -13,8 +14,9 @@ import {
 /**
  * The OPD → admission desk hand-off, end to end.
  *
- * Reception marks a patient seen and sends them for admission; the admission
- * desk — its own role, its own screen — admits them into a bed, and the IPD
+ * The doctor sees the patient in person and enters nothing. Reception marks
+ * them seen and sends them for admission; the admission desk — its own role,
+ * its own screen — takes their vitals, admits them into a bed, and the IPD
  * stay begins. Each side sees only its own half, and both agree afterwards
  * about where the patient is.
  */
@@ -38,10 +40,12 @@ test("reception sends a seen patient and the admission desk admits them", async 
   await page.goto("/reception");
   const row = page.getByTestId("queue-row").filter({ hasText: patient.name });
   await expect(row).toBeVisible({ timeout: 30_000 });
+  await openLine(row);
   await row.getByTestId("mark-seen").click();
 
   const seenRow = page.getByTestId("seen-row").filter({ hasText: patient.name });
   await expect(seenRow).toBeVisible({ timeout: 20_000 });
+  await openLine(seenRow);
   await seenRow.getByTestId("send-to-admission").click();
 
   const send = page.getByRole("dialog");
@@ -73,6 +77,13 @@ test("reception sends a seen patient and the admission desk admits them", async 
   await expect(bed).toBeVisible({ timeout: 30_000 });
   const bedCode = (await bed.innerText()).trim();
   await bed.click();
+
+  // Vitals, taken at the counter — the doctor no longer has a screen for them.
+  const vitals = admit.getByTestId("admit-vitals");
+  await vitals.getByLabel("Systolic").fill("150");
+  await vitals.getByLabel("Diastolic").fill("95");
+  await vitals.getByLabel("Pulse").fill("104");
+  await vitals.getByLabel("SpO₂").fill("93");
   await admit.getByRole("button", { name: "Admit", exact: true }).click();
 
   // The IPD flow begins: the admission's own page.
@@ -81,6 +92,10 @@ test("reception sends a seen patient and the admission desk admits them", async 
   await expect(page.getByRole("heading", { level: 1 })).toContainText(patient.name, {
     timeout: 30_000,
   });
+  // The ward reads the desk's vitals on the stay.
+  const latest = page.getByTestId("latest-vitals");
+  await expect(latest).toContainText("150/95 mmHg", { timeout: 30_000 });
+  await expect(latest).toContainText("104 bpm");
 
   // Off the waiting list, onto "handled today".
   await page.goto("/admissions");

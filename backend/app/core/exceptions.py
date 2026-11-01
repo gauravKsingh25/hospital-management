@@ -14,6 +14,8 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.core.request_id import REQUEST_ID_HEADER, bound_request_id, request_id_from_scope
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,15 +141,24 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def _unhandled_handler(_: Request, exc: Exception) -> JSONResponse:
-        # Never leak internals to a hospital workstation.
-        logger.exception("unhandled exception: %s", exc)
+    async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
+        # Never leak internals to a hospital workstation. The request ID is the
+        # one safe detail: it lets support find the logged stack trace. Read
+        # from the scope, because by now RequestIdMiddleware has already
+        # restored the ContextVar (this handler runs outside it).
+        request_id = request_id_from_scope(request.scope)
+        with bound_request_id(request_id):
+            logger.exception("unhandled exception: %s", exc)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "error": {
                     "code": "internal_error",
                     "message": "Something went wrong. The incident has been logged.",
+                    "request_id": request_id,
                 }
             },
+            # This handler runs in Starlette's outermost middleware, outside
+            # RequestIdMiddleware, so the header must be attached here.
+            headers={REQUEST_ID_HEADER: request_id},
         )

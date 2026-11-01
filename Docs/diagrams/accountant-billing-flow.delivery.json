@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "dd2e8e00-0d67-45d0-988a-098492f51f12",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "C:\\Users\\User\\Desktop\\Hospital management\\Docs\\diagrams\\accountant-billing-flow.json",
+  "output": "C:\\Users\\User\\Desktop\\Hospital management\\Docs\\diagrams\\accountant-billing-flow.html",
+  "specification": {
+    "sha256": "e01b6753dad1a795bdd8f14d07c56a3a43ab9f1006f6092a18ef713be9db7eb7",
+    "bytes": 9208
+  },
+  "artifact": {
+    "sha256": "7025e259d3ace908699b0b5b06d555fc1dc13afc2fdba74f65f8335982810c4f",
+    "bytes": 769498
+  }
+}

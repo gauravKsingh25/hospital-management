@@ -43,12 +43,14 @@ from app.modules.diagnostics.schemas import (
     AmendRequest,
     AnalyteCreate,
     CatalogueItemCreate,
+    CatalogueItemUpdate,
     CollectRequest,
     CriticalCallback,
     NarrativeEntry,
     ReferenceRangeCreate,
     ResultEntry,
     ResultsSubmission,
+    WorklistStage,
 )
 from app.modules.identity.models import User
 from app.modules.identity.rbac import Roles
@@ -190,12 +192,18 @@ async def _order(
     *,
     order_type: OrderType = OrderType.LAB,
     item_name: str = "CBC",
+    item_code: str | None = None,
     review_in_visit: bool = False,
 ) -> Order:
     order = await clinical_service.place_order(
         session,
         encounter,
-        OrderCreate(order_type=order_type, item_name=item_name, review_in_visit=review_in_visit),
+        OrderCreate(
+            order_type=order_type,
+            item_name=item_name,
+            item_code=item_code,
+            review_in_visit=review_in_visit,
+        ),
         actor=doctor_user,
     )
     await session.commit()
@@ -288,6 +296,95 @@ async def test_accessioning_creates_the_report_and_the_sample(
 
     # The doctor's screen should now say the lab has it.
     assert order.status is OrderStatus.IN_PROGRESS
+
+
+# ---------------------------------------------------------------------------
+# Orders the catalogue already names, and the ones it does not (BUG-06)
+# ---------------------------------------------------------------------------
+async def test_an_order_carrying_a_catalogue_code_is_accessioned_without_mapping(
+    session: AsyncSession,
+    tenant: Hospital,
+    encounter: Encounter,
+    doctor_user: User,
+    tech_user: User,
+    cbc: CatalogueItem,
+) -> None:
+    """The order already says which test it is; asking the bench to pick it
+    again is the extra step — and the place a wrong price gets chosen."""
+    order = await _order(session, encounter, doctor_user, item_code="cbc")
+
+    report, specimen = await service.accession_order(
+        session,
+        order,
+        AccessionRequest(order_id=order.id),
+        actor=tech_user,
+        hospital_id=tenant.id,
+    )
+
+    assert report.catalogue_item_id == cbc.id
+    assert specimen is not None
+
+
+async def test_a_free_text_order_must_be_mapped_before_accessioning(
+    session: AsyncSession,
+    tenant: Hospital,
+    encounter: Encounter,
+    doctor_user: User,
+    tech_user: User,
+    cbc: CatalogueItem,
+) -> None:
+    order = await _order(session, encounter, doctor_user, item_name="Complete Blood Count")
+
+    with pytest.raises(ValidationError) as refused:
+        await service.accession_order(
+            session,
+            order,
+            AccessionRequest(order_id=order.id),
+            actor=tech_user,
+            hospital_id=tenant.id,
+        )
+
+    assert refused.value.code == "needs_mapping"
+
+
+async def test_only_an_active_test_of_the_right_discipline_is_a_match(
+    session: AsyncSession,
+    tenant: Hospital,
+    encounter: Encounter,
+    doctor_user: User,
+    cbc: CatalogueItem,
+    xray: CatalogueItem,
+) -> None:
+    coded = await _order(session, encounter, doctor_user, item_code="CBC")
+    free_text = await _order(session, encounter, doctor_user, item_name="Blood test")
+    # A scan code on a lab order is a mistake, not a match.
+    crossed = await _order(session, encounter, doctor_user, item_code="XR-CHEST")
+    retired = await _order(
+        session, encounter, doctor_user, order_type=OrderType.RADIOLOGY, item_code="XR-CHEST"
+    )
+    await service.update_catalogue_item(session, xray, CatalogueItemUpdate(is_active=False))
+    await session.commit()
+
+    matches = await service.match_catalogue(
+        session, [coded, free_text, crossed, retired], hospital_id=tenant.id
+    )
+
+    assert matches == {coded.id: cbc}
+
+
+def test_an_unmatched_order_waits_in_the_needs_mapping_lane() -> None:
+    order = Order(
+        hospital_id=uuid.uuid4(),
+        encounter_id=uuid.uuid4(),
+        patient_id=uuid.uuid4(),
+        order_type=OrderType.LAB,
+        item_name="Blood test",
+    )
+
+    assert service.worklist_stage(order, None, None, matched=False) is WorklistStage.NEEDS_MAPPING
+    assert service.worklist_stage(order, None, None, matched=True) is (
+        WorklistStage.AWAITING_ACCESSION
+    )
 
 
 async def test_a_radiology_order_takes_no_sample(

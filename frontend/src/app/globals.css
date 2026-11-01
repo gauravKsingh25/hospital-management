@@ -41,6 +41,10 @@
  */
 
 @theme inline {
+  /* UX-03: the smallest text is 13 px, not Tailwind's 12. Counter and ward
+     staff read these screens at arm's length; every `text-xs` follows. */
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: calc(1.15 / 0.8125);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   /* Latin first, Devanagari second: each glyph is drawn by whichever family

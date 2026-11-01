@@ -17,6 +17,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.models import utc_now
 from app.modules.identity.models import User
 from app.modules.identity.rbac import Roles
 from app.modules.tenancy.models import Hospital
@@ -135,6 +136,68 @@ class TestTemplates:
         codes = response.json()
         assert "REPORT_READY" in codes
         assert "patient_name" in codes["REPORT_READY"]
+
+    async def test_the_code_list_names_every_value_a_trigger_supplies(
+        self, api: AsyncClient, admin_token: str
+    ) -> None:
+        """Not just the common three: an author writing REPORT_READY needs to
+        know `test_name` exists, or they will guess at it."""
+        codes = (await api.get(f"{TEMPLATES}/codes", headers=auth(admin_token))).json()
+
+        assert {"test_name", "report_number"} <= set(codes["REPORT_READY"])
+        assert "test_name" not in codes["APPOINTMENT_BOOKED"]
+
+    async def test_a_template_with_a_placeholder_nothing_supplies_is_refused(
+        self, api: AsyncClient, admin_token: str
+    ) -> None:
+        """The audit's corrupted copy, which was saved and then sent with its
+        braces showing. It is now refused before anybody can save it."""
+        response = await api.post(
+            TEMPLATES,
+            json={
+                "code": "APPOINTMENT_BOOKED",
+                "channel": "WHATSAPP",
+                "language": "en",
+                "body": "Namaste {{patient_name}}, aapka {{nonexistent}} taiyar hai.",
+            },
+            headers=auth(admin_token),
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "unknown_placeholder"
+
+    async def test_a_template_in_a_made_up_language_is_refused(
+        self, api: AsyncClient, admin_token: str
+    ) -> None:
+        response = await api.post(
+            TEMPLATES,
+            json={"code": "REPORT_READY", "channel": "SMS", "language": "q06", "body": "hello"},
+            headers=auth(admin_token),
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "unsupported_language"
+
+    async def test_an_admin_can_remove_a_template(
+        self, api: AsyncClient, admin_token: str, reception_token: str
+    ) -> None:
+        created = await api.post(
+            TEMPLATES,
+            json={"code": "REPORT_READY", "channel": "SMS", "language": "en", "body": "hello"},
+            headers=auth(admin_token),
+        )
+        template_id = created.json()["id"]
+
+        refused = await api.delete(f"{TEMPLATES}/{template_id}", headers=auth(reception_token))
+        assert refused.status_code == 403
+
+        removed = await api.delete(f"{TEMPLATES}/{template_id}", headers=auth(admin_token))
+        assert removed.status_code == 204
+
+        listing = await api.get(f"{TEMPLATES}?include_inactive=true", headers=auth(admin_token))
+        assert template_id not in [row["id"] for row in listing.json()["items"]]
+        gone = await api.get(f"{TEMPLATES}/{template_id}", headers=auth(admin_token))
+        assert gone.status_code == 404
 
     async def test_an_sms_template_may_not_carry_a_subject(
         self, api: AsyncClient, admin_token: str
@@ -427,7 +490,7 @@ class TestSuppressionOverHttp:
         death = await api.post(
             f"{ENCOUNTERS}/{encounter_id}/death",
             json={
-                "deceased_at": "2026-08-11T10:00:00Z",
+                "deceased_at": utc_now().isoformat(),
                 "death_certified_by_id": str(doctor_user.id),
                 "cause_of_death": "Cardiac arrest.",
             },
@@ -468,7 +531,7 @@ class TestSuppressionOverHttp:
         await api.post(
             f"{ENCOUNTERS}/{encounter_id}/death",
             json={
-                "deceased_at": "2026-08-11T10:00:00Z",
+                "deceased_at": utc_now().isoformat(),
                 "death_certified_by_id": str(doctor_user.id),
                 "cause_of_death": "Cardiac arrest.",
             },
@@ -494,7 +557,11 @@ class TestRbac:
     async def test_a_nurse_may_read_messages_but_not_send_them(
         self, api: AsyncClient, nurse_token: str, patient_id: str
     ) -> None:
-        readable = await api.get(NOTIFICATIONS, headers=auth(nurse_token))
+        # One patient's messages, from that patient. The hospital-wide outbox
+        # is for reception, records and admin (SEC-03).
+        readable = await api.get(
+            NOTIFICATIONS, params={"patient_id": patient_id}, headers=auth(nurse_token)
+        )
         sendable = await api.post(
             NOTIFICATIONS,
             json={"patient_id": patient_id, "body": "hello"},

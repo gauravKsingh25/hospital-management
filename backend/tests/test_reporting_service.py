@@ -480,6 +480,76 @@ async def test_a_waived_charge_is_not_billable_but_is_still_reported(
     assert report.charges_raised == D("0.00")
 
 
+async def test_money_given_up_is_discounts_waivers_and_refunds_together(
+    session: AsyncSession,
+    tenant: Hospital,
+    patient: Patient,
+    doctor_user: User,
+    cashier_user: User,
+    priced,
+) -> None:
+    """The dashboard's "Given up" tile: everything the hospital let go of.
+
+    ₹100 discounted off one line, a ₹1,000 line waived outright, and a ₹400
+    payment handed back — ₹1,500 in all. Summed here rather than in the
+    browser, because the frontend does no arithmetic on money.
+    """
+    biller = await _user(session, tenant, Roles.BILLING_STAFF)
+    encounter = await clinical_service.open_encounter(
+        session, hospital_id=tenant.id, patient_id=patient.id, actor=doctor_user
+    )
+    await session.commit()
+
+    lines = []
+    for _ in range(2):
+        lines.append(
+            await billing_service.add_charge(
+                session,
+                ChargeAdd(
+                    encounter_id=encounter.id,
+                    item_code="DRESSING",
+                    description="Wound dressing",
+                    category=ChargeCategory.PROCEDURE,
+                ),
+                hospital_id=tenant.id,
+                actor=cashier_user,
+            )
+        )
+    await session.commit()
+    await billing_service.discount_charge(
+        session, lines[0], amount=D("100.00"), reason="Concession", actor=cashier_user
+    )
+    await billing_service.waive_charge(session, lines[1], reason="Staff concession", actor=biller)
+    await session.commit()
+
+    invoice = await billing_service.assemble_draft(
+        session,
+        InvoiceDraftRequest(encounter_id=encounter.id),
+        hospital_id=tenant.id,
+        actor=cashier_user,
+    )
+    await billing_service.issue_invoice(session, invoice, actor=cashier_user, hospital_id=tenant.id)
+    payment, invoice = await billing_service.record_payment(
+        session,
+        invoice,
+        amount=D("400.00"),
+        method=PaymentMethod.CASH,
+        actor=cashier_user,
+        hospital_id=tenant.id,
+    )
+    await billing_service.reverse_payment(
+        session, payment, reason="Taken in error", actor=cashier_user, hospital_id=tenant.id
+    )
+    await session.commit()
+
+    report = await service.revenue(session, await _window_around(session, tenant))
+
+    assert report.discounts_given == D("100.00")
+    assert report.waived == D("1000.00")
+    assert report.reversed_amount == D("400.00")
+    assert report.given_up == D("1500.00")
+
+
 async def test_an_unpriced_act_shows_on_the_revenue_report(
     session: AsyncSession, tenant: Hospital, patient: Patient, doctor_user: User
 ) -> None:

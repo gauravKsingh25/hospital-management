@@ -443,6 +443,7 @@ async def _publish(
                 closed_automatically=encounter.closed_automatically,
                 appointment_id=encounter.appointment_id,
                 was_seen=encounter.consultation_started_at is not None,
+                follow_up_date=encounter.follow_up_date,
             ),
             session=session,
         )

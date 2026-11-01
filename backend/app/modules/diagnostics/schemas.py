@@ -71,6 +71,9 @@ class CatalogueItemCreate(BaseModel):
 
 
 class CatalogueItemUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=1, max_length=200)] = None
     section: Annotated[str | None, Field(max_length=60)] = None
     container: Annotated[str | None, Field(max_length=60)] = None
@@ -180,14 +183,16 @@ class CatalogueItemRead(BaseModel):
 class AccessionRequest(BaseModel):
     """The lab accepting a doctor's order onto its bench.
 
-    `catalogue_item_id` is chosen here rather than at ordering time on purpose:
-    a doctor writes "CBC" at speed, and the lab is the one that knows which
-    catalogue entry that is — and can correct a typo without bouncing the order
-    back to the consulting room.
+    `catalogue_item_id` may be left out when the order already carries a
+    catalogue code — the test is named, and picking it again is an extra step
+    and a chance to pick the wrong price. A free-text order ("Complete Blood
+    Count", no code) still needs the lab to say which test it means, and is
+    refused (`needs_mapping`) until it does; the lab can correct a typo without
+    bouncing the order back to the consulting room.
     """
 
     order_id: uuid.UUID
-    catalogue_item_id: uuid.UUID
+    catalogue_item_id: uuid.UUID | None = None
     notes: Annotated[str | None, Field(max_length=500)] = None
 
 
@@ -332,6 +337,9 @@ class WorklistStage(enum.StrEnum):
     server so the rule has one implementation rather than one per client.
     """
 
+    # A free-text request no catalogue test matches: the lab has to say which
+    # test it means before it can go on the bench.
+    NEEDS_MAPPING = "NEEDS_MAPPING"
     AWAITING_ACCESSION = "AWAITING_ACCESSION"
     AWAITING_COLLECTION = "AWAITING_COLLECTION"
     AWAITING_RECEIPT = "AWAITING_RECEIPT"
@@ -363,6 +371,10 @@ class WorklistEntry(BaseModel):
     ordered_at: datetime
 
     stage: WorklistStage
+    # The catalogue test the order's own code names, before accessioning. Unset
+    # for a free-text order — which is what puts it in NEEDS_MAPPING.
+    matched_catalogue_item_id: uuid.UUID | None = None
+    matched_catalogue_item_name: str | None = None
 
     patient_name: str | None = None
     patient_uhid: str | None = None

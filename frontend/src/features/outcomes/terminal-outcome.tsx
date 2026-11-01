@@ -60,6 +60,7 @@ export function RecordOutcome({
   canRecordDeath,
   canRecordReferral,
   canRecordLama,
+  currentUserId,
   onRecorded,
 }: {
   encounterId: string;
@@ -67,6 +68,8 @@ export function RecordOutcome({
   canRecordDeath: boolean;
   canRecordReferral: boolean;
   canRecordLama: boolean;
+  /** Who is signed in; a doctor recording a death starts as its certifier. */
+  currentUserId?: string;
   onRecorded: () => void;
 }) {
   const t = useTranslations("outcome");
@@ -99,6 +102,7 @@ export function RecordOutcome({
           encounterId={encounterId}
           patientName={patientName}
           allowed={allowed}
+          currentUserId={currentUserId}
           onOpenChange={(next) => {
             if (!next) setOpen(false);
           }}
@@ -116,12 +120,14 @@ function OutcomeDialog({
   encounterId,
   patientName,
   allowed,
+  currentUserId,
   onOpenChange,
   onRecorded,
 }: {
   encounterId: string;
   patientName: string;
   allowed: Outcome[];
+  currentUserId?: string;
   onOpenChange: (open: boolean) => void;
   onRecorded: () => void;
 }) {
@@ -146,15 +152,22 @@ function OutcomeDialog({
   const [lamaReason, setLamaReason] = useState("");
   const [formSigned, setFormSigned] = useState(false);
 
-  // Only doctors may certify a death, and the backend refuses a user from
-  // another hospital. The picker is therefore the doctor list, keyed on
-  // `user_id` — the certifier is a *person*, not a clinic profile.
+  // Only an active doctor at this hospital may certify a death; the backend
+  // refuses anyone else (`certifier_not_a_doctor`). The picker is therefore
+  // the doctor list, keyed on `user_id` — the certifier is a *person*, not a
+  // clinic profile.
   const doctors = useQuery({
     queryKey: ["doctors", "certifiers"],
     queryFn: ({ signal }) => api.get<Page<Doctor>>("/doctors", { query: { limit: 100 }, signal }),
     enabled: outcome === "DEATH",
     staleTime: 300_000,
   });
+  // The doctor recording a death is usually the one certifying it, so they
+  // start selected. A records officer is not on the list and picks one.
+  const signedInDoctor = (doctors.data?.items ?? []).find(
+    (doctor) => doctor.user_id === currentUserId,
+  );
+  const certifier = certifierId || signedInDoctor?.user_id || "";
 
   const record = useMutation({
     mutationFn: () => {
@@ -166,7 +179,7 @@ function OutcomeDialog({
           // put a death five and a half hours late on the certificate — the
           // same class of bug the queue's `queue_date` had.
           deceased_at: new Date(deceasedAt).toISOString(),
-          death_certified_by_id: certifierId,
+          death_certified_by_id: certifier,
           cause_of_death: cause.trim(),
           death_place: deathPlace.trim() || null,
         });
@@ -192,7 +205,7 @@ function OutcomeDialog({
 
   const ready =
     outcome === "DEATH"
-      ? deceasedAt !== "" && certifierId !== "" && cause.trim().length >= 3
+      ? deceasedAt !== "" && certifier !== "" && cause.trim().length >= 3
       : outcome === "REFERRAL"
         ? facility.trim().length >= 2 && referralReason.trim().length >= 3
         : outcome === "LAMA"
@@ -247,9 +260,16 @@ function OutcomeDialog({
 
               <div className="space-y-1.5">
                 <Label htmlFor="certifier">{t("certifiedBy")}</Label>
-                <Select value={certifierId} onValueChange={(value) => setCertifierId(value ?? "")}>
+                <Select value={certifier} onValueChange={(value) => setCertifierId(value ?? "")}>
                   <SelectTrigger id="certifier" className="h-tap w-full">
-                    <SelectValue placeholder={t("chooseDoctor")} />
+                    {/* By name: a pre-selected doctor would otherwise show as
+                        a raw id until the list has been opened once. */}
+                    <SelectValue>
+                      {(value: string | null) =>
+                        (doctors.data?.items ?? []).find((doctor) => doctor.user_id === value)
+                          ?.display_name ?? t("chooseDoctor")
+                      }
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {(doctors.data?.items ?? []).map((doctor) => (

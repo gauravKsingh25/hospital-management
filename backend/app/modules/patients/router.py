@@ -10,18 +10,21 @@ the audit table outgrowing the data it describes.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Request, status
 from pydantic import Field
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
-from app.core.exceptions import NotFoundError
+from app.core.events import event_bus
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import Page, PageParams, page_params
 from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
 from app.modules.patients import service
-from app.modules.patients.models import Patient
+from app.modules.patients.events import PatientBulkReadDetected
+from app.modules.patients.models import Gender, Patient
 from app.modules.patients.rbac import PatientPermissions
 from app.modules.patients.schemas import (
     AlertCreate,
@@ -32,9 +35,11 @@ from app.modules.patients.schemas import (
     PatientConsentRead,
     PatientDetail,
     PatientIdentifierRead,
+    PatientIdentify,
     PatientMergeRequest,
     PatientRead,
     PatientRegister,
+    PatientSort,
     PatientUpdate,
 )
 
@@ -42,6 +47,7 @@ router = APIRouter(prefix="/patients", tags=["patients"])
 
 CanCreate = Annotated[AuthContext, Depends(require(PatientPermissions.CREATE))]
 CanRead = Annotated[AuthContext, Depends(require(PatientPermissions.READ))]
+CanList = Annotated[AuthContext, Depends(require(PatientPermissions.LIST))]
 CanUpdate = Annotated[AuthContext, Depends(require(PatientPermissions.UPDATE))]
 CanMerge = Annotated[AuthContext, Depends(require(PatientPermissions.MERGE))]
 CanReadIds = Annotated[AuthContext, Depends(require(PatientPermissions.READ_IDENTIFIERS))]
@@ -82,8 +88,61 @@ async def _detail(
         abha_address=patient.abha_address,
         preferred_language=patient.preferred_language,
         deceased_at=patient.deceased_at,
+        identified_at=patient.identified_at,
         alerts=[PatientAlertRead.model_validate(alert) for alert in alerts],
         consents=[PatientConsentRead.model_validate(consent) for consent in consents],
+    )
+
+
+def _shown[View: PatientRead](context: AuthContext, view: View) -> View:
+    """The record as this caller may see it: phones masked without
+    `patient:contact` (SEC-01). Applied at the response, so every route that
+    returns a patient goes through the same rule."""
+    if context.has_permission(PatientPermissions.CONTACT):
+        return view
+    masked: dict[str, str | None] = {"phone": service.mask_phone(view.phone)}
+    if isinstance(view, PatientDetail):
+        masked["alternate_phone"] = service.mask_phone(view.alternate_phone)
+        masked["guardian_phone"] = service.mask_phone(view.guardian_phone)
+    return view.model_copy(update=masked)
+
+
+async def _note_reads(
+    session: SessionDep,
+    request: Request,
+    context: AuthContext,
+    tenant_id: uuid.UUID,
+    patient_ids: list[uuid.UUID],
+) -> None:
+    """Count what this person has read; flag it once past the hourly threshold.
+
+    Call before the request's commit, so the alert's audit row lands with the
+    read that crossed the line.
+    """
+    count = await service.note_patient_reads(
+        hospital_id=tenant_id, user_id=context.user.id, patient_ids=patient_ids
+    )
+    if count is None:
+        return
+    await identity_service.record_audit(
+        session,
+        action="patient.bulk_read_alert",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="user",
+        resource_id=context.user.id,
+        changes={"distinct_patients": count, "window": "1h"},
+        ip_address=await get_client_ip(request),
+    )
+    await event_bus.publish(
+        PatientBulkReadDetected(
+            hospital_id=tenant_id,
+            actor_id=context.user.id,
+            user_id=context.user.id,
+            user_name=context.user.full_name,
+            distinct_patients=count,
+        ),
+        session=session,
     )
 
 
@@ -187,27 +246,75 @@ async def search_patients(
         changes={"query": q, "results": total},
         ip_address=await get_client_ip(request),
     )
+    await _note_reads(session, request, context, tenant_id, [patient.id for patient in patients])
     await session.commit()
     return Page.build(
-        [PatientRead.model_validate(patient) for patient in patients],
+        [_shown(context, PatientRead.model_validate(patient)) for patient in patients],
         total=total,
         params=params,
     )
 
 
-@router.get("", response_model=Page[PatientRead], summary="List patients")
+@router.get("", response_model=Page[PatientRead], summary="The patient directory")
 async def list_patients(
     session: SessionDep,
-    context: CanRead,
+    request: Request,
+    context: CanList,
     tenant_id: TenantId,
     params: Annotated[PageParams, Depends(page_params)],
     include_inactive: bool = False,
+    gender: Gender | None = None,
+    deceased: bool | None = None,
+    # Reception's "needs identification" list (UX-01).
+    unidentified: bool | None = None,
+    registered_from: date | None = None,
+    registered_to: date | None = None,
+    sort: PatientSort = PatientSort.RECENT,
 ) -> Page[PatientRead]:
+    if registered_from and registered_to and registered_from > registered_to:
+        raise ValidationError("The start date is after the end date.", code="invalid_date_range")
     patients, total = await service.list_patients(
-        session, params, hospital_id=tenant_id, include_inactive=include_inactive
+        session,
+        params,
+        hospital_id=tenant_id,
+        include_inactive=include_inactive,
+        gender=gender,
+        deceased=deceased,
+        unidentified=unidentified,
+        registered_from=registered_from,
+        registered_to=registered_to,
+        sort=sort,
     )
+    # SEC-01: one row per page. The directory was the one read of patient data
+    # that left no trace — eight unaudited calls took the whole phone book.
+    filters = {
+        "include_inactive": include_inactive,
+        "gender": gender,
+        "deceased": deceased,
+        "unidentified": unidentified,
+        "registered_from": registered_from.isoformat() if registered_from else None,
+        "registered_to": registered_to.isoformat() if registered_to else None,
+        "sort": sort,
+    }
+    await identity_service.record_audit(
+        session,
+        action="patient.list",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="patient",
+        changes={
+            "filters": {key: value for key, value in filters.items() if value is not None},
+            "offset": params.offset,
+            "limit": params.limit,
+            "returned": len(patients),
+            "total": total,
+        },
+        ip_address=await get_client_ip(request),
+    )
+    await _note_reads(session, request, context, tenant_id, [patient.id for patient in patients])
+    await session.commit()
     return Page.build(
-        [PatientRead.model_validate(patient) for patient in patients],
+        [_shown(context, PatientRead.model_validate(patient)) for patient in patients],
         total=total,
         params=params,
     )
@@ -253,6 +360,8 @@ async def get_patient_by_uhid(
         changes={"uhid": uhid, "found": patient is not None},
         ip_address=await get_client_ip(request),
     )
+    if patient is not None:
+        await _note_reads(session, request, context, tenant_id, [patient.id])
     await session.commit()
 
     if patient is None:
@@ -262,7 +371,7 @@ async def get_patient_by_uhid(
         # are indistinguishable from here, and that is the point.
         raise NotFoundError("No patient with that UHID.", code="patient_not_found")
 
-    return await _detail(session, patient.id)
+    return _shown(context, await _detail(session, patient.id))
 
 
 @router.get("/{patient_id}", response_model=PatientDetail, summary="Get a patient")
@@ -283,8 +392,9 @@ async def get_patient(
         resource_id=patient.id,
         ip_address=await get_client_ip(request),
     )
+    await _note_reads(session, request, context, tenant_id, [patient.id])
     await session.commit()
-    return await _detail(session, patient.id)
+    return _shown(context, await _detail(session, patient.id))
 
 
 @router.patch("/{patient_id}", response_model=PatientDetail, summary="Update a patient")
@@ -456,6 +566,56 @@ async def add_identifier(
     )
     await session.commit()
     return PatientIdentifierRead.model_validate(identifier)
+
+
+# ---------------------------------------------------------------------------
+# Identification of an emergency arrival (UX-01)
+# ---------------------------------------------------------------------------
+@router.post(
+    "/{patient_id}/identify",
+    response_model=PatientDetail,
+    summary="Say who an unidentified emergency patient is",
+)
+async def identify_patient(
+    patient_id: uuid.UUID,
+    payload: PatientIdentify,
+    session: SessionDep,
+    request: Request,
+    context: CanUpdate,
+    tenant_id: TenantId,
+) -> PatientDetail:
+    """Name an `Unknown Male EM-0034` — as a new person, or as somebody
+    already registered.
+
+    `patient:update`, not `patient:merge`, even when it folds an old record in:
+    relatives arrive at reception, often at night with no records officer on
+    duty, and this link is narrow — it only ever takes an unidentified
+    emergency record as the survivor. The general merge still needs
+    `patient:merge`, and refuses unidentified records.
+    """
+    patient = await _load(session, tenant_id, patient_id)
+    tag = patient.emergency_tag
+    linked_uhid: str | None = None
+    if payload.existing_patient_id is not None:
+        linked_uhid = (await _load(session, tenant_id, payload.existing_patient_id)).uhid
+
+    await service.identify_patient(session, patient, payload, hospital_id=tenant_id)
+    await identity_service.record_audit(
+        session,
+        action="patient.identify",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="patient",
+        resource_id=patient.id,
+        changes={
+            "emergency_tag": tag,
+            "identified_as": patient.full_name,
+            "linked_uhid": linked_uhid,
+        },
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+    return await _detail(session, patient.id)
 
 
 # ---------------------------------------------------------------------------

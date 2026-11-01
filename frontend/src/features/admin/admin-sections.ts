@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Bed,
+  Building,
   Building2,
   FlaskConical,
   IndianRupee,
@@ -81,6 +82,13 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     titleKey: "templatesTitle",
     descriptionKey: "templatesCard",
     permissions: ["notification_template:read"],
+  },
+  {
+    href: "/admin/hospital",
+    icon: Building,
+    titleKey: "hospitalTitle",
+    descriptionKey: "hospitalCard",
+    permissions: ["hospital:update"],
   },
 ];
 

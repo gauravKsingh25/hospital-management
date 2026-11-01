@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Printer } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { printInPlace, summaryPath } from "@/features/billing/print/print-in-place";
 import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
@@ -42,6 +44,11 @@ const SECTIONS: Section[] = [
   { key: "diet_and_activity", labelKey: "dietAndActivity", rows: 2 },
   { key: "warning_signs", labelKey: "warningSigns", rows: 3 },
 ];
+
+// The printed page leads with these three; a draft prints once they are filled.
+const PRINT_REQUIRED = SECTIONS.filter((section) =>
+  ["diagnoses", "presenting_complaint", "course_in_hospital"].includes(section.key),
+);
 
 export function SummaryScreen({
   admission,
@@ -196,6 +203,14 @@ function SummaryEditor({
   // a button and being told no.
   const hasDiagnosis = (draft.diagnoses ?? "").trim().length > 0;
 
+  // Printing reads what is saved, so it waits for unsaved edits. A draft also
+  // needs the three sections the printed page is built around; a signed one
+  // prints as signed, since nothing on it can change any more.
+  const saved = (key: keyof DischargeSummary) => ((summary[key] as string | null) ?? "").trim();
+  const dirty = SECTIONS.some((section) => (draft[section.key] ?? "").trim() !== saved(section.key));
+  const missing = frozen ? [] : PRINT_REQUIRED.filter((section) => !saved(section.key));
+  const printable = !dirty && missing.length === 0;
+
   const save = useMutation({
     mutationFn: () =>
       api.patch<DischargeSummary>(`/ipd/summaries/${summary.id}`, {
@@ -229,6 +244,31 @@ function SummaryEditor({
           {t("frozenHint")}
         </p>
       ) : null}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          variant="outline"
+          className="h-tap"
+          disabled={!printable}
+          onClick={() => printInPlace(summaryPath(summary.admission_id))}
+          data-testid="print-summary"
+        >
+          <Printer aria-hidden />
+          {t("print")}
+        </Button>
+        <p
+          className={cn("text-sm", printable ? "text-muted-foreground" : "text-caution-foreground")}
+          data-testid="print-summary-hint"
+        >
+          {dirty
+            ? t("printSaveFirst")
+            : missing.length
+              ? t("printNeeds", {
+                  fields: missing.map((section) => t(section.labelKey as "diagnoses")).join(", "),
+                })
+              : t("printHint")}
+        </p>
+      </div>
 
       <div className="space-y-4 rounded-lg border p-4">
         {SECTIONS.map((section) => (

@@ -7,11 +7,12 @@ import { Activity, Users } from "lucide-react";
 
 import { QueueStatusChip } from "@/components/status-chip";
 import { Button } from "@/components/ui/button";
-import { LinkButton } from "@/components/ui/link-button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PriorityTags } from "@/features/queue/priority-tags";
 import { VitalsDialog } from "@/features/vitals/vitals-dialog";
 import { api } from "@/lib/api/client";
 import { useElapsed } from "@/lib/hooks/use-elapsed";
+import { useWaitFormatter } from "@/lib/hooks/use-wait";
 import { cn } from "@/lib/utils";
 import type { QueueBoardEntry } from "@/types/api";
 
@@ -33,13 +34,10 @@ import type { QueueBoardEntry } from "@/types/api";
  */
 export function LiveQueue({
   mine = false,
-  showConsultLink = false,
   canRecordVitals = false,
 }: {
   /** Use `/queue/mine` — the signed-in doctor's own list. */
   mine?: boolean;
-  /** Render a link into the consultation screen on each row. */
-  showConsultLink?: boolean;
   /** Offer the nurse's one-click vitals action on each row (CLAUDE.md §7b). */
   canRecordVitals?: boolean;
 }) {
@@ -105,7 +103,6 @@ export function LiveQueue({
             <QueueRow
               key={entry.id}
               entry={entry}
-              showConsultLink={showConsultLink}
               canRecordVitals={canRecordVitals}
             />
           ))}
@@ -117,14 +114,13 @@ export function LiveQueue({
 
 function QueueRow({
   entry,
-  showConsultLink,
   canRecordVitals,
 }: {
   entry: QueueBoardEntry;
-  showConsultLink: boolean;
   canRecordVitals: boolean;
 }) {
   const t = useTranslations("queue");
+  const wait = useWaitFormatter();
   const common = useTranslations("common");
   const elapsed = useElapsed(entry.checked_in_at);
   const [recordingVitals, setRecordingVitals] = useState(false);
@@ -133,9 +129,6 @@ function QueueRow({
   // ask — the same threshold the backend's reporting module uses for its
   // doctor-delay alert, so the counter and the dashboard agree.
   const overdue = elapsed >= 30 && entry.status === "WAITING";
-
-  // `priority` is an IntEnum: 10 emergency, 20 priority, 30 normal.
-  const prioritised = entry.priority < 30;
 
   return (
     <tr className={cn(overdue && "bg-caution/10")} data-testid="queue-row">
@@ -150,15 +143,13 @@ function QueueRow({
             : ""}
           {entry.patient_gender ? ` · ${entry.patient_gender[0]}` : ""}
         </div>
-        {prioritised ? (
-          <span className="bg-caution/20 text-caution-foreground mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium">
-            {entry.priority_reason ?? t("runningLate")}
-          </span>
-        ) : null}
+        <div className="mt-1 flex flex-wrap gap-1">
+          <PriorityTags entry={entry} />
+        </div>
       </td>
 
       <td className={cn("tabular px-4 py-3", overdue && "text-caution-foreground font-medium")}>
-        {t("minutes", { count: elapsed })}
+        {wait(elapsed)}
         {overdue ? <div className="text-xs">{t("runningLate")}</div> : null}
       </td>
 
@@ -191,11 +182,6 @@ function QueueRow({
             </>
           ) : null}
 
-          {showConsultLink && entry.encounter_id ? (
-            <LinkButton size="sm" className="h-tap" href={`/consultation/${entry.encounter_id}`}>
-              {entry.status === "IN_CONSULTATION" ? t("resume") : t("startConsultation")}
-            </LinkButton>
-          ) : null}
         </div>
       </td>
     </tr>

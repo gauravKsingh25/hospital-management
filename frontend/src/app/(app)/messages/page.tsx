@@ -30,7 +30,9 @@ export default async function MessagesPage() {
   const t = await getTranslations("messages");
   const user = await getCurrentUser();
 
-  if (!can(user, "notification:read")) return <NoPermission />;
+  // The hospital-wide outbox (SEC-03). One patient's messages stay on their
+  // record for anyone holding `notification:read`.
+  if (!can(user, "notification:read_all")) return <NoPermission />;
 
   const outbox = await serverFetch<Page<MessageSummary>>(
     `/notifications?limit=${BOARD_PAGE_SIZE}`,

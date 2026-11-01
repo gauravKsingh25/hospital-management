@@ -160,6 +160,10 @@ _NURSE = (
     # Nurses perform half the procedures on a ward. Same reasoning as the doctor.
     ClinicalPermissions.ORDER_FULFIL,
     ClinicalPermissions.TEMPLATE_READ,
+    # UX-04: on a night ward the doctor may not be on the floor, and "absconded
+    # at 02:10" is written down when it is noticed, by the nurse in charge.
+    # Death and referral stay with doctors and records.
+    ClinicalPermissions.ENCOUNTER_RECORD_LAMA,
 )
 
 # Reception runs the front of house and never sees the chart.
@@ -204,6 +208,7 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.RECORDS_OFFICER: _RECORDS,
     Roles.CASHIER: _FINANCE,
     Roles.BILLING_STAFF: _FINANCE,
+    Roles.ACCOUNTANT: _FINANCE,
     Roles.LAB_TECH: _TECH,
     Roles.PATHOLOGIST: (
         *_TECH,
@@ -214,10 +219,14 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     # Dispensing safely means seeing why the drug was prescribed — and it is
     # what the Schedule H/H1/X validation in Phase 9 will read.
     Roles.PHARMACIST: (*_TECH, ClinicalPermissions.DIAGNOSIS_READ),
-    # The visit being admitted and what it was for — not the notes.
+    # The visit being admitted and what it was for — not the notes. And the
+    # vitals: the desk takes the patient's set at the counter before they go
+    # up, since the doctor's screen (where a nurse used to) no longer exists.
     Roles.ADMISSION_DESK: (
         ClinicalPermissions.ENCOUNTER_READ,
         ClinicalPermissions.DIAGNOSIS_READ,
+        ClinicalPermissions.VITALS_READ,
+        ClinicalPermissions.VITALS_RECORD,
     ),
     Roles.AUDITOR: _CHART_READ,
 }

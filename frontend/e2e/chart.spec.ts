@@ -1,13 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import {
-  ACCOUNTS,
-  registerAndQueue,
-  releaseTrackedBeds,
-  signIn,
-  signOut,
-  trackBed,
-} from "./support";
+import { ACCOUNTS, admittedPatient, releaseTrackedBeds, signIn, signOut } from "./support";
 
 /**
  * The medication chart, the drug round, and the discharge summary.
@@ -22,41 +15,6 @@ import {
  * refuses it without one; the screen is shaped so the friction lands exactly
  * there and nowhere else — "Given" stays a single tap.
  */
-
-/** Admit a patient and return their name and admission URL. */
-async function admittedPatient(page: Page): Promise<{ name: string; url: string }> {
-  const name = await registerAndQueue(page);
-
-  await signIn(page, ACCOUNTS.doctor);
-  const row = page.getByTestId("queue-row").filter({ hasText: name });
-  await row.getByRole("link", { name: /Start consultation/ }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 45_000 });
-  await page.getByRole("button", { name: "Start consultation" }).click();
-
-  const note = page.getByRole("textbox", { name: "Clinical note" });
-  await expect(note).toBeEnabled({ timeout: 45_000 });
-  await note.fill("Chest infection. For intravenous antibiotics.");
-  await note.press("Control+Enter");
-
-  await page.getByTestId("admit-patient").click();
-  const dialog = page.getByRole("dialog", { name: "Admit to a ward" });
-  // Any free bed in any ward. These tests are about the chart, not about
-  // where the patient sleeps, and pinning them to one ward makes them fail
-  // when that ward fills up — which says nothing about the code under test.
-  //
-  // The label, not the radio: the input is `sr-only` inside it (the accessible
-  // pattern for a button-styled choice), so the label is what a person clicks
-  // and what Playwright can click. Its text is exactly the bed code, which is
-  // what teardown needs to give the bed back.
-  const choice = dialog.getByRole("group", { name: "Choose a bed" }).locator("label").first();
-  const bed = (await choice.innerText()).trim();
-  await choice.click();
-  await dialog.getByRole("button", { name: "Admit", exact: true }).click();
-  await expect(page).toHaveURL(/\/admissions\/[0-9a-f-]{36}/, { timeout: 45_000 });
-
-  trackBed({ url: page.url(), bed });
-  return { name, url: page.url() };
-}
 
 // Six admissions a run, none of which used to end. Beds are a fixed pool, so
 // that is a leak rather than clutter — see `releaseTrackedBeds`.
@@ -206,10 +164,8 @@ test.describe("the discharge summary", () => {
       timeout: 45_000,
     });
 
-    // Compiled, not invented — the doctor's own note is already in it.
-    await expect(page.getByLabel("Course in hospital")).toContainText(
-      "For intravenous antibiotics",
-    );
+    // Compiled, not invented — the drug charted on the ward is already in it.
+    await expect(page.getByLabel("Treatment given")).toContainText("Azithromycin");
 
     // Signing is refused without a diagnosis, and the screen says so rather
     // than letting the doctor press the button and be told no.

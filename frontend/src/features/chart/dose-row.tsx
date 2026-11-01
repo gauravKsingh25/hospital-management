@@ -78,12 +78,20 @@ export function DoseRow({
   // without a refetch.
   const minutesLate = useElapsed(dose.due_at);
   const overdue = dose.status === "DUE" && minutesLate > 0;
+  // SAFE-01. A clash the doctor overrode for is marked and can be given; one
+  // recorded since the drug was prescribed cannot, until it is reviewed —
+  // the server refuses it too, this only says so before the tap.
+  const conflicts = dose.allergy_conflicts ?? [];
+  const allergies = dose.patient_allergies ?? [];
+  const clash = conflicts.length > 0;
+  const blocked = dose.allergy_unreviewed ?? false;
 
   return (
     <li
       className={cn(
         "flex flex-wrap items-center gap-3 rounded-lg border p-3",
         overdue && "border-caution/50 bg-caution/10",
+        clash && dose.status === "DUE" && "border-critical/50 bg-critical/5",
         dose.status === "GIVEN" && "opacity-60",
         dose.patient_is_deceased && "border-foreground/40 bg-foreground/5",
       )}
@@ -98,7 +106,23 @@ export function DoseRow({
         <div className="font-medium">
           {dose.drug_name} <span className="text-muted-foreground">{dose.dose}</span>
           <span className="text-muted-foreground ml-2 text-xs">{dose.route}</span>
+          {clash ? (
+            <span
+              className="bg-critical ml-2 inline-block rounded px-1.5 py-0.5 text-xs font-semibold text-white"
+              data-testid="allergy-clash"
+            >
+              {t("allergyClash", { allergies: conflicts.join(", ") })}
+            </span>
+          ) : null}
         </div>
+
+        {allergies.length > 0 ? (
+          // Every drug allergy, on every dose: the round is where drugs are
+          // given, and the patient page is not where the nurse is standing.
+          <div className="text-critical text-xs font-medium" data-testid="dose-allergies">
+            {t("patientAllergies", { allergies: allergies.join(", ") })}
+          </div>
+        ) : null}
 
         {showPatient ? (
           // The check a nurse makes before giving anything: is this the right
@@ -124,11 +148,16 @@ export function DoseRow({
           {t("patientDeceased")}
         </span>
       ) : dose.status === "DUE" && canAdminister ? (
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {blocked ? (
+            <span className="text-critical max-w-56 text-xs font-medium" data-testid="allergy-hold">
+              {t("allergyUnreviewed")}
+            </span>
+          ) : null}
           <Button
             size="sm"
             className="h-tap"
-            disabled={give.isPending}
+            disabled={give.isPending || blocked}
             onClick={() => give.mutate()}
             data-testid="dose-given"
           >

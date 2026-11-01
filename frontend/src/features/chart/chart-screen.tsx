@@ -25,7 +25,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { formatMoney } from "@/features/billing/money";
 import { DoseRow } from "@/features/chart/dose-row";
+import { MedicinePicker } from "@/features/medicines/medicine-picker";
 import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { cn } from "@/lib/utils";
@@ -35,8 +37,20 @@ import type {
   DrugSchedule,
   MedicationOrder,
   MedicationRoute,
+  MedicineItem,
   Page,
 } from "@/types/api";
+
+/** One allergy named by an `allergy_conflict` refusal (SAFE-01). */
+type AllergyClash = { id: string; label: string; severity: string; detail: string | null };
+
+/**
+ * Bring an element into view once, when it first renders. Module-level so its
+ * identity is stable: React calls a ref callback again whenever it changes.
+ */
+function revealOnMount(node: HTMLElement | null) {
+  node?.scrollIntoView({ block: "nearest" });
+}
 
 const ROUTES: MedicationRoute[] = [
   "ORAL",
@@ -66,6 +80,10 @@ const SCHEDULES: DrugSchedule[] = ["NONE", "H", "H1", "X", "NARCOTIC"];
  * Stopping a drug is a prescriber's act and needs a reason, because a drug
  * that vanishes from a chart with no explanation is one a covering doctor
  * restarts.
+ *
+ * A drug picked from the medicine list is billed per dose given, and the chart
+ * says so beside it — as it says "not billed" beside one typed free-hand, so
+ * the gap is visible to the one person who can close it.
  */
 export function ChartScreen({
   admission,
@@ -73,12 +91,15 @@ export function ChartScreen({
   initialDoses,
   canPrescribe,
   canAdminister,
+  canPickMedicine = false,
 }: {
   admission: Admission;
   initialOrders: Page<MedicationOrder>;
   initialDoses: Page<Dose>;
   canPrescribe: boolean;
   canAdminister: boolean;
+  /** Offer the medicine list when prescribing (`medicine:read`). */
+  canPickMedicine?: boolean;
 }) {
   const t = useTranslations("chart");
   const common = useTranslations("common");
@@ -196,6 +217,20 @@ export function ChartScreen({
                       {order.instructions}
                     </div>
                   ) : null}
+                  {(order.allergy_conflicts ?? []).length > 0 ? (
+                    // SAFE-01: the clash stays visible on the chart for as
+                    // long as the drug is on it, with the doctor's reason.
+                    <div
+                      className="text-critical mt-0.5 text-xs font-medium"
+                      data-testid="order-allergy"
+                    >
+                      {t("allergyClash", { allergies: (order.allergy_conflicts ?? []).join(", ") })}
+                      {order.allergy_override_reason
+                        ? ` · ${t("overrideReason", { reason: order.allergy_override_reason })}`
+                        : ` · ${t("notReviewed")}`}
+                    </div>
+                  ) : null}
+                  <BillingLine order={order} />
                   {!order.is_active ? (
                     <div className="text-muted-foreground mt-0.5 text-xs">
                       {t("stopped", { reason: order.stop_reason ?? "" })}
@@ -244,6 +279,7 @@ export function ChartScreen({
 
       <PrescribeDialog
         admissionId={admission.id}
+        canPickMedicine={canPickMedicine}
         open={prescribing}
         onOpenChange={setPrescribing}
         onDone={refresh}
@@ -266,19 +302,49 @@ export function ChartScreen({
   );
 }
 
+/** "₹85.00 a vial · 1 vial a dose", or "Not billed" for a free-typed drug. */
+function BillingLine({ order }: { order: MedicationOrder }) {
+  const t = useTranslations("chart");
+  if (!order.item_code) {
+    return (
+      <div className="text-muted-foreground mt-0.5 text-xs" data-testid="billing-line">
+        {t("notBilled")}
+      </div>
+    );
+  }
+  const units = Number(order.units_per_dose);
+  return (
+    <div className="text-muted-foreground tabular mt-0.5 text-xs" data-testid="billing-line">
+      {order.unit_price !== null && order.unit_price !== undefined
+        ? t("billedPerDose", {
+            price: formatMoney(order.unit_price),
+            unit: order.unit ?? "",
+            units: Number.isInteger(units) ? String(units) : order.units_per_dose,
+          })
+        : t("billedUnpriced")}
+    </div>
+  );
+}
+
 function PrescribeDialog({
   admissionId,
+  canPickMedicine,
   open,
   onOpenChange,
   onDone,
 }: {
   admissionId: string;
+  canPickMedicine: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDone: () => void;
 }) {
   const t = useTranslations("chart");
   const common = useTranslations("common");
+
+  // Picked from the medicine list: fills the fields in, and bills each dose.
+  const [item, setItem] = useState<MedicineItem | null>(null);
+  const [unitsPerDose, setUnitsPerDose] = useState("1");
 
   const [drug, setDrug] = useState("");
   const [dose, setDose] = useState("");
@@ -289,6 +355,10 @@ function PrescribeDialog({
   const [isPrn, setIsPrn] = useState(false);
   const [prnIndication, setPrnIndication] = useState("");
   const [instructions, setInstructions] = useState("");
+  // SAFE-01: the allergies the server said this drug clashes with, and the
+  // doctor's reason for prescribing it anyway. Null until there is a clash.
+  const [clash, setClash] = useState<AllergyClash[] | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
 
   const prescribe = useMutation({
     mutationFn: () =>
@@ -304,9 +374,16 @@ function PrescribeDialog({
         prn_indication: isPrn ? prnIndication.trim() : null,
         drug_schedule: schedule,
         instructions: instructions.trim() || null,
+        medicine_item_id: item?.id ?? null,
+        units_per_dose: item ? unitsPerDose.trim() || "1" : "1",
+        allergy_override_reason: clash ? overrideReason.trim() : null,
       }),
     onSuccess: (order) => {
       toast.success(t("prescribed", { drug: order.drug_name }));
+      setClash(null);
+      setOverrideReason("");
+      setItem(null);
+      setUnitsPerDose("1");
       setDrug("");
       setDose("");
       setInstructions("");
@@ -314,13 +391,42 @@ function PrescribeDialog({
       onOpenChange(false);
       onDone();
     },
-    onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
+    onError: (error) => {
+      if (isApiError(error) && error.code === "allergy_conflict") {
+        // Not a toast: the doctor has to read it, and answer it, here.
+        setClash((error.details?.allergies as AllergyClash[] | undefined) ?? []);
+        return;
+      }
+      toast.error(isApiError(error) ? error.message : String(error));
+    },
   });
 
+  // Changing the drug answers a different question: the clash shown was for
+  // the old one.
+  const changeDrug = (next: string) => {
+    setDrug(next);
+    setClash(null);
+    setOverrideReason("");
+  };
+
+  const pick = (next: MedicineItem | null) => {
+    setClash(null);
+    setOverrideReason("");
+    setItem(next);
+    if (!next) return;
+    setDrug(next.name);
+    if (next.dose) setDose(next.dose);
+    if (next.route) setRoute(next.route);
+    setSchedule(next.drug_schedule);
+    setUnitsPerDose("1");
+  };
+
+  const unitsValid = !item || (Number(unitsPerDose) > 0 && Number(unitsPerDose) <= 100);
   const valid =
     drug.trim() &&
     dose.trim() &&
     frequency.trim() &&
+    unitsValid &&
     (isPrn ? prnIndication.trim().length > 0 : Number(timesPerDay) >= 1);
 
   return (
@@ -331,16 +437,44 @@ function PrescribeDialog({
           <DialogDescription>{t("prescribeHint")}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 text-left">
+        <div className="max-h-[65vh] space-y-3 overflow-y-auto text-left">
+          {canPickMedicine ? (
+            <div className="space-y-2">
+              <MedicinePicker
+                label={t("fromMedicineList")}
+                value={item}
+                onChange={pick}
+                autoFocus
+              />
+              {item ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="drug-units">
+                    {t("unitsPerDose", { unit: item.unit })}
+                  </Label>
+                  <Input
+                    id="drug-units"
+                    value={unitsPerDose}
+                    onChange={(event) => setUnitsPerDose(event.target.value)}
+                    inputMode="decimal"
+                    className="h-tap tabular w-28"
+                  />
+                  <p className="text-muted-foreground text-xs">{t("unitsPerDoseHint")}</p>
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-xs">{t("freeTypedHint")}</p>
+              )}
+            </div>
+          ) : null}
+
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="drug-name">{t("drug")}</Label>
               <Input
                 id="drug-name"
                 value={drug}
-                onChange={(event) => setDrug(event.target.value)}
+                onChange={(event) => changeDrug(event.target.value)}
                 className="h-tap"
-                autoFocus
+                autoFocus={!canPickMedicine}
               />
             </div>
             <div className="space-y-1.5">
@@ -456,6 +590,37 @@ function PrescribeDialog({
               />
             </div>
           </div>
+
+          {clash ? (
+            <div
+              role="alert"
+              ref={revealOnMount}
+              className="border-critical/50 bg-critical/10 space-y-2 rounded-lg border p-3 text-left"
+              data-testid="allergy-conflict"
+            >
+              <p className="text-critical text-sm font-semibold">{t("allergyConflictTitle")}</p>
+              <ul className="text-critical list-disc pl-5 text-sm">
+                {clash.map((allergy) => (
+                  <li key={allergy.id}>
+                    {allergy.label}
+                    {allergy.severity === "CRITICAL" ? ` · ${t("critical")}` : ""}
+                    {allergy.detail ? ` — ${allergy.detail}` : ""}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-sm">{t("allergyConflictHint")}</p>
+              <Label htmlFor="allergy-override">{t("overrideLabel")}</Label>
+              <Input
+                id="allergy-override"
+                autoFocus
+                value={overrideReason}
+                onChange={(event) => setOverrideReason(event.target.value)}
+                className="h-tap"
+                maxLength={300}
+                placeholder={t("overridePlaceholder")}
+              />
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -463,11 +628,15 @@ function PrescribeDialog({
             {common("cancel")}
           </Button>
           <Button
-            className="h-tap"
-            disabled={!valid || prescribe.isPending}
+            className={cn("h-tap", clash && "bg-critical hover:bg-critical/90 text-white")}
+            // The server wants at least ten characters: a reason, not "ok".
+            disabled={
+              !valid || prescribe.isPending || (clash !== null && overrideReason.trim().length < 10)
+            }
             onClick={() => prescribe.mutate()}
+            data-testid="prescribe-submit"
           >
-            {t("prescribe")}
+            {clash ? t("prescribeAnyway") : t("prescribe")}
           </Button>
         </DialogFooter>
       </DialogContent>

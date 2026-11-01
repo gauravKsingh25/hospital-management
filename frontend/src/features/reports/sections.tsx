@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 
 import { formatMoney } from "@/features/billing/money";
+import { Button } from "@/components/ui/button";
 import { BarList, type BarRow } from "@/features/reports/bar-list";
 import {
   DASH,
@@ -100,9 +102,16 @@ export function TodaySection({ queue }: { queue: QueueSnapshot | null | undefine
 // ---------------------------------------------------------------------------
 export function OccupancySection({ report }: { report: OccupancyReport | null | undefined }) {
   const t = useTranslations("reports");
+  // Folded by default: a hospital with sixty wards listed every one of them,
+  // always, and pushed everything below off the bottom of the page. The four
+  // numbers above answer the usual question; the list is there when asked.
+  const [showWards, setShowWards] = useState(false);
   if (!report) return null;
 
-  const rows: BarRow[] = (report.by_ward ?? []).map((ward) => ({
+  // Fullest first, so the ward with no room for the next admission is the
+  // first row read when the list opens.
+  const wards = [...(report.by_ward ?? [])].sort((a, b) => b.occupancy_rate - a.occupancy_rate);
+  const rows: BarRow[] = wards.map((ward) => ({
     key: ward.ward_id,
     label: ward.ward_name,
     value: ward.occupancy_rate,
@@ -140,10 +149,25 @@ export function OccupancySection({ report }: { report: OccupancyReport | null | 
         />
       </StatGrid>
 
-      {rows.length > 0 ? (
-        <BarList rows={rows} testId="occupancy-by-ward" />
-      ) : (
+      {rows.length === 0 ? (
         <NothingYet message={t("noWards")} />
+      ) : (
+        <div className="space-y-3">
+          <Button
+            variant="outline"
+            className="h-tap"
+            aria-expanded={showWards}
+            aria-controls="report-wards"
+            onClick={() => setShowWards((shown) => !shown)}
+          >
+            {showWards ? t("hideWards") : t("showWards", { count: rows.length })}
+          </Button>
+          {showWards ? (
+            <div id="report-wards">
+              <BarList rows={rows} testId="occupancy-by-ward" />
+            </div>
+          ) : null}
+        </div>
       )}
     </Section>
   );
@@ -376,11 +400,12 @@ export function RevenueSection({ report }: { report: RevenueReport | null | unde
   return (
     <Section id="report-revenue" title={t("revenueTitle")} hint={t("revenueSubtitle")}>
       {/*
-        Three numbers that look interchangeable on a tile and are not. Earned is
-        what was charged, collected is cash that arrived, outstanding is what is
-        owed right now — and outstanding is not windowed at all, because a debt
-        is a fact about today. Each carries its own sentence for the same reason
-        the backend refuses to sum them.
+        Four numbers in plain words, each with the sentence that stops it being
+        misread. Billed is what was charged, received is money that came in,
+        still owed is every unpaid bill however old — it ignores the period,
+        because a debt is a fact about today — and given up is what the
+        hospital let go of, with its three parts named. The total is summed
+        server-side (`given_up`); this screen does no arithmetic on money.
       */}
       <StatGrid>
         <Stat
@@ -397,17 +422,22 @@ export function RevenueSection({ report }: { report: RevenueReport | null | unde
           testId="stat-collected"
         />
         <Stat
+          label={t("givenUp")}
+          value={formatMoney(report.given_up)}
+          hint={t("givenUpHint", {
+            discounts: formatMoney(report.discounts_given),
+            waived: formatMoney(report.waived),
+            refunded: formatMoney(report.reversed_amount),
+          })}
+          tone="muted"
+          testId="stat-given-up"
+        />
+        <Stat
           label={t("outstanding")}
           value={formatMoney(report.outstanding_total)}
           hint={t("outstandingHint")}
           tone="warn"
           testId="stat-outstanding"
-        />
-        <Stat
-          label={t("waivedAndDiscounted")}
-          value={formatMoney(report.waived)}
-          hint={t("discountsHint", { amount: formatMoney(report.discounts_given) })}
-          tone="muted"
         />
       </StatGrid>
 

@@ -70,6 +70,9 @@ desktop.ini
 
 # --- Tooling ---------------------------------------------------------------
 .claude/settings.local.json
+# Generated architecture-audit reports (archify). Regenerable output, and the
+# reports describe the system's weak points — keep them off the remote.
+.archify/
 
 # --- Local data ------------------------------------------------------------
 # DB dumps and local databases may hold patient data; never commit them.
@@ -80,3 +83,9 @@ dump.rdb
 *.sqlite3
 *.dump
 *.sql.gz
+
+# Claude superpowers scratch (brainstorm companion, plan ledgers)
+.superpowers/
+
+# Dev mail outbox (console mailer writes invite emails here)
+.mail-outbox/

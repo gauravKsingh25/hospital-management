@@ -27,6 +27,13 @@ class PatientPermissions:
     MANAGE_IDENTIFIERS = "patient:manage_identifiers"
     MANAGE_ALERTS = "patient:manage_alerts"
     MANAGE_CONSENT = "patient:manage_consent"
+    # SEC-01. Browsing the whole directory is not the same right as opening a
+    # patient: a lab or a cash counter works from the visit in front of it,
+    # and "page through everyone" is how a phone book walks out of the door.
+    LIST = "patient:list"
+    # SEC-01. Seeing a patient's full phone number. Granted to the people who
+    # ring patients; everybody else sees `98•••••670`.
+    CONTACT = "patient:contact"
 
 
 PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
@@ -46,6 +53,8 @@ PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
     PermissionDef(
         PatientPermissions.MANAGE_CONSENT, MODULE, "Capture or withdraw patient consent."
     ),
+    PermissionDef(PatientPermissions.LIST, MODULE, "Browse the whole patient directory."),
+    PermissionDef(PatientPermissions.CONTACT, MODULE, "See patients' full phone numbers."),
 )
 
 
@@ -57,6 +66,8 @@ PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
 _CLINICAL_READ = (
     PatientPermissions.READ,
     PatientPermissions.MANAGE_ALERTS,
+    # Doctors and nurses ring patients and families about results and care.
+    PatientPermissions.CONTACT,
 )
 
 MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
@@ -65,6 +76,8 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.RECEPTIONIST: (
         PatientPermissions.CREATE,
         PatientPermissions.READ,
+        PatientPermissions.LIST,
+        PatientPermissions.CONTACT,
         PatientPermissions.UPDATE,
         PatientPermissions.MANAGE_IDENTIFIERS,
         PatientPermissions.MANAGE_CONSENT,
@@ -76,6 +89,7 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     Roles.RADIOLOGIST: (PatientPermissions.READ,),
     Roles.PHARMACIST: (PatientPermissions.READ,),
     Roles.CASHIER: (PatientPermissions.READ, PatientPermissions.READ_IDENTIFIERS),
+    Roles.ACCOUNTANT: (PatientPermissions.READ, PatientPermissions.READ_IDENTIFIERS),
     Roles.BILLING_STAFF: (
         PatientPermissions.READ,
         PatientPermissions.READ_IDENTIFIERS,
@@ -83,6 +97,8 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     ),
     Roles.RECORDS_OFFICER: (
         PatientPermissions.READ,
+        PatientPermissions.LIST,
+        PatientPermissions.CONTACT,
         PatientPermissions.UPDATE,
         PatientPermissions.MERGE,
         PatientPermissions.READ_IDENTIFIERS,
@@ -91,6 +107,11 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     ),
     # The admission desk completes what the four-field OPD registration left
     # out — address, guardian — because an inpatient stay needs it.
-    Roles.ADMISSION_DESK: (PatientPermissions.READ, PatientPermissions.UPDATE),
+    Roles.ADMISSION_DESK: (
+        PatientPermissions.READ,
+        PatientPermissions.UPDATE,
+        # Rings the family about the bed, the deposit and the discharge.
+        PatientPermissions.CONTACT,
+    ),
     Roles.AUDITOR: (PatientPermissions.READ,),
 }

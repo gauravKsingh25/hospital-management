@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ColumnElement, func, text
+from sqlalchemy import ColumnElement, func, or_, text
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
@@ -41,6 +42,8 @@ from app.modules.clinical.events import OrderCancelled, OrderPlaced, VitalsRecor
 from app.modules.clinical.models import (
     ClinicalNote,
     Diagnosis,
+    DiagnosisCertainty,
+    DiagnosisType,
     Encounter,
     EncounterEvent,
     EncounterSequence,
@@ -57,23 +60,37 @@ from app.modules.clinical.rbac import FULFILMENT_ROLES
 from app.modules.clinical.schemas import (
     DeathRecord,
     DiagnosisCreate,
+    EncounterSummary,
     EncounterUpdate,
     LamaRecord,
     NoteCreate,
     NoteTemplateCreate,
     NoteTemplateUpdate,
     OrderCreate,
+    PatientClinicalSummary,
+    PatientVisit,
+    PatientVisitStats,
     PendingItems,
+    ProblemEntry,
     ReferralRecord,
     SafetyBanner,
+    VisitDiagnosis,
+    VisitOrder,
     VitalsCreate,
+    VitalsRead,
 )
 from app.modules.clinical.state_machine import (
     open_encounter_event,
     transition,
 )
+from app.modules.identity import service as identity_service
 from app.modules.identity.models import User
+from app.modules.identity.rbac import Roles
 from app.modules.patients import service as patients_service
+
+if TYPE_CHECKING:
+    # For an annotation only: patient rows are fetched through `patients_service`.
+    from app.modules.patients.models import Patient
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +98,16 @@ __all__ = [
     "PendingContribution",
     "admit",
     "build_chart",
+    "build_patient_summary",
+    "build_problem_list",
     "cancel_encounter",
     "cancel_order",
     "close_stale_encounters",
     "complete_consultation",
     "complete_order",
     "discharge",
+    "follow_ups_due",
+    "get_certifying_doctor",
     "get_encounter",
     "get_encounter_by_appointment",
     "get_encounter_by_number",
@@ -96,6 +117,7 @@ __all__ = [
     "get_open_encounters_by_patients",
     "get_template",
     "list_encounters",
+    "list_patient_visits",
     "open_encounter",
     "pending_items",
     "place_order",
@@ -107,6 +129,7 @@ __all__ = [
     "reevaluate_closure",
     "register_pending_provider",
     "start_consultation",
+    "visit_stats_for_patients",
     "write_note",
 ]
 
@@ -774,6 +797,73 @@ async def cancel_encounter(
 
 
 # --- the three edge cases (CLAUDE.md §6) -----------------------------------
+# How far before the visit opened an ending may be dated. A patient brought in
+# dead is registered after the death, so the chart opens a little late.
+BEFORE_VISIT_GRACE = timedelta(hours=1)
+
+
+async def get_certifying_doctor(
+    session: AsyncSession, user_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> User:
+    """The doctor named on a death record: active, at this hospital, and a doctor.
+
+    Existence alone let a cashier certify a death (audit BUG-01, 28 Oct 2026).
+    Loaded through identity's service, never by joining its tables (CLAUDE.md §2).
+    """
+    certifier = await identity_service.get_user(session, user_id)
+    if certifier.hospital_id != hospital_id:
+        raise ValidationError(
+            "The certifying doctor must be a clinician at this hospital.",
+            code="certifier_not_found",
+        )
+    if not certifier.is_active:
+        raise ValidationError(
+            "The certifying doctor's account is deactivated.",
+            code="certifier_inactive",
+        )
+    roles = await identity_service.get_roles_for_users(session, [certifier.id])
+    if Roles.DOCTOR not in roles.get(certifier.id, []):
+        raise ValidationError(
+            "Only a doctor can certify a death.",
+            code="certifier_not_a_doctor",
+            details={"certifier_id": str(certifier.id)},
+        )
+    return certifier
+
+
+async def _assert_dated_within_visit(
+    session: AsyncSession, encounter: Encounter, moment: datetime | None, *, field: str
+) -> None:
+    """A visit cannot end before it began, or before the patient was born.
+
+    Audit BUG-02: a death dated 2015 was accepted on a visit opened that day.
+    An estimated birth date ("about 40") is a guess, so only a documented one
+    is held against the record.
+    """
+    if moment is None:
+        return
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    earliest = encounter.started_at - BEFORE_VISIT_GRACE
+    if moment < earliest:
+        raise ValidationError(
+            "This time is before the visit began.",
+            code="recorded_before_visit",
+            details={"field": field, "earliest": earliest.isoformat()},
+        )
+    patient = await patients_service.get_patient(session, encounter.patient_id)
+    if (
+        patient.birth_date is not None
+        and not patient.birth_date_is_estimated
+        and moment.date() < patient.birth_date
+    ):
+        raise ValidationError(
+            "This time is before the patient's date of birth.",
+            code="recorded_before_birth",
+            details={"field": field, "birth_date": patient.birth_date.isoformat()},
+        )
+
+
 async def record_death(
     session: AsyncSession,
     encounter: Encounter,
@@ -789,6 +879,10 @@ async def record_death(
     `requires_settlement=True` — a deceased patient usually still has a bill,
     and it must be settled with the family, not silently written off.
     """
+    await get_certifying_doctor(
+        session, payload.death_certified_by_id, hospital_id=encounter.hospital_id
+    )
+    await _assert_dated_within_visit(session, encounter, payload.deceased_at, field="deceased_at")
     return await transition(
         session,
         encounter,
@@ -811,6 +905,7 @@ async def record_referral(
     *,
     actor: User | None = None,
 ) -> Encounter:
+    await _assert_dated_within_visit(session, encounter, payload.referred_at, field="referred_at")
     return await transition(
         session,
         encounter,
@@ -837,6 +932,7 @@ async def record_lama(
 
     Terminal, and still billable: the patient consumed care before walking out.
     """
+    await _assert_dated_within_visit(session, encounter, payload.lama_at, field="lama_at")
     return await transition(
         session,
         encounter,
@@ -988,13 +1084,28 @@ async def place_order(
             details={"status": encounter.status.value},
         )
 
+    fields = payload.model_dump()
+    if payload.order_type is OrderType.PHARMACY:
+        # SAFE-01: a drug ordered from the OPD is checked like one charted on
+        # the ward. Only a drug — a salicylate *level* is a blood test.
+        clashes = await patients_service.drug_allergy_conflicts(
+            session, encounter.patient_id, [payload.item_name, payload.item_code]
+        )
+        patients_service.assert_no_allergy_clash(
+            clashes, override_reason=payload.allergy_override_reason
+        )
+        if not clashes:
+            fields["allergy_override_reason"] = None
+    else:
+        fields["allergy_override_reason"] = None
+
     order = Order(
         hospital_id=encounter.hospital_id,
         encounter_id=encounter.id,
         patient_id=encounter.patient_id,
         ordered_by_id=actor.id,
         ordered_at=utc_now(),
-        **payload.model_dump(),
+        **fields,
     )
     session.add(order)
     await session.flush()
@@ -1688,8 +1799,404 @@ async def build_chart(session: AsyncSession, encounter: Encounter) -> dict[str, 
 
 
 # ---------------------------------------------------------------------------
+# The patient's history across visits
+# ---------------------------------------------------------------------------
+# A visit that never happened is not part of anyone's history. Cancelled and
+# no-show encounters still appear in the list — reception asks "did they come
+# last Tuesday?" — but they are not counted and get no visit number.
+NOT_ATTENDED: tuple[EncounterStatus, ...] = (EncounterStatus.CANCELLED, EncounterStatus.NO_SHOW)
+
+# Enough for decades of a chronic patient; a bound so one pathological record
+# cannot pull an unbounded result into memory.
+_PROBLEM_SCAN_LIMIT = 1000
+
+
+async def _history_scope(
+    session: AsyncSession, patient_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> tuple[Patient, list[uuid.UUID]]:
+    """The surviving record and every id its history is filed under.
+
+    Through `patients.service`, never a join on that module's table (§2). The
+    tenant check is explicit as well as RLS-backed: another hospital's patient
+    is a 404, not an empty history that confirms the id exists.
+    """
+    patient = await patients_service.get_patient(session, patient_id)
+    if patient.hospital_id != hospital_id:
+        raise NotFoundError("Patient not found.", code="patient_not_found")
+    ids = await patients_service.record_ids(session, patient.id, hospital_id=hospital_id)
+    return patient, ids
+
+
+def _problem_key(diagnosis: Diagnosis) -> str:
+    if diagnosis.code and diagnosis.code.strip():
+        return "code:" + diagnosis.code.strip().upper()
+    return "text:" + " ".join(diagnosis.description.lower().split())
+
+
+def build_problem_list(diagnoses: Sequence[Diagnosis]) -> list[ProblemEntry]:
+    """Fold every diagnosis ever recorded into one line per condition.
+
+    Pure, so the grouping rules are testable without a database. Differentials
+    and ruled-out calls are left out: a problem list is what the patient *has*
+    been treated for, and "query appendicitis — ruled out" on it would be read
+    by the next doctor as history the patient does not have.
+
+    Ordered by most recently recorded, because the condition being treated now
+    is the one the next clinician needs first.
+    """
+    groups: dict[str, list[Diagnosis]] = {}
+    for diagnosis in diagnoses:
+        if diagnosis.diagnosis_type is DiagnosisType.DIFFERENTIAL:
+            continue
+        if diagnosis.certainty is DiagnosisCertainty.RULED_OUT:
+            continue
+        groups.setdefault(_problem_key(diagnosis), []).append(diagnosis)
+
+    problems: list[ProblemEntry] = []
+    for rows in groups.values():
+        rows.sort(key=lambda row: row.diagnosed_at, reverse=True)
+        newest = rows[0]
+        problems.append(
+            ProblemEntry(
+                description=newest.description,
+                # A code added on a later visit names the earlier, uncoded ones too.
+                code=next((row.code for row in rows if row.code), None),
+                diagnosis_type=newest.diagnosis_type,
+                visit_count=len({row.encounter_id for row in rows}),
+                first_recorded_at=rows[-1].diagnosed_at,
+                last_recorded_at=newest.diagnosed_at,
+            )
+        )
+    problems.sort(key=lambda problem: problem.last_recorded_at, reverse=True)
+    return problems
+
+
+async def build_patient_summary(
+    session: AsyncSession,
+    patient_id: uuid.UUID,
+    *,
+    hospital_id: uuid.UUID,
+    today: date,
+    include_problems: bool,
+    include_vitals: bool,
+) -> PatientClinicalSummary:
+    """The head of the patient record: how often, how recently, what for.
+
+    `include_*` are the caller's permissions, decided by the router. Left out
+    means `None` on the wire, which the screen renders as "not shown to your
+    role" rather than "nothing recorded".
+    """
+    patient, ids = await _history_scope(session, patient_id, hospital_id=hospital_id)
+
+    scope: list[ColumnElement[bool]] = [
+        col(Encounter.patient_id).in_(ids),
+        col(Encounter.hospital_id) == hospital_id,
+        col(Encounter.deleted_at).is_(None),
+    ]
+    attended = col(Encounter.status).not_in(NOT_ATTENDED)
+    # An OPD visit that was admitted keeps its OPD type and reads COMPLETED once
+    # discharged, so "was ever admitted" is read off the event trail.
+    admitted_ids = select(EncounterEvent.encounter_id).where(
+        col(EncounterEvent.patient_id).in_(ids),
+        col(EncounterEvent.hospital_id) == hospital_id,
+        col(EncounterEvent.to_status) == EncounterStatus.ADMITTED,
+    )
+    # SQLAlchemy's own `select`: SQLModel's is typed for at most four columns.
+    counts = (
+        await session.execute(
+            sa_select(
+                func.count().filter(attended).label("total"),
+                func.count()
+                .filter(attended, col(Encounter.encounter_type) == EncounterType.OPD)
+                .label("opd"),
+                func.count()
+                .filter(attended, col(Encounter.encounter_type) == EncounterType.EMERGENCY)
+                .label("emergency"),
+                func.count()
+                .filter(
+                    attended,
+                    or_(
+                        col(Encounter.encounter_type) == EncounterType.IPD,
+                        col(Encounter.id).in_(admitted_ids),
+                    ),
+                )
+                .label("inpatient"),
+                func.min(col(Encounter.started_at)).filter(attended).label("first"),
+                func.max(col(Encounter.started_at)).filter(attended).label("last"),
+            ).where(*scope)
+        )
+    ).one()
+
+    open_visit = (
+        (
+            await session.execute(
+                select(Encounter)
+                .where(
+                    *scope,
+                    col(Encounter.status).in_((*ACTIVE_STATUSES, EncounterStatus.ADMITTED)),
+                )
+                .order_by(col(Encounter.started_at).desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    # Never offer a follow-up for someone who has died (CLAUDE.md §6).
+    follow_up = None
+    if not patient.is_deceased:
+        follow_up = (
+            await session.execute(
+                select(col(Encounter.follow_up_date), col(Encounter.id))
+                .where(*scope, col(Encounter.follow_up_date) >= today)
+                .order_by(col(Encounter.follow_up_date), col(Encounter.started_at).desc())
+                .limit(1)
+            )
+        ).first()
+
+    problems: list[ProblemEntry] | None = None
+    if include_problems:
+        diagnoses = (
+            (
+                await session.execute(
+                    select(Diagnosis)
+                    .where(
+                        col(Diagnosis.patient_id).in_(ids),
+                        col(Diagnosis.hospital_id) == hospital_id,
+                        col(Diagnosis.deleted_at).is_(None),
+                    )
+                    .order_by(col(Diagnosis.diagnosed_at).desc())
+                    .limit(_PROBLEM_SCAN_LIMIT)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        problems = build_problem_list(diagnoses)
+
+    latest_vitals: VitalsRead | None = None
+    if include_vitals:
+        vitals = (
+            (
+                await session.execute(
+                    select(Vitals)
+                    .where(
+                        col(Vitals.patient_id).in_(ids),
+                        col(Vitals.hospital_id) == hospital_id,
+                        col(Vitals.deleted_at).is_(None),
+                    )
+                    .order_by(col(Vitals.recorded_at).desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        latest_vitals = VitalsRead.model_validate(vitals) if vitals is not None else None
+
+    return PatientClinicalSummary(
+        patient_id=patient.id,
+        total_visits=counts[0],
+        opd_visits=counts[1],
+        emergency_visits=counts[2],
+        inpatient_visits=counts[3],
+        first_visit_at=counts[4],
+        last_visit_at=counts[5],
+        open_visit=EncounterSummary.model_validate(open_visit) if open_visit else None,
+        next_follow_up_date=follow_up[0] if follow_up else None,
+        next_follow_up_encounter_id=follow_up[1] if follow_up else None,
+        problems=problems,
+        latest_vitals=latest_vitals,
+    )
+
+
+async def list_patient_visits(
+    session: AsyncSession,
+    params: PageParams,
+    patient_id: uuid.UUID,
+    *,
+    hospital_id: uuid.UUID,
+    include_diagnoses: bool,
+    include_orders: bool,
+) -> tuple[list[PatientVisit], int]:
+    """Every visit, newest first, numbered from the patient's first.
+
+    The number is a window over the whole history rather than `total - offset
+    - index`, because cancelled and no-show rows sit in the list without being
+    visits — arithmetic on the page would count them.
+
+    Doctor and department names are the router's to attach (`scheduling` and
+    `tenancy` own them); this returns the ids.
+    """
+    _, ids = await _history_scope(session, patient_id, hospital_id=hospital_id)
+    filters: list[ColumnElement[bool]] = [
+        col(Encounter.patient_id).in_(ids),
+        col(Encounter.hospital_id) == hospital_id,
+        col(Encounter.deleted_at).is_(None),
+    ]
+    attended = col(Encounter.status).not_in(NOT_ATTENDED)
+    visit_number = (
+        func.count()
+        .filter(attended)
+        .over(order_by=(col(Encounter.started_at), col(Encounter.id)), rows=(None, 0))
+    )
+
+    total = (
+        await session.execute(select(func.count()).select_from(Encounter).where(*filters))
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            select(Encounter, visit_number)
+            .where(*filters)
+            .order_by(col(Encounter.started_at).desc(), col(Encounter.id).desc())
+            .limit(params.limit)
+            .offset(params.offset)
+        )
+    ).all()
+    encounter_ids = [encounter.id for encounter, _ in rows]
+
+    diagnoses: dict[uuid.UUID, list[VisitDiagnosis]] = {}
+    if include_diagnoses and encounter_ids:
+        for diagnosis in (
+            (
+                await session.execute(
+                    select(Diagnosis)
+                    .where(
+                        col(Diagnosis.encounter_id).in_(encounter_ids),
+                        col(Diagnosis.deleted_at).is_(None),
+                    )
+                    .order_by(col(Diagnosis.is_primary).desc(), col(Diagnosis.diagnosed_at))
+                )
+            )
+            .scalars()
+            .all()
+        ):
+            diagnoses.setdefault(diagnosis.encounter_id, []).append(
+                VisitDiagnosis.model_validate(diagnosis)
+            )
+
+    orders: dict[uuid.UUID, list[VisitOrder]] = {}
+    if include_orders and encounter_ids:
+        for order in (
+            (
+                await session.execute(
+                    select(Order)
+                    .where(
+                        col(Order.encounter_id).in_(encounter_ids),
+                        col(Order.deleted_at).is_(None),
+                    )
+                    .order_by(col(Order.ordered_at))
+                )
+            )
+            .scalars()
+            .all()
+        ):
+            orders.setdefault(order.encounter_id, []).append(VisitOrder.model_validate(order))
+
+    visits = [
+        PatientVisit(
+            id=encounter.id,
+            encounter_number=encounter.encounter_number,
+            visit_number=number if encounter.status not in NOT_ATTENDED else None,
+            patient_id=encounter.patient_id,
+            encounter_type=encounter.encounter_type,
+            status=encounter.status,
+            chief_complaint=encounter.chief_complaint,
+            started_at=encounter.started_at,
+            consultation_completed_at=encounter.consultation_completed_at,
+            closed_at=encounter.closed_at,
+            doctor_id=encounter.doctor_id,
+            department_id=encounter.department_id,
+            follow_up_date=encounter.follow_up_date,
+            follow_up_instructions=encounter.follow_up_instructions,
+            diagnoses=diagnoses.get(encounter.id, []) if include_diagnoses else None,
+            orders=orders.get(encounter.id, []) if include_orders else None,
+        )
+        for encounter, number in rows
+    ]
+    return visits, total
+
+
+async def visit_stats_for_patients(
+    session: AsyncSession, patient_ids: Collection[uuid.UUID], *, hospital_id: uuid.UUID
+) -> list[PatientVisitStats]:
+    """Visit count and last visit for a page of the patient directory.
+
+    Three queries for the whole page — merge walk, counts, last visit — never
+    one per row. Counts nothing clinical, so it needs only `encounter:read`.
+    """
+    if not patient_ids:
+        return []
+    groups = await patients_service.record_ids_by_patient(
+        session, patient_ids, hospital_id=hospital_id
+    )
+    root_of = {member: root for root, members in groups.items() for member in members}
+    scope: list[ColumnElement[bool]] = [
+        col(Encounter.patient_id).in_(list(root_of)),
+        col(Encounter.hospital_id) == hospital_id,
+        col(Encounter.deleted_at).is_(None),
+        col(Encounter.status).not_in(NOT_ATTENDED),
+    ]
+
+    totals: dict[uuid.UUID, int] = {}
+    for member, count in (
+        await session.execute(
+            select(col(Encounter.patient_id), func.count())
+            .where(*scope)
+            .group_by(col(Encounter.patient_id))
+        )
+    ).all():
+        root = root_of[member]
+        totals[root] = totals.get(root, 0) + count
+
+    last: dict[uuid.UUID, tuple[datetime, EncounterStatus]] = {}
+    for member, started_at, visit_status in (
+        await session.execute(
+            select(col(Encounter.patient_id), col(Encounter.started_at), col(Encounter.status))
+            .where(*scope)
+            .distinct(col(Encounter.patient_id))
+            .order_by(col(Encounter.patient_id), col(Encounter.started_at).desc())
+        )
+    ).all():
+        root = root_of[member]
+        if root not in last or started_at > last[root][0]:
+            last[root] = (started_at, visit_status)
+
+    return [
+        PatientVisitStats(
+            patient_id=root,
+            total_visits=totals.get(root, 0),
+            last_visit_at=last[root][0] if root in last else None,
+            last_visit_status=last[root][1] if root in last else None,
+        )
+        for root in groups
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Auto-close safety net (CLAUDE.md §6)
 # ---------------------------------------------------------------------------
+async def follow_ups_due(
+    session: AsyncSession, *, hospital_id: uuid.UUID, on: date
+) -> list[Encounter]:
+    """Completed visits whose doctor asked to see the patient again on `on`.
+
+    COMPLETED only, the same gate as the closing message: a patient who left
+    against advice or was referred elsewhere has no follow-up here to keep, and a
+    deceased patient's visit never ends as COMPLETED.
+    """
+    rows = await session.execute(
+        select(Encounter).where(
+            col(Encounter.hospital_id) == hospital_id,
+            col(Encounter.status) == EncounterStatus.COMPLETED,
+            col(Encounter.follow_up_date) == on,
+            col(Encounter.deleted_at).is_(None),
+        )
+    )
+    return list(rows.scalars().all())
+
+
 async def close_stale_encounters(
     session: AsyncSession,
     *,

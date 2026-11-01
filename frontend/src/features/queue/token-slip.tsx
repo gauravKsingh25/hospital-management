@@ -6,7 +6,6 @@ import { Printer, UserPlus } from "lucide-react";
 
 import { PatientQr } from "@/components/patient/qr-code";
 import { Button } from "@/components/ui/button";
-import { LinkButton } from "@/components/ui/link-button";
 import type { QuickOpdResult } from "@/types/api";
 
 /**
@@ -91,7 +90,7 @@ export function TokenSlip({
             against a border loses its quiet zone to the paper edge. */}
         <div className="mt-5 flex flex-col items-center gap-1">
           <PatientQr uhid={result.uhid} />
-          <p className="text-muted-foreground text-[10px]">{t("scanHint")}</p>
+          <p className="text-muted-foreground text-xs">{t("scanHint")}</p>
         </div>
       </div>
 
@@ -108,11 +107,6 @@ export function TokenSlip({
         </Button>
       </div>
 
-      <div className="text-center no-print">
-        <LinkButton variant="link" size="sm" href={`/consultation/${result.encounter_id}`}>
-          {t("openChart")}
-        </LinkButton>
-      </div>
     </div>
   );
 }

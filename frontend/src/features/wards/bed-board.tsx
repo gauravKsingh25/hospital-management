@@ -220,7 +220,7 @@ function BedTile({
     >
       <div className="flex items-baseline justify-between gap-2">
         <span className="tabular text-sm font-semibold">{bed.code}</span>
-        <span className="text-[10px] font-medium uppercase">
+        <span className="text-xs font-medium uppercase">
           {t(`status${bed.status}` as "statusAVAILABLE")}
         </span>
       </div>
@@ -233,7 +233,7 @@ function BedTile({
           className="mt-1.5 block hover:underline"
         >
           <span className="block truncate text-sm font-medium">{bed.patient_name}</span>
-          <span className="text-muted-foreground tabular block truncate text-[11px]">
+          <span className="text-muted-foreground tabular block truncate text-xs">
             {bed.uhid}
           </span>
         </Link>

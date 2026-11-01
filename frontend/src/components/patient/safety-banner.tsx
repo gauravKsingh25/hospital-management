@@ -101,16 +101,19 @@ export function SafetyBanner({
 export function PatientIdentityStrip({
   banner,
   className,
+  as: Heading = "h2",
 }: {
   banner: SafetyBannerData;
   className?: string;
+  /** `h1` where the patient is the page's subject (the stay screen). */
+  as?: "h1" | "h2";
 }) {
   const t = useTranslations("patient");
   const common = useTranslations("common");
 
   return (
     <div className={cn("flex flex-wrap items-baseline gap-x-4 gap-y-1", className)}>
-      <h2 className="text-xl font-semibold tracking-tight">{banner.full_name}</h2>
+      <Heading className="text-xl font-semibold tracking-tight">{banner.full_name}</Heading>
       <span className="text-muted-foreground tabular text-sm">
         {t("uhid")} {banner.uhid}
       </span>

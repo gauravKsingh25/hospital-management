@@ -50,9 +50,15 @@ __all__ = [
     "OrderCancelRequest",
     "OrderCreate",
     "OrderRead",
+    "PatientClinicalSummary",
+    "PatientVisit",
+    "PatientVisitStats",
     "PendingItems",
+    "ProblemEntry",
     "ReferralRecord",
     "SafetyBanner",
+    "VisitDiagnosis",
+    "VisitOrder",
     "VitalsCreate",
     "VitalsRead",
 ]
@@ -79,6 +85,9 @@ class EncounterOpen(BaseModel):
 
 
 class EncounterUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     doctor_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
     chief_complaint: Annotated[str | None, Field(max_length=500)] = None
@@ -327,6 +336,9 @@ class NoteTemplateCreate(BaseModel):
 
 
 class NoteTemplateUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     title: Annotated[str | None, Field(min_length=1, max_length=120)] = None
     body: Annotated[str | None, Field(min_length=1)] = None
     note_type: NoteType | None = None
@@ -389,6 +401,9 @@ class OrderCreate(BaseModel):
     # PENDING_CLEARANCE, so reception stops guessing.
     review_in_visit: bool = False
     blocks_closure: bool = True
+    # SAFE-01. Read only for a PHARMACY order that clashes with a recorded
+    # drug allergy: the prescriber's reason for ordering it anyway.
+    allergy_override_reason: Annotated[str | None, Field(min_length=10, max_length=300)] = None
 
 
 class OrderRead(BaseModel):
@@ -411,6 +426,7 @@ class OrderRead(BaseModel):
     completed_at: datetime | None
     cancelled_at: datetime | None
     cancellation_reason: str | None
+    allergy_override_reason: str | None = None
 
 
 class OrderCancelRequest(BaseModel):
@@ -463,3 +479,106 @@ class EncounterChart(BaseModel):
     diagnoses: list[DiagnosisRead]
     orders: list[OrderRead]
     pending: PendingItems
+
+
+# ---------------------------------------------------------------------------
+# The patient's history across visits
+# ---------------------------------------------------------------------------
+# The patient record answers two questions a single visit cannot: "how many
+# times has this person been here?" and "what have they been treated for?".
+#
+# Clinical parts are nullable and the null is meaningful: `None` means the
+# caller's role may not see that part (reception does not read diagnoses —
+# see `rbac._RECEPTION`), while an empty list means there is nothing recorded.
+# The screen labels the two differently, so a receptionist is never told a
+# diabetic has "no diagnoses".
+class VisitDiagnosis(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    description: str
+    code: str | None
+    diagnosis_type: DiagnosisType
+    is_primary: bool
+
+
+class VisitOrder(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    order_type: OrderType
+    item_name: str
+    status: OrderStatus
+
+
+class PatientVisit(BaseModel):
+    """One visit as the history shows it: who, where, why, and what for."""
+
+    id: uuid.UUID
+    encounter_number: str
+    # 1 for the patient's first visit here; None for a cancelled or no-show
+    # booking, which is listed but was never a visit. Counted across merged
+    # records, so it agrees with `PatientClinicalSummary.total_visits`.
+    visit_number: int | None
+    patient_id: uuid.UUID
+    encounter_type: EncounterType
+    status: EncounterStatus
+    chief_complaint: str | None
+    started_at: datetime
+    consultation_completed_at: datetime | None
+    closed_at: datetime | None
+
+    doctor_id: uuid.UUID | None
+    doctor_name: str | None = None
+    department_id: uuid.UUID | None
+    department_name: str | None = None
+
+    follow_up_date: date | None
+    follow_up_instructions: str | None
+
+    diagnoses: list[VisitDiagnosis] | None = None
+    orders: list[VisitOrder] | None = None
+
+
+class ProblemEntry(BaseModel):
+    """One condition across every visit it was recorded on.
+
+    Grouped by ICD code where there is one, otherwise by the wording — the
+    same "Type 2 diabetes" written on six visits is one problem seen six times,
+    not six problems.
+    """
+
+    description: str
+    code: str | None
+    # The most recent call: a PROVISIONAL that later became FINAL reads FINAL.
+    diagnosis_type: DiagnosisType
+    visit_count: int
+    first_recorded_at: datetime
+    last_recorded_at: datetime
+
+
+class PatientClinicalSummary(BaseModel):
+    """The top of the patient record, in one call."""
+
+    patient_id: uuid.UUID
+    total_visits: int
+    opd_visits: int
+    emergency_visits: int
+    inpatient_visits: int
+    first_visit_at: datetime | None
+    last_visit_at: datetime | None
+
+    # The visit still in progress, if any — what reception asks first.
+    open_visit: EncounterSummary | None
+    next_follow_up_date: date | None
+    next_follow_up_encounter_id: uuid.UUID | None
+
+    problems: list[ProblemEntry] | None = None
+    latest_vitals: VitalsRead | None = None
+
+
+class PatientVisitStats(BaseModel):
+    """The directory row's visit columns — counts only, nothing clinical."""
+
+    patient_id: uuid.UUID
+    total_visits: int
+    last_visit_at: datetime | None
+    last_visit_status: EncounterStatus | None

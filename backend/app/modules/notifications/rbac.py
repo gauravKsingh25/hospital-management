@@ -30,6 +30,10 @@ MODULE: Final[str] = "notifications"
 
 class NotificationPermissions:
     NOTIFICATION_READ = "notification:read"
+    # SEC-03. The hospital-wide outbox: every message to every patient. Read
+    # alone lets a role see one patient's messages, from that patient; this is
+    # for the desks that answer "I never got the message" for anybody.
+    OUTBOX_READ = "notification:read_all"
     # Compose and send a message by hand, and retry one that failed.
     NOTIFICATION_SEND = "notification:send"
     NOTIFICATION_CANCEL = "notification:cancel"
@@ -45,6 +49,9 @@ class NotificationPermissions:
 PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
     PermissionDef(
         NotificationPermissions.NOTIFICATION_READ, MODULE, "View messages sent to patients."
+    ),
+    PermissionDef(
+        NotificationPermissions.OUTBOX_READ, MODULE, "View every message the hospital has sent."
     ),
     PermissionDef(
         NotificationPermissions.NOTIFICATION_SEND, MODULE, "Send or retry a message by hand."
@@ -66,6 +73,7 @@ _ALL = tuple(perm.code for perm in PERMISSION_CATALOGUE)
 
 _READ = (
     NotificationPermissions.NOTIFICATION_READ,
+    NotificationPermissions.OUTBOX_READ,
     NotificationPermissions.TEMPLATE_READ,
     NotificationPermissions.SUPPRESSION_READ,
 )
@@ -110,6 +118,7 @@ MODULE_ROLE_PERMISSIONS: Final[dict[str, tuple[str, ...]]] = {
     # stopped receiving messages.
     Roles.RECORDS_OFFICER: (
         NotificationPermissions.NOTIFICATION_READ,
+        NotificationPermissions.OUTBOX_READ,
         NotificationPermissions.SUPPRESSION_READ,
         NotificationPermissions.SUPPRESSION_MANAGE,
     ),

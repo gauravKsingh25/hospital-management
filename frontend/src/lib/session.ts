@@ -99,6 +99,24 @@ export function writeSession(store: MutableCookies, session: Session): void {
   });
 }
 
+/**
+ * Whose screen the idle lock is holding (SEC-04): only the email, enough for
+ * the lock screen to ask for that person's password. No longer than a shift.
+ */
+export const LOCK_COOKIE_NAME = "hms_locked";
+export const LOCK_MAX_AGE_SECONDS = 12 * 60 * 60;
+
+/**
+ * SEC-05. Between the password and the authenticator code: the challenge the
+ * API issued, which step comes next, and where the person was going. Five
+ * minutes, the challenge's own lifetime.
+ */
+export const TWO_FACTOR_COOKIE_NAME = "hms_2fa";
+export const TWO_FACTOR_MAX_AGE_SECONDS = 5 * 60;
+/** SEC-05. "Remember this device": skips the code here, for twelve hours. */
+export const DEVICE_COOKIE_NAME = "hms_device";
+export const DEVICE_MAX_AGE_SECONDS = 12 * 60 * 60;
+
 export function clearSession(store: MutableCookies): void {
   store.delete(SESSION_COOKIE_NAME);
 }

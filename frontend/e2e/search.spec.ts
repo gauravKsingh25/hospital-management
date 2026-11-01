@@ -44,12 +44,12 @@ test.describe("the universal search box", () => {
      * for — which only a server-side composition can do.
      */
     await signIn(page, ACCOUNTS.reception);
-    await page.goto("/queue");
+    await page.goto("/reception");
 
     const firstRow = page.getByTestId("queue-row").first();
     await expect(firstRow).toBeVisible({ timeout: 45_000 });
-    const token = (await firstRow.locator("td").first().innerText()).trim();
-    const patientName = (await firstRow.locator("td").nth(1).innerText()).split("\n")[0].trim();
+    const token = (await firstRow.getByTestId("token").innerText()).replace(/\D/g, "");
+    const patientName = (await firstRow.getByTestId("patient-name").innerText()).trim();
 
     await page.keyboard.press("F3");
     await page.getByRole("combobox").fill(token);
@@ -59,7 +59,7 @@ test.describe("the universal search box", () => {
     await expect(hit).toContainText("Token");
 
     await hit.click();
-    await expect(page).toHaveURL(/\/consultation\//, { timeout: 45_000 });
+    await expect(page).toHaveURL(/\/patients\//, { timeout: 45_000 });
   });
 
   test("a doctor's name finds the doctor", async ({ page }) => {

@@ -312,6 +312,36 @@ class TestTheLabDay:
         assert response.status_code == 200, response.text
         assert response.json()["items"] == []
 
+    async def test_the_worklist_separates_coded_orders_from_ones_needing_mapping(
+        self, api: AsyncClient, doctor_token: str, tech_token: str, encounter_id: str, cbc_id: str
+    ) -> None:
+        await api.post(f"{ENCOUNTERS}/{encounter_id}/start", headers=auth(doctor_token))
+        for body in (
+            {"order_type": "LAB", "item_name": "Complete Blood Count", "item_code": "CBC"},
+            {"order_type": "LAB", "item_name": "Sugar test"},
+        ):
+            placed = await api.post(
+                f"{ENCOUNTERS}/{encounter_id}/orders", json=body, headers=auth(doctor_token)
+            )
+            assert placed.status_code == 201, placed.text
+
+        response = await api.get("/api/v1/diagnostics/worklist", headers=auth(tech_token))
+        assert response.status_code == 200, response.text
+        rows = {row["item_name"]: row for row in response.json()["items"]}
+
+        coded = rows["Complete Blood Count"]
+        assert coded["stage"] == "AWAITING_ACCESSION"
+        assert coded["matched_catalogue_item_id"] == cbc_id
+        assert rows["Sugar test"]["stage"] == "NEEDS_MAPPING"
+        assert rows["Sugar test"]["matched_catalogue_item_id"] is None
+
+        # The coded one goes onto the bench in one call, naming no test.
+        accessioned = await api.post(
+            REPORTS, json={"order_id": coded["order_id"]}, headers=auth(tech_token)
+        )
+        assert accessioned.status_code == 201, accessioned.text
+        assert accessioned.json()["catalogue_item_id"] == cbc_id
+
     async def test_the_phlebotomy_round_lists_uncollected_samples(
         self, api: AsyncClient, doctor_token: str, tech_token: str, encounter_id: str, cbc_id: str
     ) -> None:

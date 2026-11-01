@@ -98,6 +98,7 @@ __all__ = [
     "list_reports",
     "list_specimens",
     "list_worklist_orders",
+    "match_catalogue",
     "receive_specimen",
     "reject_specimen",
     "release_preliminary",
@@ -474,7 +475,18 @@ async def accession_order(
             f"This order is already {order.status.value.lower()}.", code="order_closed"
         )
 
-    item = await get_catalogue_item(session, payload.catalogue_item_id, hospital_id=hospital_id)
+    if payload.catalogue_item_id is not None:
+        item = await get_catalogue_item(session, payload.catalogue_item_id, hospital_id=hospital_id)
+    else:
+        matched = (await match_catalogue(session, [order], hospital_id=hospital_id)).get(order.id)
+        if matched is None:
+            raise ValidationError(
+                f"'{order.item_name}' does not name a test in the catalogue. "
+                "Choose which test it means.",
+                code="needs_mapping",
+                details={"item_name": order.item_name, "item_code": order.item_code},
+            )
+        item = matched
     expected = _ORDER_TYPE_FOR[item.discipline]
     if expected is not order.order_type:
         raise ValidationError(
@@ -843,8 +855,49 @@ async def get_specimens_by_orders(
     return {specimen.order_id: specimen for specimen in rows}
 
 
+async def match_catalogue(
+    session: AsyncSession, orders: list[Order], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, TestCatalogueItem]:
+    """The catalogue test each order's own code names, keyed by order id.
+
+    One query for a whole worklist page. Only an active test of the order's own
+    discipline counts: a retired test must not be accessionable, and a scan code
+    on a lab order is a mistake to be looked at, not a match. Orders with no
+    code, or a code the catalogue does not have, are simply absent.
+    """
+    codes = {order.item_code.strip().upper() for order in orders if order.item_code}
+    if not codes:
+        return {}
+    items = (
+        (
+            await session.execute(
+                select(TestCatalogueItem).where(
+                    col(TestCatalogueItem.hospital_id) == hospital_id,
+                    col(TestCatalogueItem.code).in_(codes),
+                    col(TestCatalogueItem.is_active).is_(True),
+                    col(TestCatalogueItem.deleted_at).is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_code = {item.code: item for item in items}
+
+    matches: dict[uuid.UUID, TestCatalogueItem] = {}
+    for order in orders:
+        item = by_code.get(order.item_code.strip().upper()) if order.item_code else None
+        if item is not None and _ORDER_TYPE_FOR[item.discipline] is order.order_type:
+            matches[order.id] = item
+    return matches
+
+
 def worklist_stage(
-    order: Order, report: DiagnosticReport | None, specimen: Specimen | None
+    order: Order,
+    report: DiagnosticReport | None,
+    specimen: Specimen | None,
+    *,
+    matched: bool = True,
 ) -> WorklistStage:
     """What this request is waiting for — one answer, from three records.
 
@@ -857,7 +910,9 @@ def worklist_stage(
     reinvent it slightly differently.
     """
     if report is None:
-        return WorklistStage.AWAITING_ACCESSION
+        # Not yet on the bench. Whether it can go straight on, or first needs
+        # the lab to say which test a free-text request means.
+        return WorklistStage.AWAITING_ACCESSION if matched else WorklistStage.NEEDS_MAPPING
 
     # The sample gate comes first, and it outranks the report's own status: a
     # report sits at `REGISTERED` from the moment it is accessioned, long before

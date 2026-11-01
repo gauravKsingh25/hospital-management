@@ -4,22 +4,28 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
+from redis.exceptions import RedisError
 from sqlalchemy import ColumnElement, case, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.ids import new_id
 from app.core.models import utc_now
 from app.core.pagination import PageParams
+from app.core.redis import get_redis
+from app.modules.patients.allergy import allergy_matches
 from app.modules.patients.matching import normalize_name, normalize_phone
 from app.modules.patients.models import (
     AlertSeverity,
+    AlertType,
     ConsentType,
+    Gender,
     Patient,
     PatientAlert,
     PatientConsent,
@@ -30,7 +36,9 @@ from app.modules.patients.schemas import (
     AlertCreate,
     ConsentCreate,
     IdentifierCreate,
+    PatientIdentify,
     PatientRegister,
+    PatientSort,
     PatientUpdate,
 )
 from app.modules.tenancy import service as tenancy_service
@@ -40,17 +48,29 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DuplicateMatch",
     "add_identifier",
+    "allergy_details",
+    "allocate_emergency_tag",
     "allocate_uhid",
+    "assert_no_allergy_clash",
+    "clashing_allergies",
+    "drug_allergies_by_patient",
+    "drug_allergy_conflicts",
     "find_duplicates",
     "get_patient",
     "get_patient_alerts",
     "get_patient_by_uhid",
     "get_patients_by_ids",
+    "identify_patient",
     "list_patients",
+    "mask_phone",
     "merge_patients",
+    "note_patient_reads",
     "record_alert",
     "record_consent",
+    "record_ids",
+    "record_ids_by_patient",
     "register_patient",
+    "register_unidentified",
     "resolve_alert",
     "search_patients",
     "update_patient",
@@ -62,6 +82,12 @@ __all__ = [
 # missed duplicate costs a split medical history.
 NAME_SIMILARITY_THRESHOLD = 0.35
 MAX_DUPLICATE_CANDIDATES = 10
+
+UHID_SERIES = "UHID"
+EMERGENCY_SERIES = "EM"
+
+# What an unidentified patient is called until somebody knows better.
+_UNKNOWN_NAME = {Gender.MALE: "Unknown Male", Gender.FEMALE: "Unknown Female"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +118,25 @@ async def allocate_uhid(session: AsyncSession, hospital_id: uuid.UUID) -> str:
     41 go?".
     """
     hospital = await tenancy_service.get_hospital(session, hospital_id)
+    year, number = await _next_in_series(session, hospital_id, UHID_SERIES)
+    return f"{hospital.code}-{year % 100:02d}-{number:06d}"
+
+
+async def allocate_emergency_tag(session: AsyncSession, hospital_id: uuid.UUID) -> str:
+    """The next `EM-0034` for an unidentified arrival.
+
+    Its own series, so tagging an unknown patient does not use up a UHID
+    number (the patient still gets a UHID as well). Restarts each year like the
+    UHID: the tag is a name casualty shouts across a room, so it stays short.
+    """
+    _, number = await _next_in_series(session, hospital_id, EMERGENCY_SERIES)
+    return f"EM-{number:04d}"
+
+
+async def _next_in_series(
+    session: AsyncSession, hospital_id: uuid.UUID, series: str
+) -> tuple[int, int]:
+    """Take the next number in one of the hospital's counters: (year, number)."""
     year = datetime.now(UTC).year
 
     # Ensure the counter row exists before locking it. `ON CONFLICT DO NOTHING`
@@ -107,12 +152,12 @@ async def allocate_uhid(session: AsyncSession, hospital_id: uuid.UUID) -> str:
         text(
             """
             INSERT INTO uhid_sequences
-                (id, hospital_id, year, last_value, created_at, updated_at)
-            VALUES (:id, :hospital_id, :year, 0, now(), now())
-            ON CONFLICT (hospital_id, year) DO NOTHING
+                (id, hospital_id, series, year, last_value, created_at, updated_at)
+            VALUES (:id, :hospital_id, :series, :year, 0, now(), now())
+            ON CONFLICT (hospital_id, series, year) DO NOTHING
             """
         ),
-        {"id": new_id(), "hospital_id": hospital_id, "year": year},
+        {"id": new_id(), "hospital_id": hospital_id, "series": series, "year": year},
     )
 
     # Now the row is guaranteed to exist; take the lock for the rest of the
@@ -122,7 +167,11 @@ async def allocate_uhid(session: AsyncSession, hospital_id: uuid.UUID) -> str:
         (
             await session.execute(
                 select(UhidSequence)
-                .where(UhidSequence.hospital_id == hospital_id, UhidSequence.year == year)
+                .where(
+                    UhidSequence.hospital_id == hospital_id,
+                    UhidSequence.series == series,
+                    UhidSequence.year == year,
+                )
                 .with_for_update()
             )
         )
@@ -133,8 +182,7 @@ async def allocate_uhid(session: AsyncSession, hospital_id: uuid.UUID) -> str:
     row.last_value += 1
     session.add(row)
     await session.flush()
-
-    return f"{hospital.code}-{year % 100:02d}-{row.last_value:06d}"
+    return year, row.last_value
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +215,10 @@ async def find_duplicates(
         col(Patient.hospital_id) == hospital_id,
         col(Patient.deleted_at).is_(None),
         col(Patient.merged_into_id).is_(None),
+        # An unidentified record has a placeholder name and no number. It is
+        # never "this person again" — it is somebody waiting to be named, and
+        # is identified from its own screen rather than matched here.
+        col(Patient.is_unidentified).is_(False),
     ]
     if exclude_id is not None:
         filters.append(col(Patient.id) != exclude_id)
@@ -446,13 +498,77 @@ async def get_patients_by_ids(
     return {patient.id: patient for patient in rows}
 
 
+# A merge chain longer than this is a data problem, not a history to walk.
+_MAX_MERGE_DEPTH = 10
+
+
+async def record_ids_by_patient(
+    session: AsyncSession, patient_ids: Collection[uuid.UUID], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """For each record, every patient id whose history belongs to it — itself first.
+
+    A merge keeps the duplicate row and points it at the survivor (see
+    `merge_patients`), so the duplicate's visits, reports and invoices still
+    carry the duplicate's id. A history that read only the survivor's id would
+    quietly lose them — the split medical record a merge exists to repair.
+
+    Walked level by level because merges chain: B folded into A, then A into C,
+    leaves B's visits two pointers from C. One query per level for the whole
+    batch, and real chains are one level deep.
+    """
+    groups: dict[uuid.UUID, list[uuid.UUID]] = {pid: [pid] for pid in patient_ids}
+    root_of: dict[uuid.UUID, uuid.UUID] = {pid: pid for pid in patient_ids}
+    frontier = list(groups)
+    for _ in range(_MAX_MERGE_DEPTH):
+        if not frontier:
+            break
+        rows = (
+            await session.execute(
+                select(Patient.id, Patient.merged_into_id).where(
+                    col(Patient.merged_into_id).in_(frontier),
+                    col(Patient.hospital_id) == hospital_id,
+                    col(Patient.deleted_at).is_(None),
+                )
+            )
+        ).all()
+        frontier = []
+        for child, parent in rows:
+            if child in root_of or parent is None:
+                continue
+            root = root_of[parent]
+            root_of[child] = root
+            groups[root].append(child)
+            frontier.append(child)
+    return groups
+
+
+async def record_ids(
+    session: AsyncSession, patient_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Every patient id whose history belongs to this one record, itself first."""
+    return (await record_ids_by_patient(session, [patient_id], hospital_id=hospital_id))[patient_id]
+
+
 async def list_patients(
     session: AsyncSession,
     params: PageParams,
     *,
     hospital_id: uuid.UUID,
     include_inactive: bool = False,
+    gender: Gender | None = None,
+    deceased: bool | None = None,
+    unidentified: bool | None = None,
+    registered_from: date | None = None,
+    registered_to: date | None = None,
+    sort: PatientSort = PatientSort.RECENT,
 ) -> tuple[list[Patient], int]:
+    """The patient directory: every record the hospital holds, filterable.
+
+    Registration dates are the hospital's calendar days, not UTC ones — "who
+    registered on the 5th" must not lose the evening after 18:30 IST to the
+    6th. Merged duplicates never appear: the surviving record carries their
+    history, and listing both is the split record the merge removed.
+    """
     filters: list[ColumnElement[bool]] = [
         col(Patient.hospital_id) == hospital_id,
         col(Patient.deleted_at).is_(None),
@@ -460,6 +576,29 @@ async def list_patients(
     ]
     if not include_inactive:
         filters.append(col(Patient.is_active).is_(True))
+    if gender is not None:
+        filters.append(col(Patient.gender) == gender)
+    if deceased is not None:
+        filters.append(col(Patient.is_deceased).is_(deceased))
+    if unidentified is not None:
+        filters.append(col(Patient.is_unidentified).is_(unidentified))
+    if registered_from is not None or registered_to is not None:
+        zone = await tenancy_service.local_zone(session, hospital_id)
+        if registered_from is not None:
+            filters.append(
+                col(Patient.registered_at) >= datetime.combine(registered_from, time.min, zone)
+            )
+        if registered_to is not None:
+            next_day = datetime.combine(registered_to + timedelta(days=1), time.min, zone)
+            filters.append(col(Patient.registered_at) < next_day)
+
+    # A unique tiebreaker on every ordering, so paging never skips or repeats
+    # a row that shares a name or a registration instant with its neighbour.
+    order_by = {
+        PatientSort.RECENT: (col(Patient.registered_at).desc(), col(Patient.id)),
+        PatientSort.NAME: (func.lower(col(Patient.full_name)), col(Patient.id)),
+        PatientSort.UHID: (col(Patient.uhid), col(Patient.id)),
+    }[sort]
 
     total = (
         await session.execute(select(func.count()).select_from(Patient).where(*filters))
@@ -469,7 +608,7 @@ async def list_patients(
             await session.execute(
                 select(Patient)
                 .where(*filters)
-                .order_by(col(Patient.registered_at).desc())
+                .order_by(*order_by)
                 .limit(params.limit)
                 .offset(params.offset)
             )
@@ -574,9 +713,17 @@ async def update_patient(
 
     new_name = changes.get("full_name")
     new_phone = changes.get("phone")
+    if patient.is_unidentified and (new_name is not None or new_phone is not None):
+        # Naming the patient here would leave the record with a real name and
+        # the unidentified flag still set — off the duplicate checks and with
+        # every message held, for good. Identification is its own action.
+        raise ValidationError(
+            "This patient has not been identified yet. Use Identify to record who they are.",
+            code="identify_first",
+        )
     if new_name is not None or new_phone is not None:
         candidate_name = new_name or patient.full_name
-        candidate_phone = new_phone or patient.phone
+        candidate_phone = new_phone or patient.phone or ""
         clashes = await find_duplicates(
             session,
             hospital_id=patient.hospital_id,
@@ -672,6 +819,120 @@ async def get_patient_alerts(
         .all()
     )
     return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Drug allergies against a drug (SAFE-01)
+# ---------------------------------------------------------------------------
+async def drug_allergy_conflicts(
+    session: AsyncSession, patient_id: uuid.UUID, drug_names: Iterable[str | None]
+) -> list[PatientAlert]:
+    """The patient's active drug allergies that any of `drug_names` clashes with.
+
+    Through the merge, deliberately. A stay or a visit keeps the patient id it
+    was opened on, and if that record has since lost a merge its allergies
+    moved to the survivor — reading the old id would find none, and the check
+    would pass for exactly the patient whose record was the most confused.
+    """
+    patient = await get_patient(session, patient_id)
+    return clashing_allergies(await get_patient_alerts(session, patient.id), drug_names)
+
+
+def clashing_allergies(
+    alerts: Iterable[PatientAlert], drug_names: Iterable[str | None]
+) -> list[PatientAlert]:
+    """Of `alerts` (already loaded), the drug allergies the drug clashes with."""
+    names = [name for name in drug_names if name]
+    return [
+        alert
+        for alert in alerts
+        if alert.alert_type is AlertType.DRUG_ALLERGY and allergy_matches(alert.label, names)
+    ]
+
+
+def allergy_details(alerts: Iterable[PatientAlert]) -> list[dict[str, str | None]]:
+    """The allergies a refusal names, in the shape the client renders."""
+    return [
+        {
+            "id": str(alert.id),
+            "label": alert.label,
+            "severity": alert.severity.value,
+            "detail": alert.detail,
+        }
+        for alert in alerts
+    ]
+
+
+def assert_no_allergy_clash(clashes: list[PatientAlert], *, override_reason: str | None) -> None:
+    """Refuse a drug that clashes with a recorded drug allergy, unless the
+    prescriber has said why it is being given anyway (SAFE-01).
+
+    A 409 rather than a warning the client may or may not show: the API is the
+    one place every route to a prescription passes through. The details name
+    each allergy, so the override is a decision made with them in view.
+    """
+    if clashes and not override_reason:
+        raise ConflictError(
+            "This drug clashes with the patient's recorded drug allergy: "
+            + ", ".join(alert.label for alert in clashes)
+            + ". Give a reason to prescribe it anyway.",
+            code="allergy_conflict",
+            details={"allergies": allergy_details(clashes)},
+        )
+
+
+async def drug_allergies_by_patient(
+    session: AsyncSession,
+    patient_ids: Collection[uuid.UUID],
+    *,
+    hospital_id: uuid.UUID,
+    records: Mapping[uuid.UUID, Patient] | None = None,
+) -> dict[uuid.UUID, list[PatientAlert]]:
+    """Active drug allergies for many patients at once, keyed by the id asked for.
+
+    For the drug round, which shows every patient's allergies beside their
+    doses: one query for the round rather than one per row. Merges are
+    followed for the same reason as in `drug_allergy_conflicts`.
+
+    `records` are patients the caller already holds (from `get_patients_by_ids`),
+    so a screen that has fetched them does not fetch them twice.
+    """
+    if not patient_ids:
+        return {}
+    if records is None:
+        records = await get_patients_by_ids(session, patient_ids, hospital_id=hospital_id)
+    survivor_of: dict[uuid.UUID, uuid.UUID] = {}
+    for patient_id in patient_ids:
+        record = records.get(patient_id)
+        if record is None:
+            continue
+        if record.merged_into_id is not None:
+            # Rare: a stay on a record that lost a merge. Walked one by one.
+            record = await get_patient(session, record.id)
+        survivor_of[patient_id] = record.id
+
+    rows = (
+        (
+            await session.execute(
+                select(PatientAlert)
+                .where(
+                    col(PatientAlert.patient_id).in_(set(survivor_of.values())),
+                    col(PatientAlert.alert_type) == AlertType.DRUG_ALLERGY,
+                    col(PatientAlert.is_active).is_(True),
+                    col(PatientAlert.deleted_at).is_(None),
+                )
+                .order_by(PatientAlert.label)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_survivor: dict[uuid.UUID, list[PatientAlert]] = {}
+    for alert in rows:
+        by_survivor.setdefault(alert.patient_id, []).append(alert)
+    return {
+        patient_id: by_survivor.get(survivor, []) for patient_id, survivor in survivor_of.items()
+    }
 
 
 async def resolve_alert(session: AsyncSession, alert: PatientAlert, *, reason: str) -> PatientAlert:
@@ -859,7 +1120,28 @@ async def merge_patients(
     Safety alerts move across. An allergy recorded on the record that loses a
     merge must not disappear from the banner; that is the failure mode this
     whole function exists to prevent.
+
+    An unidentified emergency record is refused on either side: it is named
+    through `identify_patient`, which decides which record survives and
+    carries the identity across. A plain merge would leave a placeholder name
+    on the live visit, or a real one with the unidentified flag still set.
     """
+    if survivor.is_unidentified or duplicate.is_unidentified:
+        raise ValidationError(
+            "An unidentified emergency patient is linked to a record with Identify, not Merge.",
+            code="use_identify",
+        )
+    return await _fold(session, survivor=survivor, duplicate=duplicate, reason=reason)
+
+
+async def _fold(
+    session: AsyncSession,
+    *,
+    survivor: Patient,
+    duplicate: Patient,
+    reason: str,
+) -> Patient:
+    """The merge itself, without the unidentified-record guard."""
     if survivor.id == duplicate.id:
         raise ValidationError("A patient cannot be merged into itself.", code="invalid_merge")
     if survivor.hospital_id != duplicate.hospital_id:
@@ -944,6 +1226,216 @@ async def merge_patients(
 
     logger.info("merged patient %s into %s (%s)", duplicate.uhid, survivor.uhid, reason)
     return survivor
+
+
+# ---------------------------------------------------------------------------
+# Emergency arrivals nobody can name (UX-01)
+# ---------------------------------------------------------------------------
+async def register_unidentified(
+    session: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    gender: Gender,
+    age_years: int | None = None,
+) -> Patient:
+    """Register a patient nobody can name: `Unknown Male EM-0034`, no mobile.
+
+    The honest alternative to the name and number casualty would otherwise
+    invent. The record is real from the first minute — a UHID for the
+    wristband, the samples and the bill — and says plainly that its identity
+    is not known, which is what keeps it out of duplicate matching, holds every
+    patient message, and puts it on reception's "needs identification" list.
+    """
+    tag = await allocate_emergency_tag(session, hospital_id)
+    full_name = f"{_UNKNOWN_NAME.get(gender, 'Unknown Patient')} {tag}"
+    birth_date, estimated = _birth_date_from(age_years, None)
+
+    patient = Patient(
+        hospital_id=hospital_id,
+        uhid=await allocate_uhid(session, hospital_id),
+        full_name=full_name,
+        name_normalized=normalize_name(full_name),
+        phone=None,
+        gender=gender,
+        birth_date=birth_date,
+        birth_date_is_estimated=estimated,
+        is_unidentified=True,
+        emergency_tag=tag,
+        registered_at=utc_now(),
+    )
+    session.add(patient)
+    await session.flush()
+    await session.refresh(patient)
+    return patient
+
+
+async def identify_patient(
+    session: AsyncSession,
+    patient: Patient,
+    payload: PatientIdentify,
+    *,
+    hospital_id: uuid.UUID,
+) -> Patient:
+    """Say who an unidentified emergency patient is. Happens once.
+
+    **The emergency record always survives.** The live visit, the bed, the
+    bill and the lab samples all point at it already; keeping it means none of
+    them has to move, so none can be left behind pointing at the wrong record.
+
+    * A new person: the four registration fields are written onto it.
+    * Somebody already registered: their old record folds into this one, with
+      the same mechanics as a merge — allergies, consents and identifiers move
+      across, blanks are filled, and the old card still opens the patient — and
+      the old record's name, mobile, gender and birth date become this one's.
+    """
+    if not patient.is_unidentified:
+        raise ConflictError(
+            f"{patient.full_name} has already been identified.", code="already_identified"
+        )
+
+    if payload.existing_patient_id is not None:
+        existing = await _identity_record(
+            session, payload.existing_patient_id, patient=patient, hospital_id=hospital_id
+        )
+        # Folded first, so the old record has left the live (name, mobile)
+        # index before this one takes the same pair.
+        await _fold(
+            session,
+            survivor=patient,
+            duplicate=existing,
+            reason=f"Identified emergency patient {patient.emergency_tag} as {existing.uhid}",
+        )
+        patient.full_name = existing.full_name
+        patient.name_normalized = existing.name_normalized
+        patient.phone = existing.phone
+        patient.gender = existing.gender
+        patient.birth_date = existing.birth_date
+        patient.birth_date_is_estimated = existing.birth_date_is_estimated
+        patient.preferred_language = existing.preferred_language
+    else:
+        # The schema guarantees all four; narrowed here for the type checker.
+        assert payload.full_name and payload.phone and payload.gender
+        clashes = await find_duplicates(
+            session,
+            hospital_id=hospital_id,
+            full_name=payload.full_name,
+            phone=payload.phone,
+            exclude_id=patient.id,
+        )
+        exact = next((match.patient for match in clashes if match.is_exact), None)
+        if exact is not None:
+            # The client turns this into "This is them — link the records".
+            raise ConflictError(
+                f"{exact.full_name} is already registered on this mobile number "
+                f"(UHID {exact.uhid}).",
+                code="patient_already_exists",
+                details={
+                    "patient_id": str(exact.id),
+                    "uhid": exact.uhid,
+                    "full_name": exact.full_name,
+                    "resolution": "link_existing",
+                },
+            )
+        birth_date, estimated = _birth_date_from(payload.age_years, payload.birth_date)
+        patient.full_name = payload.full_name.strip()
+        patient.name_normalized = normalize_name(payload.full_name)
+        patient.phone = normalize_phone(payload.phone)
+        patient.gender = payload.gender
+        patient.birth_date = birth_date
+        patient.birth_date_is_estimated = estimated
+
+    patient.is_unidentified = False
+    patient.identified_at = utc_now()
+    patient.updated_at = utc_now()
+    session.add(patient)
+    await session.flush()
+    await session.refresh(patient)
+    logger.info("identified emergency patient %s (%s)", patient.emergency_tag, patient.uhid)
+    return patient
+
+
+async def _identity_record(
+    session: AsyncSession,
+    patient_id: uuid.UUID,
+    *,
+    patient: Patient,
+    hospital_id: uuid.UUID,
+) -> Patient:
+    """The existing record an unknown patient is being identified as — if it
+    can honestly be one."""
+    existing = await get_patient(session, patient_id, follow_merge=False)
+    if (
+        existing.id == patient.id
+        or existing.hospital_id != hospital_id
+        or existing.merged_into_id is not None
+        or existing.is_unidentified
+    ):
+        raise ValidationError(
+            "That record cannot be this patient's identity.",
+            code="invalid_identity",
+        )
+    if existing.is_deceased:
+        # The fold carries a death across. Linking a dead record would mark
+        # the patient alive in casualty as dead, and silence every message.
+        raise ConflictError(
+            f"{existing.full_name} ({existing.uhid}) is recorded as deceased.",
+            code="patient_deceased",
+        )
+    return existing
+
+
+# ---------------------------------------------------------------------------
+# Who sees which number, and who reads how many patients (SEC-01)
+# ---------------------------------------------------------------------------
+def mask_phone(phone: str | None) -> str | None:
+    """`9812345670` -> `98•••••670`: enough to confirm with the patient in
+    front of you, not enough to ring them later."""
+    if not phone:
+        return phone
+    if len(phone) < 6:
+        return "•" * len(phone)
+    return f"{phone[:2]}•••••{phone[-3:]}"
+
+
+# Two hours, so a key outlives the hour it counts by a margin.
+_READ_WINDOW_SECONDS = 2 * 60 * 60
+
+
+async def note_patient_reads(
+    *, hospital_id: uuid.UUID, user_id: uuid.UUID, patient_ids: Collection[uuid.UUID]
+) -> int | None:
+    """Count the distinct patients this person has read this hour.
+
+    Returns the count the *first* time it reaches `PATIENT_BULK_READ_ALERT` in
+    the hour, and None otherwise — so one bulk read raises one alert, not one
+    per page. A Redis set per person per clock hour, because the question is
+    "how many different people", and re-opening one record all afternoon is
+    normal work.
+
+    Never in the way of the read itself: if Redis is down the count is
+    skipped and logged, and the patient record still opens. The audit log
+    still has every page.
+    """
+    if not patient_ids:
+        return None
+    hour = datetime.now(UTC).strftime("%Y%m%d%H")
+    key = f"patient-reads:{hospital_id}:{user_id}:{hour}"
+    try:
+        redis = get_redis()
+        # One round trip, applied together: add, keep the key alive, count.
+        async with redis.pipeline(transaction=True) as pipe:
+            pipe.sadd(key, *(str(patient_id) for patient_id in patient_ids))
+            pipe.expire(key, _READ_WINDOW_SECONDS)
+            pipe.scard(key)
+            _, _, scard = await pipe.execute()
+        count = int(scard)
+        if count < settings.PATIENT_BULK_READ_ALERT:
+            return None
+        first = await redis.set(f"{key}:alerted", "1", nx=True, ex=_READ_WINDOW_SECONDS)
+        return count if first else None
+    except (RedisError, OSError):
+        logger.warning("could not count patient reads for %s", user_id, exc_info=True)
+        return None
 
 
 async def mark_deceased(

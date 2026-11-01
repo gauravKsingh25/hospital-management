@@ -39,14 +39,30 @@ import { clearSession, readSession, writeSession, type Session } from "@/lib/ses
  */
 
 /** Endpoints that issue or destroy sessions. Not reachable through here. */
-const SESSION_ENDPOINTS = new Set(["auth/login", "auth/refresh", "auth/logout"]);
+const SESSION_ENDPOINTS = new Set([
+  "auth/login",
+  "auth/refresh",
+  "auth/logout",
+  // SEC-05: the second step of signing in also mints a session.
+  "auth/2fa/verify",
+  "auth/2fa/enrol/start",
+  "auth/2fa/enrol/confirm",
+]);
 
 /**
  * Response headers worth passing back. An allowlist rather than a copy: the
  * backend's `set-cookie` or auth headers must never reach the browser, and an
  * allowlist fails closed when the backend starts sending something new.
  */
-const FORWARDED_RESPONSE_HEADERS = ["content-type", "content-disposition", "content-length"];
+const FORWARDED_RESPONSE_HEADERS = [
+  "content-type",
+  "content-disposition",
+  "content-length",
+  // The backend's correlation ID (backend `core/request_id.py`). A random
+  // token, not a secret — passed on so a failure seen in the browser can be
+  // matched to the server log line that explains it.
+  "x-request-id",
+];
 
 type RouteParams = { params: Promise<{ path: string[] }> };
 
@@ -92,16 +108,20 @@ async function handle(request: NextRequest, { params }: RouteParams): Promise<Ne
 
   // The body is forwarded untouched rather than parsed and re-serialised:
   // this proxy has no opinion about payloads, and re-encoding one is a way to
-  // corrupt it. GET and HEAD have no body by definition.
-  const body =
-    request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
+  // corrupt it. As bytes, not text: a logo upload is a PNG, and decoding it as
+  // UTF-8 would mangle it. GET and HEAD have no body by definition.
+  const bytes =
+    request.method === "GET" || request.method === "HEAD"
+      ? undefined
+      : await request.arrayBuffer();
+  const body = bytes && bytes.byteLength > 0 ? bytes : undefined;
 
   const forward = (accessToken: string) =>
     callApiRaw(`/${target}`, {
       method: request.method as "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
-      rawBody: body || undefined,
+      rawBody: body,
       accessToken,
-      query: Object.fromEntries(request.nextUrl.searchParams.entries()),
+      query: forwardedQuery(request.nextUrl.searchParams),
       headers: {
         ...(request.headers.get("content-type")
           ? { "Content-Type": request.headers.get("content-type") as string }
@@ -178,6 +198,23 @@ function writeRotatedSession(response: NextResponse, session: Session): void {
     },
     session,
   );
+}
+
+
+/**
+ * The query string, with repeated keys kept as lists.
+ *
+ * `Object.fromEntries(searchParams)` keeps only the *last* value of a repeated
+ * key, so `?patient_id=a&patient_id=b` reached FastAPI as just `b` — a list
+ * endpoint quietly answering for one item of the many asked about.
+ */
+function forwardedQuery(params: URLSearchParams): Record<string, string | string[]> {
+  const query: Record<string, string | string[]> = {};
+  for (const key of new Set(params.keys())) {
+    const values = params.getAll(key);
+    query[key] = values.length === 1 ? values[0]! : values;
+  }
+  return query;
 }
 
 export const GET = handle;

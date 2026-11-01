@@ -39,6 +39,33 @@ const TEMPLATES_KEY = ["admin", "templates"] as const;
 const CHANNELS: MessageChannel[] = ["WHATSAPP", "SMS", "EMAIL"];
 
 /**
+ * Mirrors `templates.SUPPORTED_LANGUAGES`. A template in any other code matches
+ * no patient's preferred language and could never be sent, so the backend
+ * refuses it (`unsupported_language`). Each language is named in itself: an
+ * administrator writing Tamil copy recognises "தமிழ்" whatever the UI language.
+ */
+const LANGUAGES: { code: string; name: string }[] = [
+  { code: "en", name: "English" },
+  { code: "hi", name: "हिन्दी" },
+  { code: "as", name: "অসমীয়া" },
+  { code: "bn", name: "বাংলা" },
+  { code: "gu", name: "ગુજરાતી" },
+  { code: "kn", name: "ಕನ್ನಡ" },
+  { code: "ml", name: "മലയാളം" },
+  { code: "mr", name: "मराठी" },
+  { code: "or", name: "ଓଡ଼ିଆ" },
+  { code: "pa", name: "ਪੰਜਾਬੀ" },
+  { code: "ta", name: "தமிழ்" },
+  { code: "te", name: "తెలుగు" },
+  { code: "ur", name: "اردو" },
+];
+
+function languageName(code: string | null): string {
+  const found = LANGUAGES.find((language) => language.code === code);
+  return found ? `${found.name} · ${found.code}` : (code ?? "");
+}
+
+/**
  * The hospital's standing copy.
  *
  * Every message the system sends has shipped fallback wording in English. That
@@ -49,12 +76,12 @@ const CHANNELS: MessageChannel[] = ["WHATSAPP", "SMS", "EMAIL"];
  *
  * ## Preview is not a nicety
  *
- * A template is a string with `{placeholders}` in it, and a placeholder the
- * renderer does not recognise stays in the message verbatim. The other way to
- * discover that you typed `{patient}` where the system supplies
- * `{patient_name}` is to read it on a patient's phone. So the preview reports
- * `missing` — the placeholders the copy asks for that nothing will fill — as
- * the primary result, not as a footnote.
+ * A template is a string with `{{placeholders}}` in it. The backend refuses
+ * to save one the message's trigger does not supply, or one in single braces
+ * that would reach the patient verbatim (`unknown_placeholder`,
+ * `malformed_placeholder`), and the refusal is shown as the save's error. The
+ * preview then shows the saved copy rendered, and still reports `missing`
+ * — the backend owns the rules, so this screen does not second-guess them.
  */
 export function TemplatesScreen({ canManage }: { canManage: boolean }) {
   const t = useTranslations("admin");
@@ -236,13 +263,18 @@ function TemplateDialog({
 
                 <div className="space-y-1.5">
                   <Label htmlFor="template-language">{t("language")}</Label>
-                  <Input
-                    id="template-language"
-                    value={language}
-                    onChange={(event) => setLanguage(event.target.value)}
-                    className="h-tap"
-                    placeholder="hi"
-                  />
+                  <Select value={language} onValueChange={(value) => setLanguage(value ?? "en")}>
+                    <SelectTrigger id="template-language" className="h-tap w-full">
+                      <SelectValue>{(value: string | null) => languageName(value)}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LANGUAGES.map((option) => (
+                        <SelectItem key={option.code} value={option.code}>
+                          {languageName(option.code)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </>

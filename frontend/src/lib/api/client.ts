@@ -12,13 +12,17 @@ import { ApiError, apiErrorFromResponse } from "@/lib/api/error";
 
 const BFF_PREFIX = "/bff";
 
-export type QueryValue = string | number | boolean | null | undefined;
+type Scalar = string | number | boolean | null | undefined;
+/** An array repeats the key — `?patient_id=a&patient_id=b` — which FastAPI reads as a list. */
+export type QueryValue = Scalar | readonly Scalar[];
 
 function buildPath(path: string, query?: Record<string, QueryValue>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined && value !== null && value !== "") {
-      search.set(key, String(value));
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item !== undefined && item !== null && item !== "") {
+        search.append(key, String(item));
+      }
     }
   }
   const suffix = search.toString();
@@ -40,10 +44,17 @@ async function request<T>(
   let response: Response;
 
   try {
+    // A file goes as itself — its bytes, labelled with its own type — not
+    // wrapped in JSON or a multipart form. Everything else is JSON.
+    const file = body instanceof Blob ? body : null;
     response = await fetch(buildPath(path, options.query), {
       method,
-      headers: body === undefined ? {} : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: file
+        ? { "Content-Type": file.type || "application/octet-stream" }
+        : body === undefined
+          ? {}
+          : { "Content-Type": "application/json" },
+      body: file ?? (body === undefined ? undefined : JSON.stringify(body)),
       signal: options.signal,
       // Same-origin by definition, but stated so a future change to the
       // fetch defaults cannot quietly stop sending the session cookie.
@@ -71,7 +82,7 @@ async function request<T>(
     // reload is deliberate: it re-runs `proxy.ts`, which sends the user to
     // the login screen with `next` set, so signing back in returns them to
     // the patient they had open rather than to a blank home screen.
-    if (error.isUnauthenticated && typeof window !== "undefined") {
+    if (error.isUnauthenticated && typeof window !== "undefined" && !sessionLocked) {
       // An absolute URL, and a hard navigation rather than `router.push`.
       // Both are deliberate: the full load re-runs `proxy.ts` (which owns the
       // decision about where an unauthenticated user goes) and discards the
@@ -89,6 +100,18 @@ async function request<T>(
   }
 
   return (await response.json()) as T;
+}
+
+/**
+ * Set while the idle lock is up (SEC-04). The lock ends the server session on
+ * purpose, so every background poll now gets a 401 — and the usual response,
+ * a hard navigation to the login page, would throw away the work under the
+ * lock that unlocking exists to keep.
+ */
+let sessionLocked = false;
+
+export function setSessionLocked(locked: boolean): void {
+  sessionLocked = locked;
 }
 
 export const api = {

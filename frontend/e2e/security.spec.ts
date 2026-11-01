@@ -57,10 +57,25 @@ test.describe("the content security policy", () => {
     // The rest of the header, asserted because each one is load-bearing and
     // each is a single word away from being switched off by accident.
     expect(csp).toContain("frame-ancestors 'none'");
+    expect(response?.headers()["x-frame-options"]).toBe("DENY");
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("connect-src 'self'");
     expect(response?.headers()["x-content-type-options"]).toBe("nosniff");
     expect(response?.headers()["referrer-policy"]).toBe("no-referrer");
+  });
+
+  test("only the printed documents may be framed, and only by this app", async ({ page }) => {
+    // "Print" prints a bill or a discharge summary from a hidden same-origin
+    // frame. Signed out, the request is answered with a redirect that
+    // carries the same headers, which is all this checks.
+    const id = "00000000-0000-0000-0000-000000000000";
+    for (const path of [`/bills/${id}`, `/discharge-summaries/${id}`]) {
+      const response = await page.request.get(path, { maxRedirects: 0 });
+      const csp = response.headers()["content-security-policy"] ?? "";
+      expect(csp, path).toContain("frame-ancestors 'self'");
+      expect(csp, path).not.toContain("frame-ancestors 'none'");
+      expect(response.headers()["x-frame-options"], path).toBe("SAMEORIGIN");
+    }
   });
 
   test("blocks no inline style except the one library that injects its own", async ({ page }) => {
@@ -80,16 +95,21 @@ test.describe("the content security policy", () => {
      * responsible for about thirty violations a page load, it is the reason
      * the real one was invisible, and it does not exist in a production build
      * — verified by running one: production reports exactly the two below.
+     * So is `webpack-internal`: the Docker dev server runs webpack (it alone
+     * can poll a Windows bind mount), which injects each stylesheet as a
+     * `<style>` tag in development only.
      */
     const readViolations = await watchViolations(page);
     await signIn(page, ACCOUNTS.reception);
 
-    for (const path of ["/reception", "/queue", "/patients"]) {
+    for (const path of ["/reception", "/patients"]) {
       await page.goto(path);
       await page.waitForTimeout(1_500);
     }
 
-    const ours = (await readViolations()).filter((v) => !v.includes("next-devtools"));
+    const ours = (await readViolations()).filter(
+      (v) => !v.includes("next-devtools") && !v.includes("webpack-internal"),
+    );
     const SONNER_INJECTIONS = 2;
 
     expect(
@@ -155,7 +175,7 @@ test.describe("a link that looks like a button", () => {
      */
     await signIn(page, ACCOUNTS.reception);
 
-    for (const path of ["/reception", "/queue", "/patients", "/wards"]) {
+    for (const path of ["/reception", "/patients", "/wards"]) {
       await page.goto(path);
       await page.waitForTimeout(1_000);
 

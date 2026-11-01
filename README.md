@@ -16,10 +16,15 @@ billing; notifications; inpatient care; and KPI reporting.
 
 §13 step 11 is now underway. Next.js 16 with a backend-for-frontend proxy, and
 the first slice built end to end: **sign-in, rapid registration with one-click
-OPD, and the doctor's consultation screen.** The browser never holds a JWT —
+OPD.** (The doctor's consultation screen was built and later removed — see
+[Doctors enter nothing in OPD](#doctors-enter-nothing-in-opd).) The browser never holds a JWT —
 tokens live in an httpOnly cookie and are attached server-side (see
-[Frontend](#frontend)). The remaining modules have working APIs and no screens
-yet.
+[Frontend](#frontend)). Every backend module now has a screen — see
+[What is built](#what-is-built).
+
+New here? Read in this order: this section → [Quick start](#quick-start) →
+[Layout](#layout) → [Conventions](#conventions-worth-knowing-before-you-write-code).
+When something breaks, [Docs/runbook.md](Docs/runbook.md) has the fixes.
 
 ⚠️ **Before judging the speed of anything, read
 [Database latency](#database-latency-read-this-before-blaming-the-ui).** The
@@ -43,7 +48,7 @@ gate unreachable for reasons no amount of frontend work can fix.
 | Data fetching | TanStack Query v5 through a server-side BFF proxy |
 | Forms | React Hook Form + Zod (mirroring the Pydantic schemas) |
 | QR (print) | `qrcode-generator` (zero dependencies), rendered to SVG server-side |
-| QR (camera) | the browser's own `BarcodeDetector` — no decoder library |
+| QR (camera) | the browser's own `BarcodeDetector`; `jsqr` downloaded on first tap where there is none |
 | Charts | Recharts 3, behind `next/dynamic` — one route loads it |
 | i18n | next-intl — English + Hindi, cookie-resolved |
 | e2e | Playwright, against a real backend |
@@ -70,8 +75,9 @@ python scripts/create_admin.py \
     --email you@example.com --name "Your Name"   # the first PLATFORM_ADMIN
 
 python scripts/seed_demo.py                  # a demo tenant, staffed and priced
+python scripts/seed_patient_history.py       # optional: three returning patients with history
 
-cd .. && docker compose up --build
+cd .. && docker compose --profile app up --build   # the containerised app; see docker-compose.yml
 ```
 
 - App: <http://localhost:3000>
@@ -81,9 +87,15 @@ cd .. && docker compose up --build
 
 `seed_demo.py` prints the accounts it created — one per front-line role, all
 sharing one password. Sign in as `reception@demo.hospital` for the counter
-workflow, `doctor@demo.hospital` for the consultation screen,
+workflow, `admission@demo.hospital` for the admission desk,
 `lab@demo.hospital` for the diagnostics bench, `cashier@demo.hospital` for the
 cash counter. Development only: those accounts have known passwords.
+
+`seed_patient_history.py` adds three regulars (Kamla Devi, Ramesh Yadav,
+Fatima Begum) with back-dated visits, diagnoses, vitals and medicines, so the
+patient record has a history to show. It clears the event bus first: past
+visits carry no charges, invoices or lab requests, and never appear on
+today's boards. Idempotent; development data only.
 
 It also seeds a **default cash rate card, two priced services and one orderable
 blood test**, and that is not decoration. Billing is deliberately total — it
@@ -946,8 +958,22 @@ sweep that restarts mid-pass or runs twice after a deploy keys onto the same
 charge instead of billing the patient twice for one bed. It needs no table to
 remember what was already billed.
 
-The class charged for a night is the one the patient was in at the **end** of
-it, which is the common convention and does not reward a late transfer.
+Nights are counted by **midnight census**, in the hospital's own timezone
+(`hospitals.timezone`, not UTC): a night is charged when the patient is in a bed
+at the midnight that ends it. Admission day counts, discharge day does not —
+Monday to Wednesday is two nights, matching `length_of_stay`. The admission
+night is always charged (a day-case is one night, not zero), which is also why
+the room shows on the running bill from the hour the patient arrives. Counting
+in UTC would bill a patient admitted at 2 a.m. IST for the night before.
+
+Discharge — and a death, LAMA or referral on the ward — accrues the stay up to
+the minute *before* the Encounter closes, so the final bill that closure
+assembles already carries the last night. The sweep visits every open stay (not
+one page of them) plus stays closed in the last three days, as a safety net.
+
+The class charged for a night is the one the patient was in at the midnight
+that ends it, which is the common convention and does not reward a late
+transfer.
 
 ### The discharge summary is compiled, never invented
 
@@ -991,12 +1017,40 @@ by `complete_consultation` and the auto-close sweep, and neither runs against an
 reads like a guarantee. Unsigned summaries surface as a worklist instead:
 `GET /ipd/summaries?status=DRAFT`.
 
+### Doctors enter nothing in OPD
+
+The doctor sees the OPD patient in person and is not asked to use a computer.
+The **consultation screen** (`/consultation/[id]`) and the doctor's worklist
+(`/doctor`) are removed; a doctor signs in to the queue, and still runs the
+inpatient side (prescribing on the chart, signing the discharge summary).
+
+The OPD journey is now: reception registers → the doctor sees the patient →
+reception marks them **seen** (`REGISTERED → IN_CONSULTATION`) → if they need
+admitting, reception **sends them to the admission desk**, which takes their
+vitals and admits them. A seen visit nobody admits closes in the nightly
+auto-close sweep.
+
+What moved, so nothing became unreachable:
+
+- **Death, referral and LAMA** — the patient page (any open visit) and the
+  admission page (an inpatient), same dialog and metadata as before.
+- **Vitals** — taken by the admission desk while admitting, and shown (with a
+  "Record vitals" action) on the admission page. `ADMISSION_DESK` gained
+  `vitals:record` and `vitals:read` (migration `75eb16a8e222`).
+- **Lab and radiology orders** have no screen for now: nobody in the browser
+  can order a test until ordering is built for staff. The order, worklist and
+  clearance APIs are unchanged, and the e2e specs place orders through them.
+
+The backend is unchanged apart from the desk's vitals: every clinical endpoint
+the screen used still exists.
+
 ### The admission desk — OPD hands a patient to IPD
 
 Reception marks a patient seen, then **Send to admission** on that seen row
 (`POST /api/v1/ipd/admission-requests`, `admission:request`). The patient lands
 on the **Admission desk** (`/admissions`, `admission:desk`), oldest first.
-**Admit** opens the same bed picker the consultation screen uses and calls
+**Admit** opens the bed picker, with the patient's **vitals** taken at the
+counter (optional fields, saved with the admission on the stay's visit), and calls
 `POST /ipd/admission-requests/{id}/admit` (needs `admission:desk` *and*
 `admission:create`), which runs the ordinary `admit_patient` — bed, admission
 number, encounter → `ADMITTED` — and the IPD flow carries on from the
@@ -1009,7 +1063,7 @@ admission's page. **Turn away** (`/cancel`) needs a reason.
   visit instead of reopening a terminal one. IPD visits carry no consultation
   charge, so nothing is billed twice.
 - **Any admission clears the request** — including a doctor admitting straight
-  from the consultation screen — so nobody stays on the desk's list in a bed.
+  through the API — so nobody stays on the desk's list in a bed.
 - **Roles.** `ADMISSION_DESK` is a new system role (demo login
   `admission@demo.hospital`). Reception and doctors gain only
   `admission:request`; reception keeps `admission:create` exactly as before.
@@ -1017,6 +1071,54 @@ admission's page. **Turn away** (`/cancel`) needs a reason.
   runs both counters gives them both roles.
 - One pending request per patient, enforced by a partial unique index as well
   as the service check. Every send, admit and turn-away is audited.
+
+### The medicine list — what an inpatient stay is charged for
+
+**Medicine list** (`/medicines`, `medicine:read`; editing needs
+`medicine:manage`) holds presets such as IV fluids, injections, tablets and
+consumables. Each has a type, a usual dose and route, a unit (vial, bottle,
+piece) and a price. `seed_demo.py` adds a starter list of eleven.
+
+- **Prices live in billing, not in `ipd`.** Saving an item
+  (`POST/PATCH /api/v1/ipd/medicines`) also creates or updates a billing
+  `ServiceItem` with the same generated code (`MED-…`, category `PHARMACY`),
+  plus its price on the default rate card, in one transaction. Rate cards,
+  GST and the admin price list therefore cover medicines with no second copy.
+  If no default rate card exists, the save is refused (`no_default_rate_card`)
+  rather than creating an unpriced item.
+- **Two ways a stay is charged, both over the event bus:**
+  - *Chart doses.* A doctor picks a drug from the list when prescribing. The
+    order stores the item's code and `units_per_dose`, and each dose a nurse
+    signs as **given** is charged `units_per_dose` × the list price.
+    Refused, held or missed doses are not charged. A free-typed drug is
+    charted but not billed, and the chart says "Not billed" beside it.
+  - *Items used.* An IV set, a cannula, or a STAT injection given before a chart
+    existed is recorded on the admission page:
+    `POST /ipd/admissions/{id}/medicine-issues`, `medicine:issue`. Each entry
+    is charged, keyed on its id so it can never be billed twice. **Reverse**
+    needs a reason and takes the charge off the bill. It is refused
+    (`charge_invoiced`) once the charge is on an issued invoice; correct that
+    with a credit note.
+- **Cost so far.** The admission page shows the stay's running cost
+  (`GET /billing/accounts/{encounter_id}/costs`, `charge:read`), covering
+  bed-days, doses, items and tests. Lines are grouped by item and the total
+  is computed server-side. Cancelled and waived charges are left out.
+- **A missing price is flagged, never borrowed.** If an item's billing service
+  is switched off, its charges land at zero on the exception list. They do
+  not take the price of whichever pharmacy service happens to be first on file.
+- **Roles.**
+
+  | Role | Permissions |
+  |---|---|
+  | `ADMISSION_DESK` | all three `medicine:*` permissions, plus `charge:read` for the cost panel |
+  | `PHARMACIST` | all three `medicine:*` permissions |
+  | Nurses | `medicine:read` and `medicine:issue` (record items used, not their price) |
+  | Doctors, reception, cashiers, billing, records, auditors | `medicine:read` |
+  | Admins | everything |
+
+  This is a deliberate, narrow exception to "pricing belongs to
+  administration". It covers only the medicine list's own items, and every
+  create or price change is audited with before and after values.
 
 ## Reporting — KPIs, and a module that stores nothing
 
@@ -1204,21 +1306,21 @@ appears for anyone.
 | Sign in | `/login` | server action, forced password change supported |
 | Reception | `/reception` | live queue, 15s refresh |
 | Register | `/reception/register` | 4 fields, duplicate detection, one-click OPD |
-| Doctor's list | `/doctor` | the signed-in doctor's own queue |
-| Consultation | `/consultation/[id]` | whole chart in one request |
 | Queue | `/queue` | hospital-wide, for nursing; one-click vitals per row |
-| Patient | `/patients/[id]` | identity, alerts, visit history |
+| Patient | `/patients/[id]` | the full record: identity, safety banner, visit counts, next follow-up; tabs (`?tab=`) for overview (problem list + latest vitals), numbered visits, admissions with discharge summaries, lab & imaging, billing, profile — each shown only to roles that may read it |
 | Patient card | `/patients/[id]/card` | printable card with the lookup QR |
 | Diagnostics bench | `/lab` | one worklist, lab and radiology interleaved |
 | Report | `/lab/reports/[id]` | result entry, server-side flagging, verify |
 | Cash counter | `/billing` | visits with money outstanding, oldest debt first |
 | Visit account | `/billing/[encounterId]` | assemble, issue, take payment |
 | Bed board | `/wards` | every ward, every bed, who is in it |
+| Admission desk | `/admissions` | patients OPD has sent for admission |
 | Admission | `/admissions/[id]` | transfer, fit-for-discharge, discharge |
 | Medication chart | `/admissions/[id]/chart` | prescribe, stop, sign for doses |
 | Discharge summary | `/admissions/[id]/summary` | compiled, edited, signed |
 | Drug round | `/rounds` | every dose due across the wards |
-| Patient index | `/patients` | browsable, paged, searchable |
+| Medicine list | `/medicines` | presets with a dose and a price, for inpatients |
+| Patient directory | `/patients` | paged, searchable; filters (sex, living/deceased, registration dates in hospital time), sort, visit count and last visit per row |
 | Messages | `/messages` | the outbox, and every channel tried per message |
 | Blocked | `/messages/blocked` | who the system will not message, and why |
 | Reports | `/reports` | one dashboard, shaped by permission |
@@ -1239,6 +1341,36 @@ what the software can do.
 
 Every backend capability now has a screen, including CLAUDE.md §6's three
 terminal outcomes — see below.
+
+### The patient record
+
+One page answers "how often has this person been here, and what for?":
+
+| Endpoint | Gate | Returns |
+|---|---|---|
+| `GET /encounters/patient/{id}/summary` | `encounter:read` | visit counts (OPD / inpatient / emergency), first and last visit, the open visit, next follow-up; plus the **problem list** if the caller holds `diagnosis:read` and **latest vitals** with `vitals:read` |
+| `GET /encounters/patient/{id}/visits` | `encounter:read` | paginated visits, newest first, numbered from the first; doctor and department named; diagnoses with `diagnosis:read`, orders with `order:read` |
+| `GET /encounters/visit-stats?patient_id=…` | `encounter:read` | visit count and last visit for up to 200 patients — the directory's columns |
+| `GET /patients?gender=&deceased=&registered_from=&registered_to=&sort=` | `patient:read` | the directory, filtered; dates are the hospital's days |
+
+Rules worth knowing:
+
+- **A clinical part the role may not read is `null`, not `[]`.** The screen
+  says "not shown to your role" rather than "nothing recorded", so reception
+  is never told a diabetic has no history.
+- **Merged duplicates count.** A merge keeps the duplicate's id on its old
+  visits; the history walks `patients.service.record_ids` so those visits
+  belong to the surviving record. A link to a merged record redirects.
+- **Cancelled and no-show bookings are listed but not counted** and carry no
+  visit number.
+- **The problem list leaves out differentials and ruled-out calls**, and folds
+  the same condition across visits (by ICD code, else by wording).
+- **No follow-up date is shown for a deceased patient.**
+- Reading a history writes a `patient.history.view` audit row.
+
+With the consultation screen gone, the visit card carries **Add diagnosis**
+for `diagnosis:record` holders, on open visits only — the backend refuses a
+diagnosis on a closed visit.
 
 ### Scanning a card
 
@@ -1293,19 +1425,43 @@ they run without a browser — Playwright as the runner rather than a second tes
 framework for one pure module.
 
 **Camera scan.** The third way in, for a device with no scanner attached —
-a nurse doing a ward round with a tablet. `CameraScanButton` on `/reception`
-and `/queue` uses the browser's own `BarcodeDetector`, so it ships **no decoder
-library**: the usual choice costs 40–90 kB on every page that imports it and
-does nothing the platform does not already do natively.
+a nurse on a ward round with a tablet, a doctor with a phone. The scanner icon
+sits in the **top bar**, so it is one tap from every screen, for anyone holding
+`patient:read`.
 
-The price is that the API is not everywhere, and the button **renders nothing
-where it cannot work** — which includes Windows desktop Chrome, every Firefox,
-and any deployment without TLS, since `getUserMedia` does not exist outside a
-secure context. That is the right failure: a counter PC has a USB scanner and
-needs none of this, and a button that opens a dialog to explain its own
-impossibility teaches staff to ignore buttons. Camera denial, a missing camera
-and any other failure each get their own sentence, and all three end by saying
-the counter scanner and typing the UHID still work. There is no dead end.
+It works on any device with a camera and TLS — iPhone, iPad, Android, a laptop
+with a webcam. Where the browser has its own `BarcodeDetector` (Chrome on
+Android, macOS, ChromeOS) that is used and nothing is downloaded. Where it does
+not — **every browser on iOS and iPadOS**, since they are all Safari underneath,
+plus Firefox and Windows desktop Chrome — `jsqr` is fetched the first time the
+icon is tapped: its own 46 kB (gzipped) chunk, in no page's bundle. `jsqr` was
+chosen over the `barcode-detector` polyfill because that one fetches a ~1 MB
+WebAssembly build from a public CDN, which would mean loosening `connect-src`
+— the directive that stops a compromised dependency posting patient data
+elsewhere. `jsqr` is plain JavaScript with no dependencies and no network
+access, pinned to an exact version.
+
+The icon **renders nothing where it cannot work**: no camera (a counter PC —
+it has a USB scanner) or no TLS, since `getUserMedia` does not exist outside a
+secure context. A button that opens a dialog to explain its own impossibility
+teaches staff to ignore buttons. Camera denial, a missing camera and any other
+failure each get their own sentence, all ending with the counter scanner and
+typing the UHID still working. There is no dead end.
+
+The camera is released on every exit — a read, closing the dialog, the screen
+being hidden or locked, and a sixty-second give-up. The idle lock covers the
+screen without closing dialogs, so without that last one a scanner left open
+would keep filming behind the lock screen.
+
+**`Permissions-Policy` is `camera=(self)`.** It used to be `camera=()`, which
+denies the camera to every page including our own, so the camera path could
+never have worked outside a stubbed test. `(self)` grants it to this origin
+only; microphone, geolocation and payment stay off.
+
+**Testing on a phone or tablet** needs HTTPS, because a LAN address over plain
+HTTP is not a secure context. `npm run dev:https` serves the dev server with a
+self-signed certificate on all interfaces; open `https://<laptop-ip>:3000` on
+the device and accept the certificate warning once.
 
 Both scan paths resolve through one `useResolveScan`, and one `normaliseUhid`
 decides what counts as a card, so the keyboard and the camera cannot drift into
@@ -1318,9 +1474,11 @@ aliasing blurs module boundaries on a 203 dpi thermal head), and a physical
 size set in millimetres with a 20 mm floor. **None of that is provable in an
 automated test.** Printing one and scanning it is the only check that counts,
 and it is the single step on this feature's critical path that is not code —
-which is equally true of the camera path: headless Chromium has neither the API
-nor a lens, so its tests stub exactly those two platform pieces and genuinely
-exercise everything between them, including releasing the camera afterwards.
+which is equally true of the camera path: headless Chromium has no lens, so
+its tests replace the camera with a canvas stream. For the iPad case that
+canvas paints the card's *real* QR, so the downloaded decoder is exercised from
+the pixels up; `qr-decode.spec.ts` separately round-trips a code encoded
+exactly as `QrSvg` prints one.
 
 ### How a visit ended, when it did not end well
 
@@ -1329,8 +1487,8 @@ screen — recordable only by an API call, which in practice means not recordabl
 A hospital that cannot record a death in its own system keeps a paper register
 next to it, and then the two disagree about who is alive.
 
-They sit behind **one subdued control** on the consultation screen rather than
-three buttons beside "Complete visit". These are rare, irreversible and
+They sit behind **one subdued control** — on the patient page for any open
+visit, and on the admission page for an inpatient — rather than three buttons. These are rare, irreversible and
 consequential, and three peers would put "record a death" one mis-click from
 the button a doctor presses thirty times a day. Choosing which outcome happened
 is a deliberate act inside the dialog.
@@ -1739,6 +1897,8 @@ backend/
 │   │   ├── deps.py        auth, tenant binding and RBAC dependencies
 │   │   ├── pagination.py  Page / PageParams used by every list endpoint
 │   │   ├── logging.py     console locally, JSON when deployed
+│   │   ├── request_id.py  X-Request-ID correlation, stamped on every log line
+│   │   ├── rbac_registry.py  union of every module's rbac.py declarations
 │   │   └── redis.py       Redis client + health probe
 │   ├── modules/
 │   │   ├── tenancy/       hospitals — the tenant record
@@ -1770,6 +1930,8 @@ backend/
 │   ├── bootstrap_db_role.py   create the least-privilege app role
 │   ├── create_admin.py        create the first PLATFORM_ADMIN
 │   ├── seed_demo.py           a working tenant: one of each front-line role
+│   ├── seed_patient_history.py returning demo patients with back-dated history
+│   ├── reset_demo_data.py     clear a dev tenant's visits, keep its setup
 │   ├── export_openapi.py      the frontend's type source (no server needed)
 │   └── export_rbac.py         permission + role unions for TypeScript
 └── tests/
@@ -1781,10 +1943,11 @@ frontend/
 │   │   ├── bff/[...path]/ THE proxy — the only route to FastAPI
 │   │   ├── auth/refresh/  token rotation ahead of a navigation
 │   │   ├── login/         · change-password/
-│   │   └── (app)/         the signed-in shell: reception, doctor, queue,
-│   │                      consultation, patients
+│   │   └── (app)/         the signed-in shell, one folder per screen — see
+│   │                      "What is built" for the full route table
 │   ├── features/          one folder per backend domain, plus reports/
-│   ├── components/        ui/ (shadcn + link-button), app-shell/, status-chip, safety-banner
+│   ├── components/        ui/ (shadcn + link-button), app-shell/, patient/
+│   │                      (safety-banner, qr-code), status-chip, load-error
 │   ├── lib/
 │   │   ├── session.ts     the httpOnly cookie — read the header comment
 │   │   ├── api/           fetch.ts (server) · client.ts (browser) ·
@@ -1819,6 +1982,12 @@ The frontend mirrors it: `features/` maps to backend domains, and nothing in
 - **Errors are typed domain exceptions** mapped to HTTP centrally in
   `app/core/exceptions.py`. Services never build responses.
 - **Every list endpoint is paginated.**
+- **Every list *screen* renders three distinct states** — loading (`Skeleton`),
+  failed (`components/load-error.tsx`), and genuinely empty. Never feed
+  `query.data?.items ?? []` straight into an empty state: a failed request then
+  reads as "nothing here", which on the drug round means "no doses due".
+- **Debug by request ID.** Every response carries `X-Request-ID`, every log line
+  prints it, and a 500's body includes it. Search the logs for that one value.
 
 Three invariants to actively guard (CLAUDE.md §14, plus one Phase 6 added):
 

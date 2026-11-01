@@ -34,6 +34,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
+from app.modules.billing import stays as billing_stays
 from app.modules.clinical import service as clinical_service
 from app.modules.clinical.events import EncounterClosed
 from app.modules.clinical.models import EncounterStatus
@@ -88,4 +89,6 @@ def register_handlers() -> None:
     event_bus.subscribe_transactional(EncounterClosed, close_admission_on_encounter_close)
     # A patient waiting at the admission desk holds their OPD visit open.
     clinical_service.register_pending_provider("ADMISSION", service.pending_admission_request)
+    # Billing asks which visits are stays: IPD bills belong to the accountant.
+    billing_stays.register_stay_provider(service.stay_info_for)
     logger.debug("ipd handlers registered")

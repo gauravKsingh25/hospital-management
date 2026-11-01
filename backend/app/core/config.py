@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import Field, SecretStr, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -115,8 +115,25 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_TTL_MINUTES: Annotated[int, Field(ge=1, le=1440)] = 15
     # Refresh tokens rotate on every use and are revoked on reuse.
     REFRESH_TOKEN_TTL_DAYS: Annotated[int, Field(ge=1, le=90)] = 7
+    # SEC-04. A refresh token unused this long is dead: a tablet nobody has
+    # touched for half an hour must not refresh itself back to life.
+    REFRESH_IDLE_MINUTES: Annotated[int, Field(ge=5, le=1440)] = 30
+    # SEC-04. No chain of refreshes outlives a shift from the original sign-in.
+    SESSION_MAX_HOURS: Annotated[int, Field(ge=1, le=72)] = 12
+
+    # SEC-05. Roles that must sign in with an authenticator code as well as a
+    # password. Unset, it follows the environment: admins and doctors in
+    # staging and production, nobody on a developer's machine. Set it (even
+    # to an empty value) to decide explicitly.
+    TWO_FACTOR_REQUIRED_ROLES: Annotated[list[str] | None, NoDecode] = None
+    # How long "remember this device" skips the code on that device.
+    TWO_FACTOR_REMEMBER_HOURS: Annotated[int, Field(ge=1, le=720)] = 12
 
     PASSWORD_MIN_LENGTH: Annotated[int, Field(ge=8)] = 12
+
+    # SEC-01: distinct patients one staff member may read in an hour before
+    # administrators are told. A flag for a person to look at, not a lock.
+    PATIENT_BULK_READ_ALERT: Annotated[int, Field(ge=1)] = 300
 
     # Argon2id work factors. Defaults follow OWASP's second recommended
     # configuration (46 MiB, 1 iteration, 1 lane); raise MEMORY_KIB before
@@ -206,12 +223,50 @@ class Settings(BaseSettings):
     NOTIFICATION_RETRY_ENABLED: bool = True
     NOTIFICATION_RETRY_BATCH_SIZE: Annotated[int, Field(ge=1, le=1000)] = 100
 
+    # --- Platform email (invites) ------------------------------------------
+    # Separate from the patient-notification ladder above: these are messages
+    # from the platform owner to the people who run a hospital, not from a
+    # hospital to its patients. `console` logs them (and, with
+    # MAIL_OUTBOX_DIR, writes each as an .eml file so a developer can click the
+    # link); `smtp` sends for real. Production refuses `console`, so an invite
+    # link can never end up only in a log file.
+    MAIL_BACKEND: Literal["console", "smtp"] = "console"
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: Annotated[int, Field(ge=1, le=65535)] = 587
+    SMTP_USERNAME: str = ""
+    # For Gmail this is an App Password, never the account password.
+    SMTP_PASSWORD: SecretStr = SecretStr("")
+    SMTP_STARTTLS: bool = True
+    SMTP_TIMEOUT_SECONDS: Annotated[int, Field(ge=1, le=120)] = 20
+    MAIL_FROM: str = "gauravsingh10.vns@gmail.com"
+    MAIL_FROM_NAME: str = "Hospital Management"
+    MAIL_OUTBOX_DIR: str = ""
+    # Who an invited person, or a suspended hospital, is told to contact.
+    PLATFORM_SUPPORT_CONTACT: str = "gauravsingh10.vns@gmail.com"
+    # The web app's public address — the base of every link in an email.
+    APP_PUBLIC_URL: str = "http://localhost:3000"
+    INVITE_TTL_HOURS: Annotated[int, Field(ge=1, le=336)] = 48
+
     # --- CORS --------------------------------------------------------------
     # `NoDecode` stops pydantic-settings from trying to JSON-parse the env
     # value: we want a plain comma-separated list in .env, not `["a","b"]`.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    @field_validator("CORS_ORIGINS", "NOTIFICATION_CHANNEL_PRIORITY", mode="before")
+    # SEC-06. The proxies (addresses or CIDR ranges) whose `X-Forwarded-For`
+    # is believed for the audit log's IP. Anybody else's is ignored: a caller
+    # who reaches the API directly must not choose the address recorded
+    # against a payment. Name the edge proxy and the web app's container here.
+    TRUSTED_PROXIES: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["127.0.0.1", "::1"]
+    )
+
+    @field_validator(
+        "CORS_ORIGINS",
+        "NOTIFICATION_CHANNEL_PRIORITY",
+        "TRUSTED_PROXIES",
+        "TWO_FACTOR_REQUIRED_ROLES",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         if isinstance(value, str):
@@ -257,11 +312,47 @@ class Settings(BaseSettings):
             raise ValueError("DEBUG must be false in production")
         return self
 
+    @model_validator(mode="after")
+    def _guard_mail(self) -> Settings:
+        """An invite that was never sent looks, to the person waiting for it,
+        exactly like one lost in a spam folder — so misconfiguration fails at
+        boot instead."""
+        if self.MAIL_BACKEND == "smtp":
+            missing = [
+                name
+                for name, value in (
+                    ("SMTP_HOST", self.SMTP_HOST),
+                    ("SMTP_USERNAME", self.SMTP_USERNAME),
+                    ("SMTP_PASSWORD", self.SMTP_PASSWORD.get_secret_value()),
+                    ("MAIL_FROM", self.MAIL_FROM),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(f"MAIL_BACKEND=smtp needs {', '.join(missing)} to be set")
+        if self.is_production and self.MAIL_BACKEND != "smtp":
+            raise ValueError("MAIL_BACKEND must be 'smtp' in production")
+        return self
+
     # --- Derived -----------------------------------------------------------
     @computed_field  # type: ignore[prop-decorator]
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
+
+    @property
+    def two_factor_roles(self) -> frozenset[str]:
+        """The roles that must use two-step sign-in (SEC-05)."""
+        if self.TWO_FACTOR_REQUIRED_ROLES is not None:
+            return frozenset(self.TWO_FACTOR_REQUIRED_ROLES)
+        if self.ENVIRONMENT in ("staging", "production"):
+            return frozenset({"PLATFORM_ADMIN", "HOSPITAL_ADMIN", "DOCTOR"})
+        return frozenset()
+
+    @property
+    def api_docs_enabled(self) -> bool:
+        """Interactive docs and the OpenAPI map: a developer's machine only (SEC-09)."""
+        return self.ENVIRONMENT == "local"
 
     @property
     def async_database_url(self) -> URL:

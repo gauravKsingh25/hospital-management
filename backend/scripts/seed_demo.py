@@ -38,11 +38,12 @@ from app.modules.identity import service as identity_service
 from app.modules.identity.rbac import Roles
 from app.modules.identity.schemas import UserCreate
 from app.modules.ipd import service as ipd_service
-from app.modules.ipd.schemas import BedCreate, WardCreate
+from app.modules.ipd.models import DrugSchedule, MedicationRoute, MedicineForm
+from app.modules.ipd.schemas import BedCreate, MedicineItemCreate, WardCreate
 from app.modules.scheduling import service as scheduling_service
 from app.modules.scheduling.schemas import DoctorCreate
 from app.modules.tenancy import service as tenancy_service
-from app.modules.tenancy.schemas import HospitalCreate
+from app.modules.tenancy.schemas import HospitalCreate, HospitalUpdate
 
 DEFAULT_PASSWORD = "demo-password-2026"  # noqa: S105 - a seed credential, not a secret
 
@@ -56,6 +57,7 @@ STAFF = [
     ("lab@demo.hospital", "Ravi Kulkarni", Roles.LAB_TECH),
     ("cashier@demo.hospital", "Meera Joshi", Roles.CASHIER),
     ("admission@demo.hospital", "Ritu Sharma", Roles.ADMISSION_DESK),
+    ("accountant@demo.hospital", "Anil Kapoor", Roles.ACCOUNTANT),
 ]
 
 # What a clinic must have configured before it can charge for anything. Without
@@ -65,6 +67,114 @@ STAFF = [
 PRICES = [
     ("OPD-CONSULT", "OPD consultation", "CONSULTATION", Decimal("500.00")),
     ("CBC", "Complete Blood Count", "LAB", Decimal("350.00")),
+]
+
+# A starter medicine list: the IV fluids, injections and consumables a general
+# ward charges for most days. Prices are illustrative, in the range a mid-size
+# private hospital charges an inpatient — a hospital replaces them with its own.
+# (name, form, dose, route, unit, schedule, price)
+MEDICINES: list[
+    tuple[str, MedicineForm, str | None, MedicationRoute | None, str, DrugSchedule, Decimal]
+] = [
+    (
+        "NS 500 ml",
+        MedicineForm.IV_FLUID,
+        "500 ml",
+        MedicationRoute.IV,
+        "bottle",
+        DrugSchedule.NONE,
+        Decimal("45.00"),
+    ),
+    (
+        "RL 500 ml",
+        MedicineForm.IV_FLUID,
+        "500 ml",
+        MedicationRoute.IV,
+        "bottle",
+        DrugSchedule.NONE,
+        Decimal("55.00"),
+    ),
+    (
+        "DNS 500 ml",
+        MedicineForm.IV_FLUID,
+        "500 ml",
+        MedicationRoute.IV,
+        "bottle",
+        DrugSchedule.NONE,
+        Decimal("50.00"),
+    ),
+    (
+        "Ceftriaxone 1 g",
+        MedicineForm.INJECTION,
+        "1 g",
+        MedicationRoute.IV,
+        "vial",
+        DrugSchedule.H,
+        Decimal("85.00"),
+    ),
+    (
+        "Pantoprazole 40 mg",
+        MedicineForm.INJECTION,
+        "40 mg",
+        MedicationRoute.IV,
+        "vial",
+        DrugSchedule.H,
+        Decimal("65.00"),
+    ),
+    (
+        "Ondansetron 4 mg",
+        MedicineForm.INJECTION,
+        "4 mg",
+        MedicationRoute.IV,
+        "ampoule",
+        DrugSchedule.H,
+        Decimal("25.00"),
+    ),
+    (
+        "Paracetamol 1 g infusion",
+        MedicineForm.INJECTION,
+        "1 g",
+        MedicationRoute.IV,
+        "bottle",
+        DrugSchedule.NONE,
+        Decimal("120.00"),
+    ),
+    (
+        "Paracetamol 500 mg",
+        MedicineForm.TABLET,
+        "500 mg",
+        MedicationRoute.ORAL,
+        "tablet",
+        DrugSchedule.NONE,
+        Decimal("2.00"),
+    ),
+    (
+        "IV cannula 20G",
+        MedicineForm.CONSUMABLE,
+        None,
+        None,
+        "piece",
+        DrugSchedule.NONE,
+        Decimal("60.00"),
+    ),
+    (
+        "IV infusion set",
+        MedicineForm.CONSUMABLE,
+        None,
+        None,
+        "piece",
+        DrugSchedule.NONE,
+        Decimal("40.00"),
+    ),
+    (
+        "Syringe 5 ml",
+        MedicineForm.CONSUMABLE,
+        None,
+        None,
+        "piece",
+        DrugSchedule.NONE,
+        Decimal("8.00"),
+    ),
 ]
 
 
@@ -79,6 +189,13 @@ async def seed(*, code: str, name: str, password: str) -> int:
             print(f"Created hospital {code} ({hospital.id}).")
         else:
             print(f"Hospital {code} already exists ({hospital.id}).")
+        if hospital.upi_vpa is None:
+            # A demo payee, so reception's payment dialog shows a real QR. The
+            # handle `@example` is no bank's, so a UPI app cannot resolve it
+            # and no real person can be paid by a demo scan.
+            hospital = await tenancy_service.update_hospital(
+                session, hospital.id, HospitalUpdate(upi_vpa="demo.hospital@example")
+            )
         hospital_id: uuid.UUID = hospital.id
 
     created: list[tuple[str, str]] = []
@@ -136,6 +253,7 @@ async def seed(*, code: str, name: str, password: str) -> int:
     await _seed_price_list(hospital_id)
     await _seed_catalogue(hospital_id)
     await _seed_ward(hospital_id)
+    await _seed_medicines(hospital_id)
 
     print()
     print(f"Hospital: {name} ({code})")
@@ -185,6 +303,39 @@ async def _seed_price_list(hospital_id: uuid.UUID) -> None:
                 ServicePriceUpsert(rate_card_id=card.id, price=price),
             )
             print(f"Priced {code} at {price}.")
+
+
+async def _seed_medicines(hospital_id: uuid.UUID) -> None:
+    """The starter medicine list, each item priced on the CASH card.
+
+    Through `ipd_service.create_medicine_item`, the same door the admission
+    desk uses, so every item gets its billing service and price exactly as a
+    hand-made one would. Keyed on the name: an item already on the list — the
+    seed ran before, or somebody added it by hand — is left alone, price and
+    all.
+    """
+    async with session_scope() as session, system_context(session):
+        existing, _ = await ipd_service.list_medicine_items(
+            session, PageParams(limit=MAX_PAGE_SIZE), hospital_id=hospital_id, include_inactive=True
+        )
+        known = {item.name.lower() for item in existing}
+        for name, form, dose, route, unit, schedule, price in MEDICINES:
+            if name.lower() in known:
+                continue
+            await ipd_service.create_medicine_item(
+                session,
+                MedicineItemCreate(
+                    name=name,
+                    form=form,
+                    dose=dose,
+                    route=route,
+                    unit=unit,
+                    drug_schedule=schedule,
+                    price=price,
+                ),
+                hospital_id=hospital_id,
+            )
+            print(f"Added {name} to the medicine list at {price}.")
 
 
 async def _seed_catalogue(hospital_id: uuid.UUID) -> None:

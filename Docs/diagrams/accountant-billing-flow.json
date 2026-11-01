@@ -1,0 +1,379 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Accountant Billing — OPD/IPD Split to the Final Bill",
+    "quality_profile": "showcase",
+    "output": "Docs/diagrams/accountant-billing-flow.html",
+    "repository": {
+      "url": "https://github.com/gauravKsingh25/hospital-management.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "667fde104abdb8c47c6bf78aa510e10bcda94699"
+    }
+  },
+  "lanes": [
+    {
+      "id": "desk",
+      "label": "Front desk, ward, patient"
+    },
+    {
+      "id": "billing",
+      "label": "Billing service (server rules)"
+    },
+    {
+      "id": "accounts",
+      "label": "Accountant + hospital admin"
+    }
+  ],
+  "mainPath": [
+    "visit",
+    "admit",
+    "split",
+    "running",
+    "editor",
+    "finalise",
+    "issue",
+    "print"
+  ],
+  "nodes": [
+    {
+      "id": "visit",
+      "lane": "desk",
+      "col": 0,
+      "type": "frontend",
+      "label": "OPD visit",
+      "sublabel": "fee captured; Paid = OPD bill",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/billing/service.py",
+          "line": 2148,
+          "end_line": 2190,
+          "label": "collect_balance"
+        }
+      ]
+    },
+    {
+      "id": "admit",
+      "lane": "desk",
+      "col": 1,
+      "type": "frontend",
+      "label": "Desk admits",
+      "sublabel": "the still-open visit",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/ipd/service.py",
+          "line": 910,
+          "end_line": 925,
+          "label": "admit_patient"
+        }
+      ]
+    },
+    {
+      "id": "discharge",
+      "lane": "desk",
+      "col": 4,
+      "type": "frontend",
+      "label": "Patient leaves",
+      "sublabel": "or death, LAMA, referral",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/ipd/service.py",
+          "line": 1621,
+          "label": "discharge_patient"
+        }
+      ]
+    },
+    {
+      "id": "split",
+      "lane": "billing",
+      "col": 1,
+      "type": "backend",
+      "label": "Consultation frozen",
+      "sublabel": "own OPD bill, never edited",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/billing/service.py",
+          "line": 1725,
+          "end_line": 1785,
+          "label": "split_pre_admission"
+        }
+      ]
+    },
+    {
+      "id": "running",
+      "lane": "billing",
+      "col": 2,
+      "type": "database",
+      "label": "IPD running bill",
+      "sublabel": "charges from admission on",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/billing/service.py",
+          "line": 1628,
+          "end_line": 1660,
+          "label": "assemble_draft (scope)"
+        }
+      ]
+    },
+    {
+      "id": "save",
+      "lane": "billing",
+      "col": 3,
+      "type": "backend",
+      "label": "Save: all or none",
+      "sublabel": "version-checked, audited",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/billing/service.py",
+          "line": 2912,
+          "end_line": 3008,
+          "label": "apply_bill_changes"
+        },
+        {
+          "path": "backend/app/modules/billing/router.py",
+          "line": 794,
+          "end_line": 838,
+          "label": "audit per change"
+        }
+      ]
+    },
+    {
+      "id": "issue",
+      "lane": "billing",
+      "col": 5,
+      "type": "backend",
+      "label": "Issued and frozen",
+      "sublabel": "letterhead snapshotted",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/billing/service.py",
+          "line": 1786,
+          "end_line": 1815,
+          "label": "issue_invoice"
+        }
+      ]
+    },
+    {
+      "id": "dashboard",
+      "lane": "accounts",
+      "col": 1,
+      "type": "frontend",
+      "label": "Accounts dashboard",
+      "sublabel": "newest first, read only",
+      "width": 128,
+      "sources": [
+        {
+          "path": "frontend/src/features/billing/accounts/accounts-dashboard.tsx",
+          "line": 40,
+          "label": "AccountsDashboard"
+        },
+        {
+          "path": "backend/app/modules/billing/router.py",
+          "line": 555,
+          "label": "GET /summary"
+        }
+      ]
+    },
+    {
+      "id": "editor",
+      "lane": "accounts",
+      "col": 2,
+      "type": "frontend",
+      "label": "IPD bill editor",
+      "sublabel": "stage changes, with reasons",
+      "width": 128,
+      "sources": [
+        {
+          "path": "frontend/src/features/billing/accounts/ipd-bill-editor.tsx",
+          "line": 75,
+          "label": "IpdBillEditor"
+        }
+      ]
+    },
+    {
+      "id": "finalise",
+      "lane": "accounts",
+      "col": 4,
+      "type": "frontend",
+      "label": "Generate final bill",
+      "sublabel": "ipd_bill:finalise",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/billing/service.py",
+          "line": 3010,
+          "end_line": 3044,
+          "label": "finalise_ipd_bill"
+        }
+      ]
+    },
+    {
+      "id": "print",
+      "lane": "desk",
+      "col": 5,
+      "type": "frontend",
+      "label": "Printed A4 bill",
+      "sublabel": "Print or Save as PDF",
+      "width": 128,
+      "sources": [
+        {
+          "path": "frontend/src/features/billing/print/printed-bill.tsx",
+          "line": 32,
+          "label": "PrintedBill"
+        }
+      ]
+    },
+    {
+      "id": "not_accounts",
+      "lane": "desk",
+      "col": 2,
+      "type": "security",
+      "label": "Paid or hand edit",
+      "sublabel": "on a stay: refused",
+      "width": 128,
+      "sources": [
+        {
+          "path": "backend/app/modules/billing/router.py",
+          "line": 121,
+          "end_line": 142,
+          "label": "_require_ipd_power"
+        },
+        {
+          "path": "backend/app/modules/billing/service.py",
+          "line": 2180,
+          "end_line": 2186,
+          "label": "collect refuses stays"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "send-admit",
+      "from": "visit",
+      "to": "admit",
+      "label": "admit"
+    },
+    {
+      "id": "admit-split",
+      "from": "admit",
+      "to": "split",
+      "label": "at admission",
+      "variant": "emphasis"
+    },
+    {
+      "id": "split-running",
+      "from": "split",
+      "to": "running"
+    },
+    {
+      "id": "running-editor",
+      "from": "running",
+      "to": "editor"
+    },
+    {
+      "id": "editor-save",
+      "from": "editor",
+      "to": "save",
+      "label": "Save",
+      "variant": "emphasis",
+      "role": "branch"
+    },
+    {
+      "id": "leaves-finalise",
+      "from": "discharge",
+      "to": "finalise",
+      "label": "closes visit",
+      "role": "branch",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "finalise-issue",
+      "from": "finalise",
+      "to": "issue",
+      "variant": "emphasis",
+      "label": "issue + snapshot",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "issue-print",
+      "from": "issue",
+      "to": "print",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "dash-editor",
+      "from": "dashboard",
+      "to": "editor",
+      "label": "opens",
+      "role": "branch",
+      "variant": "dashed"
+    },
+    {
+      "id": "refuse-others",
+      "from": "running",
+      "to": "not_accounts",
+      "label": "accounts only",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "id": "editor-finalise",
+      "from": "editor",
+      "to": "finalise",
+      "label": "once discharged",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "violet",
+      "title": "Billing never imports ipd",
+      "items": [
+        "ipd already imports billing (bed-days, medicines), so the reverse import would be a cycle",
+        "ipd registers stay_info_for as billing's stay provider at startup (ipd/handlers.py)",
+        "billing asks stays_for(visit ids): one bulk lookup decides IPD vs OPD everywhere"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Who may do what",
+      "items": [
+        "Accountant and hospital admin: edit and finalise IPD bills, read all accounts",
+        "Reception, cashier, billing staff, pharmacy: OPD bills only; refused on a stay",
+        "The accountant takes no money: payment stays at the counter"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Refused by the server",
+      "items": [
+        "Reception Paid on a stay: ipd_bill_by_accounts",
+        "Cashier or billing staff editing a stay: 403 ipd_bill_accounts_only",
+        "Save after someone else changed the stay: bill_changed, editor reloads",
+        "Final bill while the patient is in a bed: stay_not_discharged"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Decisions worth checking",
+      "items": [
+        "Outstanding counts issued bills only; a patient in a bed shows under Running in wards",
+        "Total changes only on Save; the editor shows the last saved total",
+        "Old bills reprint with the letterhead and logo version of their issue day"
+      ]
+    }
+  ]
+}
