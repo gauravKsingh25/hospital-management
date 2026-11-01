@@ -86,3 +86,6 @@ dump.rdb
 
 # Claude superpowers scratch (brainstorm companion, plan ledgers)
 .superpowers/
+
+# Dev mail outbox (console mailer writes invite emails here)
+.mail-outbox/
