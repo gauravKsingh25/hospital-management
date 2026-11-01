@@ -35,6 +35,8 @@ __all__ = [
 class LoginRequest(BaseModel):
     email: EmailStr
     password: Annotated[str, Field(min_length=1, max_length=256)]
+    # SEC-05: the token from "remember this device", if this device has one.
+    device_token: Annotated[str | None, Field(max_length=2048)] = None
 
 
 class RefreshRequest(BaseModel):
@@ -50,6 +52,55 @@ class TokenPair(BaseModel):
         default=False,
         description="When true the client must send the user to a password change screen.",
     )
+    device_token: str | None = Field(
+        default=None,
+        description="Set when the person asked to remember this device (SEC-05).",
+    )
+
+
+class TwoFactorChallengeRead(BaseModel):
+    """The password was right; a code from the authenticator app is next.
+
+    `enrol` is true when the person's role requires two-step sign-in and they
+    have not set the app up yet.
+    """
+
+    two_factor_required: bool = True
+    enrol: bool
+    challenge_token: str
+    expires_in: int
+
+
+class TwoFactorVerify(BaseModel):
+    challenge_token: Annotated[str, Field(min_length=1, max_length=2048)]
+    code: Annotated[str, Field(min_length=6, max_length=12)]
+    remember_device: bool = False
+
+
+class TwoFactorEnrolStart(BaseModel):
+    challenge_token: Annotated[str, Field(min_length=1, max_length=2048)]
+
+
+class TwoFactorSecretRead(BaseModel):
+    """What the authenticator app needs: scan the URI as a QR code, or type
+    the secret."""
+
+    secret: str
+    otpauth_uri: str
+
+
+class TwoFactorCode(BaseModel):
+    code: Annotated[str, Field(min_length=6, max_length=12)]
+
+
+class TwoFactorDisable(BaseModel):
+    password: Annotated[str, Field(min_length=1, max_length=256)]
+    code: Annotated[str, Field(min_length=6, max_length=12)]
+
+
+class TwoFactorStatusRead(BaseModel):
+    enabled: bool
+    required: bool
 
 
 class ChangePasswordRequest(BaseModel):
@@ -80,6 +131,9 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     full_name: Annotated[str | None, Field(min_length=1, max_length=200)] = None
     phone: Annotated[str | None, Field(max_length=20)] = None
     is_active: bool | None = None
@@ -129,6 +183,8 @@ class CurrentUserRead(UserRead):
 
     roles: list[str]
     permissions: list[str]
+    # SEC-05: the person's role makes two-step sign-in compulsory.
+    two_factor_required: bool = False
 
 
 # ---------------------------------------------------------------------------

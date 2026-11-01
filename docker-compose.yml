@@ -77,6 +77,16 @@ services:
     volumes:
       - ./backend:/code
     command: ["arq", "app.workers.main.WorkerSettings"]
+    # ARQ serves no HTTP, so the image's `curl :8000/health` could never pass
+    # and the worker sat "unhealthy" for ever — on Render or Fly, a restart
+    # loop or a real failure hidden in the noise (OPS-01). `arq --check` reads
+    # the heartbeat the worker writes to Redis every minute.
+    healthcheck:
+      test: ["CMD", "arq", "--check", "app.workers.main.WorkerSettings"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy

@@ -48,6 +48,41 @@ test.describe("the diagnostics bench", () => {
     await expect(row.getByRole("button", { name: "Accession" })).toBeVisible();
   });
 
+  test("a coded request names its test and goes onto the bench in one click", async ({
+    page,
+  }) => {
+    // The order carries the catalogue code, so there is nothing left for the
+    // lab to choose — and no second place to pick the wrong test, or price.
+    const name = await consultAndOrderBloods(page);
+    await signIn(page, ACCOUNTS.lab);
+
+    await findOnBoard(page, "worklist-row", name);
+    const row = page.getByTestId("worklist-row").filter({ hasText: name });
+    await expect(row.getByTestId("matched-test")).toContainText("Complete Blood Count");
+
+    await row.getByRole("button", { name: "Accession" }).click();
+    await expect(row).toContainText("Sample", { timeout: 45_000 });
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("a free-text request waits to be mapped, then joins the bench", async ({ page }) => {
+    const name = await registerAndQueue(page);
+    await doctorFinishesVisit(page, name, { freeText: "Blood count please" });
+    await signIn(page, ACCOUNTS.lab);
+
+    await findOnBoard(page, "worklist-row", name);
+    const row = page.getByTestId("worklist-row").filter({ hasText: name });
+    await expect(row).toContainText("Needs mapping");
+    await expect(row.getByRole("button", { name: "Accession" })).toHaveCount(0);
+
+    await row.getByRole("button", { name: "Map test" }).click();
+    await page.getByLabel("Catalogue entry").click();
+    await page.getByRole("option", { name: /Complete Blood Count/ }).click();
+    await page.getByRole("button", { name: "Accession" }).last().click();
+
+    await expect(row).toContainText("Sample", { timeout: 45_000 });
+  });
+
   test("the row's one action follows the sample, then the report", async ({ page }) => {
     const name = await consultAndOrderBloods(page);
     await signIn(page, ACCOUNTS.lab);
@@ -56,9 +91,6 @@ test.describe("the diagnostics bench", () => {
     const row = page.getByTestId("worklist-row").filter({ hasText: name });
 
     await row.getByRole("button", { name: "Accession" }).click();
-    await page.getByLabel("Catalogue entry").click();
-    await page.getByRole("option", { name: /Complete Blood Count/ }).click();
-    await page.getByRole("button", { name: "Accession" }).last().click();
 
     // Accessioned: the sample now exists and has to be drawn.
     await expect(row).toContainText("Sample", { timeout: 45_000 });
@@ -81,9 +113,6 @@ test.describe("the diagnostics bench", () => {
     await findOnBoard(page, "worklist-row", name);
     const row = page.getByTestId("worklist-row").filter({ hasText: name });
     await row.getByRole("button", { name: "Accession" }).click();
-    await page.getByLabel("Catalogue entry").click();
-    await page.getByRole("option", { name: /Complete Blood Count/ }).click();
-    await page.getByRole("button", { name: "Accession" }).last().click();
     await row.getByRole("button", { name: "Sample taken" }).click();
     await row.getByRole("button", { name: "Received" }).click();
     await row.getByRole("link", { name: "Enter results" }).click();
@@ -104,9 +133,6 @@ test.describe("the diagnostics bench", () => {
     await findOnBoard(page, "worklist-row", name);
     const row = page.getByTestId("worklist-row").filter({ hasText: name });
     await row.getByRole("button", { name: "Accession" }).click();
-    await page.getByLabel("Catalogue entry").click();
-    await page.getByRole("option", { name: /Complete Blood Count/ }).click();
-    await page.getByRole("button", { name: "Accession" }).last().click();
     await row.getByRole("button", { name: "Sample taken" }).click();
     await row.getByRole("button", { name: "Received" }).click();
     await row.getByRole("link", { name: "Enter results" }).click();
@@ -195,9 +221,6 @@ test.describe("the loop closes", () => {
     const benchRow = page.getByTestId("worklist-row").filter({ hasText: name });
 
     await benchRow.getByRole("button", { name: "Accession" }).click();
-    await page.getByLabel("Catalogue entry").click();
-    await page.getByRole("option", { name: /Complete Blood Count/ }).click();
-    await page.getByRole("button", { name: "Accession" }).last().click();
     await benchRow.getByRole("button", { name: "Sample taken" }).click();
     await benchRow.getByRole("button", { name: "Received" }).click();
     await benchRow.getByRole("link", { name: "Enter results" }).click();

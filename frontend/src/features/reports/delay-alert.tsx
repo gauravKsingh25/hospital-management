@@ -56,7 +56,10 @@ export function DelayAlert() {
         </ul>
       </div>
 
-      <Link href="/reports" className="text-sm font-medium underline underline-offset-4">
+      <Link
+        href="/reports"
+        className="min-h-tap inline-flex items-center text-sm font-medium underline underline-offset-4"
+      >
         {t("openDashboard")}
       </Link>
     </aside>

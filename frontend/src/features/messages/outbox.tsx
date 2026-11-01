@@ -145,7 +145,7 @@ export function Outbox({
                       // Sent from the fallback copy because the hospital has
                       // written none. It went out, so this is not an error —
                       // but it went out in the shipped wording, in English.
-                      <span className="border-caution/40 bg-caution/15 text-caution-foreground rounded-full border px-2 py-0.5 text-[10px] font-medium">
+                      <span className="border-caution/40 bg-caution/15 text-caution-foreground rounded-full border px-2 py-0.5 text-xs font-medium">
                         {t("needsTemplate")}
                       </span>
                     ) : null}

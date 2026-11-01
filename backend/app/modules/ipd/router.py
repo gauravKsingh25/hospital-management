@@ -230,10 +230,19 @@ async def _render_doses(
     wards = await service.get_wards_by_ids(
         session, {bed.ward_id for bed in beds.values()}, hospital_id=hospital_id
     )
+    # SAFE-01: the allergy beside the dose, where the nurse is looking.
+    allergies = await service.dose_allergies(
+        session, doses, hospital_id=hospital_id, patients=patients
+    )
 
     rows: list[DoseRead] = []
     for dose in doses:
         row = DoseRead.model_validate(dose)
+        allergy = allergies.get(dose.id)
+        if allergy is not None:
+            row.patient_allergies = allergy.patient_allergies
+            row.allergy_conflicts = allergy.conflicts
+            row.allergy_unreviewed = allergy.unreviewed
 
         patient = patients.get(dose.patient_id)
         if patient is not None:
@@ -666,9 +675,11 @@ async def _render_orders(
     prices = await service.medicine_prices(
         session, {order.item_code for order in orders if order.item_code}, hospital_id=hospital_id
     )
+    clashes = await service.order_allergy_conflicts(session, orders, hospital_id=hospital_id)
     rendered: list[MedicationOrderRead] = []
     for order in orders:
         view = MedicationOrderRead.model_validate(order)
+        view.allergy_conflicts = clashes.get(order.id, [])
         if order.item_code:
             view.unit_price = prices.get(order.item_code)
             item = items.get(order.medicine_item_id) if order.medicine_item_id else None
@@ -696,6 +707,24 @@ async def prescribe(
 ) -> MedicationOrderRead:
     admission = await service.get_admission(session, admission_id, hospital_id=tenant_id)
     order = await service.prescribe(session, admission, payload, actor=context.user)
+    rendered = (await _render_orders(session, [order], hospital_id=tenant_id))[0]
+    if order.allergy_override_reason:
+        # SAFE-01: prescribing past a recorded allergy is the decision an
+        # incident review asks about first — its own row, findable by action.
+        await identity_service.record_audit(
+            session,
+            action="medication.allergy_override",
+            actor=context.user,
+            hospital_id=tenant_id,
+            resource_type="medication_order",
+            resource_id=order.id,
+            changes={
+                "drug": order.drug_name,
+                "allergies": rendered.allergy_conflicts,
+                "reason": order.allergy_override_reason,
+            },
+            ip_address=await get_client_ip(request),
+        )
     await identity_service.record_audit(
         session,
         action="medication.prescribe",
@@ -714,7 +743,7 @@ async def prescribe(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
-    return (await _render_orders(session, [order], hospital_id=tenant_id))[0]
+    return rendered
 
 
 @chart_router.get(

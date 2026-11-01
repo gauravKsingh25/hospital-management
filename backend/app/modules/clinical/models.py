@@ -564,6 +564,9 @@ class Order(AuditedTenantModel, table=True):
     item_code: str | None = Field(default=None, max_length=32, index=True)
     item_name: str = Field(max_length=200)
     instructions: str | None = Field(default=None, max_length=500)
+    # A PHARMACY order that clashed with a recorded drug allergy and was
+    # placed anyway, with the doctor's reason (SAFE-01).
+    allergy_override_reason: str | None = Field(default=None, max_length=300)
 
     # Whether the doctor will see the patient again in THIS visit once it is
     # back. Drives AWAITING_RESULTS vs PENDING_CLEARANCE.

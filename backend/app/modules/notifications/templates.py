@@ -63,12 +63,18 @@ from typing import Any, Final
 from app.modules.notifications.models import NotificationCategory, NotificationChannel
 
 __all__ = [
+    "COMMON_PLACEHOLDERS",
     "DEFAULT_LANGUAGE",
     "DEFAULT_TEMPLATES",
+    "PLACEHOLDERS",
     "PLACEHOLDER_PATTERN",
+    "SUPPORTED_LANGUAGES",
     "DefaultTemplate",
     "RenderResult",
     "TemplateCode",
+    "TextProblems",
+    "allowed_placeholders",
+    "check_template_text",
     "coerce_context",
     "default_template",
     "fallback_body",
@@ -84,6 +90,18 @@ DEFAULT_LANGUAGE: Final[str] = "en"
 # whitespace-delimited expressions. If it is not a plain key it is not a
 # placeholder, and it is left on the page untouched rather than interpreted.
 PLACEHOLDER_PATTERN: Final[re.Pattern[str]] = re.compile(r"\{\{\s*([a-z][a-z0-9_]{0,63})\s*\}\}")
+
+# Anything in double braces, readable or not, and a single-braced word. Neither
+# is ever substituted, so both reach the patient with the braces showing.
+_DOUBLE_BRACED: Final[re.Pattern[str]] = re.compile(r"\{\{[^{}]*\}\}")
+_SINGLE_BRACED_WORD: Final[re.Pattern[str]] = re.compile(r"\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}")
+
+# ISO 639-1 codes a template may be written in: English, Hindi, and the
+# scheduled languages a patient is likeliest to read. A template in any other
+# code matches no patient's `preferred_language`, so it can never be sent.
+SUPPORTED_LANGUAGES: Final[frozenset[str]] = frozenset(
+    {"en", "hi", "as", "bn", "gu", "kn", "ml", "mr", "or", "pa", "ta", "te", "ur"}
+)
 
 
 class TemplateCode:
@@ -106,7 +124,88 @@ class TemplateCode:
     SETTLEMENT_REQUIRED = "SETTLEMENT_REQUIRED"
 
     # --- clinical ---------------------------------------------------------
+    # At the close of a visit with no follow-up date: the general nudge.
     FOLLOW_UP_REMINDER = "FOLLOW_UP_REMINDER"
+    # At the close of a visit the doctor set a follow-up date on.
+    FOLLOW_UP_SCHEDULED = "FOLLOW_UP_SCHEDULED"
+    # The day before that date, from the worker's sweep.
+    FOLLOW_UP_DUE = "FOLLOW_UP_DUE"
+
+    # --- security (SEC-01) ------------------------------------------------
+    # Staff-directed: one person has read an unusual number of patients.
+    BULK_PATIENT_READ = "BULK_PATIENT_READ"
+
+
+# What every patient-facing trigger supplies — `handlers._for_patient`.
+COMMON_PLACEHOLDERS: Final[frozenset[str]] = frozenset({"hospital_name", "patient_name", "uhid"})
+
+# code -> every value its trigger in `handlers.py` puts in the context. A
+# template may ask for these and nothing else: a name outside the set is filled
+# with nothing, and the patient receives a sentence with a hole in it.
+PLACEHOLDERS: Final[dict[str, frozenset[str]]] = {
+    code: COMMON_PLACEHOLDERS | extra
+    for code, extra in {
+        TemplateCode.APPOINTMENT_BOOKED: {"doctor_name", "appointment_time", "appointment_number"},
+        TemplateCode.APPOINTMENT_CANCELLED: {"appointment_time", "reason"},
+        TemplateCode.REPORT_READY: {"test_name", "report_number", "discipline"},
+        TemplateCode.CRITICAL_RESULT: {"test_name", "critical_values", "doctor_name"},
+        TemplateCode.SPECIMEN_REJECTED: {"reason", "accession_number"},
+        TemplateCode.PAYMENT_RECEIPT: {"amount", "receipt_number", "method", "balance_due"},
+        TemplateCode.INVOICE_ISSUED: {"invoice_number", "grand_total", "balance_due"},
+        TemplateCode.SETTLEMENT_REQUIRED: {"balance_due", "context_status"},
+        TemplateCode.FOLLOW_UP_REMINDER: set(),
+        TemplateCode.FOLLOW_UP_SCHEDULED: {"follow_up_date"},
+        TemplateCode.FOLLOW_UP_DUE: {"follow_up_date"},
+        TemplateCode.BULK_PATIENT_READ: {"user_name", "distinct_patients"},
+    }.items()
+}
+
+
+def allowed_placeholders(code: str) -> frozenset[str]:
+    """What a template for `code` may ask for.
+
+    A code no trigger raises — one a hospital made up for ad-hoc messages — gets
+    the common three, which is all anybody can promise it.
+    """
+    return PLACEHOLDERS.get(code.strip().upper(), COMMON_PLACEHOLDERS)
+
+
+@dataclass(frozen=True, slots=True)
+class TextProblems:
+    """Why hospital-authored copy would not render as written."""
+
+    # `{{names}}` the code's trigger never supplies.
+    unknown: tuple[str, ...] = ()
+    # Braced text the renderer will not substitute: `{word}`, `{{Not A Key}}`.
+    malformed: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.unknown or self.malformed)
+
+
+def check_template_text(code: str, text: str) -> TextProblems:
+    """Find what in `text` would reach the patient unsubstituted.
+
+    `render` never raises, which is right for sending and wrong for saving: the
+    time to refuse a bad placeholder is when somebody types it, not after it has
+    gone out. A brace that is not wrapped round a word (`{Mon-Sat}`) is left
+    alone — clinical copy occasionally needs one.
+    """
+    allowed = allowed_placeholders(code)
+    unknown: dict[str, None] = {}
+    malformed: dict[str, None] = {}
+
+    for match in _DOUBLE_BRACED.finditer(text):
+        placeholder = PLACEHOLDER_PATTERN.fullmatch(match.group(0))
+        if placeholder is None:
+            malformed.setdefault(match.group(0), None)
+        elif placeholder.group(1) not in allowed:
+            unknown.setdefault(placeholder.group(1), None)
+
+    for match in _SINGLE_BRACED_WORD.finditer(_DOUBLE_BRACED.sub(" ", text)):
+        malformed.setdefault(match.group(0), None)
+
+    return TextProblems(unknown=tuple(unknown), malformed=tuple(malformed))
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -159,6 +258,16 @@ def _en() -> dict[str, DefaultTemplate]:
                 "{{critical_values}}. Please review immediately and record the callback."
             ),
         ),
+        # Staff-directed, and English for the same reason as a critical result:
+        # it is read by an administrator deciding whether to act, not a patient.
+        TemplateCode.BULK_PATIENT_READ: DefaultTemplate(
+            category=NotificationCategory.CRITICAL_ALERT,
+            subject="Unusual access to patient records",
+            body=(
+                "{{hospital_name}} security: {{user_name}} has opened {{distinct_patients}} "
+                "patient records in the last hour. Please review the audit log."
+            ),
+        ),
         TemplateCode.SPECIMEN_REJECTED: DefaultTemplate(
             category=NotificationCategory.REPORT,
             subject="Repeat sample required",
@@ -197,6 +306,22 @@ def _en() -> dict[str, DefaultTemplate]:
             body=(
                 "{{hospital_name}}: Dear {{patient_name}}, your visit is complete. "
                 "Please book a follow-up if your doctor has advised one."
+            ),
+        ),
+        TemplateCode.FOLLOW_UP_SCHEDULED: DefaultTemplate(
+            category=NotificationCategory.FOLLOW_UP,
+            subject="Your follow-up visit",
+            body=(
+                "{{hospital_name}}: Dear {{patient_name}}, your visit is complete. "
+                "Your doctor would like to see you again on {{follow_up_date}}."
+            ),
+        ),
+        TemplateCode.FOLLOW_UP_DUE: DefaultTemplate(
+            category=NotificationCategory.FOLLOW_UP,
+            subject="Your follow-up visit is tomorrow",
+            body=(
+                "{{hospital_name}}: Dear {{patient_name}}, a reminder that your doctor "
+                "would like to see you tomorrow, {{follow_up_date}}. UHID {{uhid}}."
             ),
         ),
     }
@@ -240,6 +365,16 @@ def _hi() -> dict[str, DefaultTemplate]:
                 "{{critical_values}}. Please review immediately and record the callback."
             ),
         ),
+        # Staff-directed, and English for the same reason as a critical result:
+        # it is read by an administrator deciding whether to act, not a patient.
+        TemplateCode.BULK_PATIENT_READ: DefaultTemplate(
+            category=NotificationCategory.CRITICAL_ALERT,
+            subject="Unusual access to patient records",
+            body=(
+                "{{hospital_name}} security: {{user_name}} has opened {{distinct_patients}} "
+                "patient records in the last hour. Please review the audit log."
+            ),
+        ),
         TemplateCode.SPECIMEN_REJECTED: DefaultTemplate(
             category=NotificationCategory.REPORT,
             subject="दोबारा सैंपल आवश्यक",
@@ -278,6 +413,22 @@ def _hi() -> dict[str, DefaultTemplate]:
             body=(
                 "{{hospital_name}}: प्रिय {{patient_name}}, आपकी विज़िट पूरी हो गई है। "
                 "डॉक्टर की सलाह पर कृपया फ़ॉलो-अप बुक करें।"
+            ),
+        ),
+        TemplateCode.FOLLOW_UP_SCHEDULED: DefaultTemplate(
+            category=NotificationCategory.FOLLOW_UP,
+            subject="आपकी फ़ॉलो-अप विज़िट",
+            body=(
+                "{{hospital_name}}: प्रिय {{patient_name}}, आपकी विज़िट पूरी हो गई है। "
+                "डॉक्टर आपको {{follow_up_date}} को दोबारा देखना चाहते हैं।"
+            ),
+        ),
+        TemplateCode.FOLLOW_UP_DUE: DefaultTemplate(
+            category=NotificationCategory.FOLLOW_UP,
+            subject="आपकी फ़ॉलो-अप विज़िट कल है",
+            body=(
+                "{{hospital_name}}: प्रिय {{patient_name}}, याद दिला दें कि डॉक्टर आपको "
+                "कल, {{follow_up_date}} को देखना चाहते हैं। UHID {{uhid}}।"
             ),
         ),
     }

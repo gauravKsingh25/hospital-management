@@ -12,3 +12,7 @@ htmlcov/
 .env.*
 tests/
 *.md
+# Personal documents left in the source tree (SEC-10) never ship in an image.
+**/*.tex
+**/*.pdf
+**/*.docx

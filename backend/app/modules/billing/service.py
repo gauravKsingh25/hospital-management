@@ -32,7 +32,7 @@ import logging
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -2072,6 +2072,41 @@ async def _apply_receipts(session: AsyncSession, invoice: Invoice) -> Invoice:
     return invoice
 
 
+# How far ahead of the server's clock a counter's clock may run.
+RECEIPT_CLOCK_SKEW = timedelta(minutes=10)
+
+
+async def _assert_receipt_time(
+    session: AsyncSession, received_at: datetime, *, hospital_id: uuid.UUID, may_backdate: bool
+) -> None:
+    """When a payment says it was received must be believable (SEC-07).
+
+    Never in the future beyond a few minutes of clock drift. Never before
+    today, on the hospital's clock, unless the caller holds
+    `payment:backdate`: a back-dated receipt moves money into a day whose cash
+    has already been counted and handed over. The server's own time is kept
+    regardless, as the payment's `created_at`.
+    """
+    moment = received_at if received_at.tzinfo else received_at.replace(tzinfo=UTC)
+    if moment > utc_now() + RECEIPT_CLOCK_SKEW:
+        raise ValidationError(
+            "A payment cannot be recorded as received in the future.",
+            code="received_at_in_future",
+        )
+    if may_backdate:
+        return
+    zone = await tenancy_service.local_zone(session, hospital_id)
+    start_of_today = datetime.combine(
+        await tenancy_service.local_today(session, hospital_id), time.min, zone
+    )
+    if moment < start_of_today:
+        raise ValidationError(
+            "A payment can only be recorded as received today. "
+            "Ask accounts to enter an earlier date.",
+            code="received_at_backdated",
+        )
+
+
 async def record_payment(
     session: AsyncSession,
     invoice: Invoice,
@@ -2084,6 +2119,7 @@ async def record_payment(
     payer_name: str | None = None,
     received_at: datetime | None = None,
     notes: str | None = None,
+    may_backdate: bool = False,
 ) -> tuple[Payment, Invoice]:
     """Take money against an issued invoice.
 
@@ -2104,6 +2140,11 @@ async def record_payment(
         raise ConflictError(
             f"This invoice is {invoice.status.value.lower().replace('_', ' ')}.",
             code="invoice_closed",
+        )
+
+    if received_at is not None:
+        await _assert_receipt_time(
+            session, received_at, hospital_id=hospital_id, may_backdate=may_backdate
         )
 
     taken = money(amount)

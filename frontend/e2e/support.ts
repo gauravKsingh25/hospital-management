@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 /**
  * Shared helpers for the end-to-end specs.
@@ -31,8 +31,11 @@ export async function signIn(page: Page, email: string): Promise<void> {
 }
 
 export async function signOut(page: Page): Promise<void> {
+  // The account menu, and only the menu: reception's doctor chips are buttons
+  // named after doctors too ("Dr Vikram Rao, 4 waiting").
   await page
     .getByRole("button", { name: /@demo\.hospital|Priya|Vikram|Asha|Lakshmi|Ravi|Meera|Ritu/ })
+    .and(page.locator("[aria-haspopup=menu]"))
     .click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);
@@ -67,6 +70,32 @@ export async function registerAndQueue(page: Page, age = "34"): Promise<string> 
 }
 
 /**
+ * Open a line on reception's queue board.
+ *
+ * The board keeps each patient to one quiet line; Seen, Move and the payment
+ * buttons sit underneath it and appear when the line is tapped. Works for a
+ * waiting row and a "Seen today" row alike, and is a no-op on a line that is
+ * already open — a second tap would close it.
+ */
+export async function openLine(row: Locator): Promise<void> {
+  await row.scrollIntoViewIfNeeded();
+  const toggle = row.getByTestId("row-toggle");
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(row.getByTestId("row-actions")).toBeVisible();
+}
+
+/**
+ * Bring a doctor's line into one of the board's two panes, by their chip.
+ * Nothing to do when the hospital has a single doctor (there are no chips) or
+ * the doctor is already on screen.
+ */
+export async function showDoctor(page: Page, doctorName: string): Promise<void> {
+  const chip = page.getByTestId("doctor-chip").filter({ hasText: doctorName });
+  if ((await chip.count()) === 0) return;
+  if ((await chip.getAttribute("aria-pressed")) !== "true") await chip.click();
+}
+
+/**
  * Register a patient, let reception mark them seen, and send them to the
  * admission desk — the OPD half of the hand-off, as reception does it.
  *
@@ -80,11 +109,13 @@ export async function sentForAdmission(page: Page): Promise<string> {
   await page.goto("/reception");
   const row = page.getByTestId("queue-row").filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: 30_000 });
+  await openLine(row);
   await row.getByTestId("mark-seen").click();
 
   // The undo window passes, then the row moves to "seen".
   const seen = page.getByTestId("seen-row").filter({ hasText: name });
   await expect(seen).toBeVisible({ timeout: 20_000 });
+  await openLine(seen);
   await seen.getByTestId("send-to-admission").click();
   await page.getByRole("dialog").getByRole("button", { name: "Send", exact: true }).click();
   await expect(seen.getByTestId("admission-status")).toHaveText("At admission desk", {
@@ -156,7 +187,7 @@ export async function admittedPatient(page: Page): Promise<{ name: string; url: 
 export async function doctorFinishesVisit(
   page: Page,
   name: string,
-  { order }: { order?: string } = {},
+  { order, freeText }: { order?: string; freeText?: string } = {},
 ): Promise<void> {
   await signIn(page, ACCOUNTS.doctor);
   const queue = await page.request.get("/bff/queue");
@@ -175,6 +206,13 @@ export async function doctorFinishesVisit(
     });
     expect(placed.ok(), await placed.text()).toBeTruthy();
   }
+  if (freeText) {
+    // No catalogue code: the lab has to say which test this means.
+    const placed = await page.request.post(`${visit}/orders`, {
+      data: { order_type: "LAB", item_name: freeText },
+    });
+    expect(placed.ok(), await placed.text()).toBeTruthy();
+  }
   const completed = await page.request.post(`${visit}/complete`, { data: {} });
   expect(completed.ok(), await completed.text()).toBeTruthy();
 
@@ -183,11 +221,16 @@ export async function doctorFinishesVisit(
 
 /** Find a patient in the index and open their record. */
 export async function openPatient(page: Page, name: string): Promise<void> {
-  await page.goto("/patients");
-  await page.getByLabel("Search").fill(name);
-  const row = page.getByTestId("patient-row").filter({ hasText: name });
-  await expect(row).toBeVisible({ timeout: 45_000 });
-  await row.getByRole("link", { name: "Open" }).click();
+  // Through the search, not the directory: browsing every patient is the
+  // front desk's and records' right (SEC-01), and a doctor or nurse reaches a
+  // patient by looking them up.
+  const found = await page.request.get("/bff/patients/search", { params: { q: name } });
+  expect(found.ok(), await found.text()).toBeTruthy();
+  const hit = ((await found.json()).items as { id: string; full_name: string }[]).find(
+    (row) => row.full_name === name,
+  );
+  expect(hit, `no patient named ${name}`).toBeTruthy();
+  await page.goto(`/patients/${hit!.id}`);
   await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible({ timeout: 45_000 });
 }
 

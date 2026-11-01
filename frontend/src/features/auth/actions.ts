@@ -8,7 +8,13 @@ import { z } from "zod";
 import { ApiError } from "@/lib/api/error";
 import { callApi } from "@/lib/api/fetch";
 import { serverFetch } from "@/lib/api/server";
+import { readTwoFactorChallenge } from "@/lib/two-factor";
 import {
+  DEVICE_COOKIE_NAME,
+  LOCK_COOKIE_NAME,
+  TWO_FACTOR_COOKIE_NAME,
+  TWO_FACTOR_MAX_AGE_SECONDS,
+  DEVICE_MAX_AGE_SECONDS,
   clearSession,
   readSession,
   sessionFromTokens,
@@ -24,6 +30,14 @@ import {
  * That is also why `/bff` refuses `auth/login`: there is exactly one way to
  * obtain a session in this application, and it is this file.
  */
+
+/** SEC-05: what `/auth/login` answers when an authenticator code is next. */
+type TwoFactorChallenge = {
+  two_factor_required: true;
+  enrol: boolean;
+  challenge_token: string;
+  expires_in: number;
+};
 
 export type AuthFormState = {
   error?: string;
@@ -67,11 +81,12 @@ export async function signIn(
     return { fieldErrors };
   }
 
-  let tokens: TokenPair;
+  const store = await cookies();
+  let result: TokenPair | TwoFactorChallenge;
   try {
-    tokens = await callApi<TokenPair>("/auth/login", {
+    result = await callApi<TokenPair | TwoFactorChallenge>("/auth/login", {
       method: "POST",
-      body: parsed.data,
+      body: { ...parsed.data, device_token: store.get(DEVICE_COOKIE_NAME)?.value ?? null },
     });
   } catch (error) {
     if (error instanceof ApiError) {
@@ -87,13 +102,30 @@ export async function signIn(
     throw error;
   }
 
-  const session = sessionFromTokens(tokens);
-  writeSession(await cookies(), session);
+  const next = safeNext(formData.get("next"));
+  if ("two_factor_required" in result) {
+    // SEC-05: the password was right; the code from the app comes next.
+    store.set({
+      name: TWO_FACTOR_COOKIE_NAME,
+      value: JSON.stringify({ token: result.challenge_token, enrol: result.enrol, next }),
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      path: "/",
+      maxAge: TWO_FACTOR_MAX_AGE_SECONDS,
+    });
+    redirect(result.enrol ? "/login/two-factor/setup" : "/login/two-factor");
+  }
+
+  const session = sessionFromTokens(result);
+  writeSession(store, session);
+  // Signing in afresh retires any idle lock left on this browser (SEC-04).
+  store.delete(LOCK_COOKIE_NAME);
 
   // `redirect` throws, so nothing below runs. It is outside the try above on
   // purpose: catching it would swallow the navigation and leave the user
   // staring at the login form after a successful sign-in.
-  redirect(session.mustChangePassword ? "/change-password" : safeNext(formData.get("next")));
+  redirect(session.mustChangePassword ? "/change-password" : next);
 }
 
 export async function signOut(): Promise<never> {
@@ -105,6 +137,7 @@ export async function signOut(): Promise<never> {
   // out because the server is unreachable, which is the moment they most want
   // to (a shared machine they are walking away from).
   clearSession(store);
+  store.delete(LOCK_COOKIE_NAME);
 
   if (session) {
     try {
@@ -176,4 +209,77 @@ export async function changePassword(
   // the user straight back here. Signing out forces a clean login with the
   // new password — which is also the only way to be sure it works.
   return signOut();
+}
+
+// ---------------------------------------------------------------------------
+// Two-step sign-in (SEC-05)
+// ---------------------------------------------------------------------------
+export type TwoFactorFormState = { error?: string };
+
+async function finishTwoFactor(
+  path: "/auth/2fa/verify" | "/auth/2fa/enrol/confirm",
+  formData: FormData,
+): Promise<TwoFactorFormState> {
+  const t = await getTranslations("auth");
+  const challenge = await readTwoFactorChallenge();
+  // Five minutes have passed, or the page was opened directly: start again.
+  if (!challenge) redirect("/login");
+
+  const code = String(formData.get("code") ?? "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(code)) return { error: t("codeFormat") };
+
+  let tokens: TokenPair;
+  try {
+    tokens = await callApi<TokenPair>(path, {
+      method: "POST",
+      body: {
+        challenge_token: challenge.token,
+        code,
+        remember_device: formData.get("remember") === "on",
+      },
+    });
+  } catch (error) {
+    if (error instanceof ApiError) {
+      if (error.code === "invalid_code") return { error: t("codeInvalid") };
+      if (error.code === "account_locked") return { error: error.message };
+      // The challenge expired or is otherwise spent: back to the password.
+      if (error.status === 401) redirect("/login");
+      return { error: error.message };
+    }
+    throw error;
+  }
+
+  const store = await cookies();
+  const session = sessionFromTokens(tokens);
+  writeSession(store, session);
+  store.delete(TWO_FACTOR_COOKIE_NAME);
+  store.delete(LOCK_COOKIE_NAME);
+  if (tokens.device_token) {
+    store.set({
+      name: DEVICE_COOKIE_NAME,
+      value: tokens.device_token,
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: DEVICE_MAX_AGE_SECONDS,
+    });
+  }
+  redirect(session.mustChangePassword ? "/change-password" : challenge.next);
+}
+
+/** The code from the app, for someone who has two-step sign-in on. */
+export async function verifyTwoFactor(
+  _previous: TwoFactorFormState,
+  formData: FormData,
+): Promise<TwoFactorFormState> {
+  return finishTwoFactor("/auth/2fa/verify", formData);
+}
+
+/** The first code from a newly set-up app: switches two-step on and signs in. */
+export async function confirmTwoFactorEnrolment(
+  _previous: TwoFactorFormState,
+  formData: FormData,
+): Promise<TwoFactorFormState> {
+  return finishTwoFactor("/auth/2fa/enrol/confirm", formData);
 }

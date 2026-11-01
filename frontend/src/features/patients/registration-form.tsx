@@ -82,6 +82,10 @@ export function RegistrationForm() {
   const [issued, setIssued] = useState<QuickOpdResult | null>(null);
   const [registeredOnly, setRegisteredOnly] = useState<RegistrationResult | null>(null);
   const [doctorId, setDoctorId] = useState<string>("");
+  // A known patient who is an emergency all the same: first in the doctor's
+  // line, on an EMERGENCY chart. (Somebody nobody can name goes through the
+  // Emergency screen instead.)
+  const [emergency, setEmergency] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(registrationSchema),
@@ -156,6 +160,7 @@ export function RegistrationForm() {
       const opd = await api.post<QuickOpdResult>("/queue/quick-opd", {
         patient_id: patient.id,
         doctor_id: doctorId,
+        ...(emergency ? { priority: 10, priority_reason: "Emergency" } : {}),
       });
       return { patient, opd };
     },
@@ -184,6 +189,7 @@ export function RegistrationForm() {
     setRegisteredOnly(null);
     setDuplicates([]);
     setDoctorId("");
+    setEmergency(false);
     form.reset();
     // Focus returns to the first field so the next registration begins with
     // typing rather than with finding the cursor.
@@ -381,6 +387,24 @@ export function RegistrationForm() {
         </Select>
         <p className="text-muted-foreground text-xs">{tOpd("subtitle")}</p>
       </div>
+
+      {doctorId ? (
+        <label
+          className={cn(
+            "min-h-tap flex cursor-pointer items-center gap-3 rounded-lg border px-4 text-sm font-medium",
+            emergency && "border-destructive bg-destructive/10 text-destructive",
+          )}
+        >
+          <input
+            type="checkbox"
+            className="size-5"
+            checked={emergency}
+            onChange={(event) => setEmergency(event.target.checked)}
+            data-testid="registration-emergency"
+          />
+          {t("emergency")}
+        </label>
+      ) : null}
 
       <Button
         type="submit"

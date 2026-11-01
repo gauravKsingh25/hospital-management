@@ -75,3 +75,7 @@ class WorkerSettings:
     # Sweeps are sequential per tenant already; no benefit to more concurrency.
     max_jobs = 4
     job_timeout = 300
+    # The heartbeat `arq --check` reads — the container's health check
+    # (OPS-01). ARQ's default is hourly, which would let a worker that died
+    # at five past report healthy until the hour turned.
+    health_check_interval = 60

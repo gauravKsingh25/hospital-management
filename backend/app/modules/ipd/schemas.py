@@ -82,6 +82,9 @@ class WardCreate(BaseModel):
 
 
 class WardUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=1, max_length=120)] = None
     floor: Annotated[str | None, Field(max_length=20)] = None
     department_id: uuid.UUID | None = None
@@ -116,6 +119,9 @@ class BedCreate(BaseModel):
 
 
 class BedUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     label: Annotated[str | None, Field(max_length=60)] = None
     bed_class: BedClass | None = None
     tariff_item_code: Annotated[str | None, Field(max_length=32)] = None
@@ -285,6 +291,9 @@ class AdmissionRequestRead(BaseModel):
 
 
 class AdmissionUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     attending_doctor_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
     provisional_diagnosis: Annotated[str | None, Field(max_length=500)] = None
@@ -445,6 +454,9 @@ class MedicineItemCreate(BaseModel):
 class MedicineItemUpdate(BaseModel):
     """Every field optional; `price` changes the default rate card's price."""
 
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=1, max_length=200)] = None
     form: MedicineForm | None = None
     dose: Annotated[str | None, Field(max_length=60)] = None
@@ -522,6 +534,10 @@ class MedicationOrderCreate(BaseModel):
     units_per_dose: Annotated[Decimal, Field(gt=0, le=100, max_digits=9, decimal_places=2)] = (
         Decimal("1")
     )
+    # SAFE-01. Only read when the drug clashes with a recorded drug allergy:
+    # the prescriber's reason for giving it anyway. Long enough to be a reason
+    # rather than "ok".
+    allergy_override_reason: Annotated[str | None, Field(min_length=10, max_length=300)] = None
 
     @model_validator(mode="after")
     def _schedule_must_be_chartable(self) -> Self:
@@ -575,6 +591,11 @@ class MedicationOrderRead(BaseModel):
     # the drug. Both None for a drug that is not billed.
     unit_price: Decimal | None = None
     unit: str | None = None
+    # SAFE-01. Why the doctor prescribed it despite a recorded drug allergy,
+    # and which of the patient's allergies this drug clashes with *now* —
+    # attached by the router, so one recorded after prescribing shows too.
+    allergy_override_reason: str | None = None
+    allergy_conflicts: list[str] = Field(default_factory=list)
 
 
 class DoseRecord(BaseModel):
@@ -636,6 +657,13 @@ class DoseRead(BaseModel):
     # A dose must never be given to a patient recorded as deceased, and the
     # ward may learn of a death before the chart is stopped.
     patient_is_deceased: bool = False
+    # SAFE-01, for the nurse at the bedside: every drug allergy the patient
+    # has, the ones this dose clashes with, and whether any of those was
+    # recorded after the doctor prescribed (then the dose cannot be signed as
+    # given until the drug is reviewed).
+    patient_allergies: list[str] = Field(default_factory=list)
+    allergy_conflicts: list[str] = Field(default_factory=list)
+    allergy_unreviewed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +671,9 @@ class DoseRead(BaseModel):
 # ---------------------------------------------------------------------------
 class SummaryUpdate(BaseModel):
     """Every section is optional: the doctor edits what is wrong, not everything."""
+
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
 
     presenting_complaint: str | None = None
     diagnoses: str | None = None

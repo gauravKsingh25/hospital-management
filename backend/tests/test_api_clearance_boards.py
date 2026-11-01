@@ -245,7 +245,9 @@ class TestDiagnosticsWorklist:
         assert response.status_code == 200, response.text
 
         [row] = response.json()["items"]
-        assert row["stage"] == "AWAITING_ACCESSION"
+        # Written as free text with no catalogue code, so the lab has to say
+        # which test it means before it can go on the bench.
+        assert row["stage"] == "NEEDS_MAPPING"
         assert row["item_name"] == "CBC"
         assert row["report_id"] is None
 

@@ -4,20 +4,20 @@
  * The second of the two scan paths, and the optional one. A counter has a USB
  * scanner; a ward round has a phone or a tablet, and this is for those. It is
  * built on the browser's own **Barcode Detection API** — `BarcodeDetector` —
- * so it ships no decoder of its own.
+ * where the browser has one, and on a small downloaded decoder where it does
+ * not.
  *
- * ## Why no library
+ * ## Two decoders, one of them downloaded on demand
  *
- * The usual choice here is a JavaScript QR decoder, and it costs 40–90 kB of
- * WebAssembly or minified JS on every page it is imported into. CLAUDE.md §14
- * says to question a dependency that bloats the bundle, and this one earns
- * nothing the platform does not already do: `BarcodeDetector` is a native
- * decoder, already present, already fast, and free.
+ * `BarcodeDetector` is native, fast and free, and it is missing from exactly
+ * the devices this is for: Safari has none, and every browser on an iPhone or
+ * an iPad is Safari underneath. Firefox and Windows desktop Chrome lack it
+ * too. Built on the native API alone, the scanner hid itself on every iPad on
+ * the ward.
  *
- * The price is that it is not everywhere — see `cameraScanSupport`. That is
- * an acceptable trade because this path is a convenience. The counter scanner
- * and typing the UHID both work regardless, so a browser without the API
- * loses a shortcut, not a capability.
+ * So those devices fetch `jsqr` (see `qr-decode.ts`) the first time somebody
+ * taps the scanner — never before, and never on a device with a native
+ * decoder. No page carries it in its bundle (CLAUDE.md §14).
  *
  * Everything decidable without a camera lives here as a pure function, so the
  * parts that can be tested are tested and the component is left holding only
@@ -34,9 +34,11 @@ export type BarcodeDetectorLike = {
   detect(source: CanvasImageSource): Promise<DetectedBarcode[]>;
 };
 
-export type BarcodeDetectorConstructor = new (options?: {
+export type BarcodeDetectorConstructor = (new (options?: {
   formats?: string[];
-}) => BarcodeDetectorLike;
+}) => BarcodeDetectorLike) & {
+  getSupportedFormats?: () => Promise<string[]>;
+};
 
 /**
  * What this module needs from `window`.
@@ -49,49 +51,97 @@ export type BarcodeDetectorConstructor = new (options?: {
 export type ScanCapableWindow = {
   BarcodeDetector?: BarcodeDetectorConstructor;
   isSecureContext?: boolean;
-  navigator?: { mediaDevices?: unknown };
+  navigator?: { mediaDevices?: { getUserMedia?: unknown } };
 };
 
 /**
  * Whether this browser can scan with a camera at all.
  *
- * Three conditions, and all three genuinely occur:
+ * Only the camera decides it — a decoder can always be downloaded. Two
+ * conditions, and both genuinely occur:
  *
- * - **`BarcodeDetector` exists.** Chrome and Edge have it on Android, ChromeOS
- *   and macOS; on Windows desktop and in Firefox they do not. A counter PC is
- *   the most likely machine in this system and the least likely to support it,
- *   which is exactly why the button hides rather than fails.
- * - **The page is a secure context.** `getUserMedia` is null on plain HTTP, so
- *   without TLS this path cannot exist. `localhost` counts as secure, so
- *   development works.
- * - **`mediaDevices` exists.** The same condition from the other direction,
+ * - **The page is a secure context.** `getUserMedia` does not exist on plain
+ *   HTTP, so without TLS this path cannot exist. `localhost` counts as secure,
+ *   so development on the same machine works; a phone on the office wifi
+ *   needs `npm run dev:https`.
+ * - **`getUserMedia` exists.** The same condition from the other direction,
  *   and cheap insurance against an embedded webview that omits it.
  *
- * A false here renders nothing. A button that opens a dialog to explain it
- * cannot work is worse than no button, because staff learn to ignore it.
+ * Whether there is a camera to open is a separate, asynchronous question —
+ * see `hasCamera`.
  */
 export function cameraScanSupport(scope: ScanCapableWindow | undefined): boolean {
   if (scope === undefined) return false;
-  if (typeof scope.BarcodeDetector !== "function") return false;
   if (scope.isSecureContext !== true) return false;
-  return scope.navigator?.mediaDevices != null;
+  return typeof scope.navigator?.mediaDevices?.getUserMedia === "function";
 }
 
 /**
- * A detector restricted to QR codes, or `null` if one cannot be made.
+ * The browser's own QR detector, or `null` if it has none that can be made.
  *
- * The constructor throws on a format the platform cannot decode, so the
- * feature check above is necessary but not sufficient — a browser can have
- * the API and still not do QR. Narrowing to `qr_code` is also a speed choice:
- * asking for every format makes the detector try each one on every frame.
+ * The constructor throws on a format the platform cannot decode, so a browser
+ * can have the API and still not do QR. Narrowing to `qr_code` is also a speed
+ * choice: asking for every format makes the detector try each one per frame.
  */
-export function newQrDetector(scope: ScanCapableWindow | undefined): BarcodeDetectorLike | null {
+export function nativeQrDetector(scope: ScanCapableWindow | undefined): BarcodeDetectorLike | null {
   if (!cameraScanSupport(scope)) return null;
+  const Detector = scope?.BarcodeDetector;
+  if (typeof Detector !== "function") return null;
   try {
-    return new (scope as Required<ScanCapableWindow>).BarcodeDetector({ formats: ["qr_code"] });
+    return new Detector({ formats: ["qr_code"] });
   } catch {
     return null;
   }
+}
+
+/** Whether the platform says it can decode QR. Silence is taken as a yes. */
+async function nativeReadsQr(scope: ScanCapableWindow | undefined): Promise<boolean> {
+  const Detector = scope?.BarcodeDetector;
+  if (typeof Detector?.getSupportedFormats !== "function") return true;
+  try {
+    return (await Detector.getSupportedFormats()).includes("qr_code");
+  } catch {
+    return false;
+  }
+}
+
+/** Fetches the JavaScript decoder — its own chunk, loaded only from here. */
+const downloadDecoder = (): Promise<BarcodeDetectorLike> =>
+  import("@/lib/qr-decode").then((module) => module.createFrameDecoder());
+
+/**
+ * The QR detector this device should use, or `null` if it cannot scan.
+ *
+ * Native where it truly works; otherwise the downloaded one. "Truly" is the
+ * point of `nativeReadsQr`: desktop Chrome on Linux has the class, accepts
+ * `qr_code` without complaint and then finds nothing in any frame, and the
+ * only honest signal is the list of supported formats.
+ *
+ * `loadFallback` is a parameter so tests can count the downloads; the app
+ * never passes it.
+ */
+export async function loadQrDetector(
+  scope: ScanCapableWindow | undefined,
+  loadFallback: () => Promise<BarcodeDetectorLike> = downloadDecoder,
+): Promise<BarcodeDetectorLike | null> {
+  if (!cameraScanSupport(scope)) return null;
+
+  const native = nativeQrDetector(scope);
+  if (native !== null && (await nativeReadsQr(scope))) return native;
+
+  return loadFallback();
+}
+
+/**
+ * Whether `enumerateDevices` lists a camera.
+ *
+ * Before permission is granted, browsers list devices without names or ids —
+ * but they do list them, so this answers without prompting anybody. It is
+ * what keeps the scanner icon off a counter PC with no webcam: a button that
+ * opens only to explain that it cannot work teaches staff to ignore buttons.
+ */
+export function hasCamera(devices: readonly { kind: string }[]): boolean {
+  return devices.some((device) => device.kind === "videoinput");
 }
 
 /**

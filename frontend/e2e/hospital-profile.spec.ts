@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, registerAndQueue, signIn, signOut } from "./support";
+import { ACCOUNTS, openLine, registerAndQueue, signIn, signOut } from "./support";
 
 /**
  * Administration → Hospital profile: the letterhead on every bill — logo,
@@ -105,6 +105,7 @@ test("the UPI ID set here is what reception's QR pays", async ({ page }) => {
   await page.goto("/reception");
   const row = page.getByTestId("queue-row").filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: 30_000 });
+  await openLine(row);
   await row.getByTestId("get-payment").click();
   await expect(page.getByRole("dialog").getByText(CHANGED_UPI)).toBeVisible();
 });

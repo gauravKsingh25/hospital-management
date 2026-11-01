@@ -21,10 +21,15 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from app.core.config import settings
 from app.core.exceptions import AuthenticationError, ValidationError
 
-TokenType = Literal["access", "refresh"]
+TokenType = Literal["access", "refresh", "two_factor", "device"]
 
 ACCESS: Final[TokenType] = "access"
 REFRESH: Final[TokenType] = "refresh"
+# SEC-05. Between the password and the code: proves the password was right,
+# for five minutes, and is accepted nowhere else.
+TWO_FACTOR: Final[TokenType] = "two_factor"
+# SEC-05. "Remember this device": skips the code for one person on one device.
+DEVICE: Final[TokenType] = "device"
 
 _hasher = PasswordHasher(
     time_cost=settings.ARGON2_TIME_COST,
@@ -133,6 +138,7 @@ def _create_token(
     hospital_id: uuid.UUID | None,
     lifetime: timedelta,
     jti: uuid.UUID | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[str, TokenClaims]:
     now = datetime.now(UTC)
     expires_at = now + lifetime
@@ -149,6 +155,7 @@ def _create_token(
         # never trusted for authorisation: the tenant used for queries is
         # re-read from the user row on every request.
         "hid": str(hospital_id) if hospital_id else None,
+        **(extra or {}),
     }
     encoded = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
     claims = TokenClaims(
@@ -185,12 +192,47 @@ def create_refresh_token(
     )
 
 
+def create_two_factor_challenge(
+    subject: uuid.UUID, *, hospital_id: uuid.UUID | None, enrol: bool
+) -> tuple[str, TokenClaims]:
+    """The token between the password and the code (SEC-05)."""
+    return _create_token(
+        subject=subject,
+        token_type=TWO_FACTOR,
+        hospital_id=hospital_id,
+        lifetime=timedelta(minutes=5),
+        extra={"enrol": enrol},
+    )
+
+
+def create_device_token(
+    subject: uuid.UUID, *, hospital_id: uuid.UUID | None, binding: str
+) -> tuple[str, TokenClaims]:
+    """A remembered device (SEC-05). `binding` ties it to the current
+    authenticator secret, so turning two-step off or re-enrolling forgets
+    every remembered device at once."""
+    return _create_token(
+        subject=subject,
+        token_type=DEVICE,
+        hospital_id=hospital_id,
+        lifetime=timedelta(hours=settings.TWO_FACTOR_REMEMBER_HOURS),
+        extra={"bind": binding},
+    )
+
+
 def decode_token(token: str, *, expected_type: TokenType) -> TokenClaims:
     """Verify signature, expiry, issuer and token type.
 
     Checking `typ` matters: without it a refresh token would be accepted as a
     bearer credential, handing an attacker a week-long session.
     """
+    return decode_token_with_claims(token, expected_type=expected_type)[0]
+
+
+def decode_token_with_claims(
+    token: str, *, expected_type: TokenType
+) -> tuple[TokenClaims, dict[str, Any]]:
+    """`decode_token`, plus the raw payload for a token type's own claims."""
     try:
         payload = jwt.decode(
             token,
@@ -215,7 +257,7 @@ def decode_token(token: str, *, expected_type: TokenType) -> TokenClaims:
     except (KeyError, ValueError, TypeError) as exc:
         raise AuthenticationError("Invalid credentials.", code="invalid_token") from exc
 
-    return TokenClaims(
+    claims = TokenClaims(
         subject=subject,
         token_type=expected_type,
         jti=jti,
@@ -223,3 +265,4 @@ def decode_token(token: str, *, expected_type: TokenType) -> TokenClaims:
         issued_at=datetime.fromtimestamp(payload["iat"], tz=UTC),
         expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
     )
+    return claims, payload

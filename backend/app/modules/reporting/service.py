@@ -493,15 +493,20 @@ async def revenue(session: AsyncSession, window: DateWindow) -> RevenueReport:
         params,
     )
 
+    discounts_given = _money(charges["discounts_given"])
+    waived = _money(charges["waived"])
+    reversed_amount = _money(payments["reversed_amount"])
+
     return RevenueReport(
         window=window,
         charges_raised=_money(charges["charges_raised"]),
         tax_collected=_money(charges["tax_collected"]),
-        discounts_given=_money(charges["discounts_given"]),
-        waived=_money(charges["waived"]),
+        discounts_given=discounts_given,
+        waived=waived,
         unpriced_charges=charges["unpriced_charges"],
         collected=_money(payments["collected"]),
-        reversed_amount=_money(payments["reversed_amount"]),
+        reversed_amount=reversed_amount,
+        given_up=discounts_given + waived + reversed_amount,
         outstanding_total=_money(outstanding["outstanding_total"]),
         by_category=[
             CategoryRevenue(

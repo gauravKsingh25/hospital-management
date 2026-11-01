@@ -50,6 +50,15 @@ export const DEFAULT_SHORTCUTS: Shortcut[] = [
     permissions: ["patient:create"],
   },
   {
+    // UX-01: an unconscious patient with no name and no mobile. From any
+    // screen, because casualty does not wait for somebody to find Reception.
+    id: "emergency",
+    key: "F9",
+    labelKey: "emergency",
+    action: { kind: "navigate", href: "/reception/emergency" },
+    permissions: ["patient:create"],
+  },
+  {
     id: "search",
     key: "F3",
     labelKey: "search",

@@ -344,8 +344,9 @@ async def get_worklist(
     forgotten — a worklist assembled from reports only ever shows work somebody
     already remembered to start.
 
-    Three bulk lookups decorate the whole page — reports, samples, patients —
-    rather than three per row. The cost is flat in the length of the list, which
+    Four bulk lookups decorate the whole page — reports, samples, catalogue
+    matches, patients — rather than four per row. The cost is flat in the
+    length of the list, which
     is what stops the busiest screen in the building from being the slowest.
     """
     orders, total = await service.list_worklist_orders(
@@ -355,6 +356,9 @@ async def get_worklist(
 
     reports = await service.get_reports_by_orders(session, order_ids, hospital_id=tenant_id)
     specimens = await service.get_specimens_by_orders(session, order_ids, hospital_id=tenant_id)
+    matches = await service.match_catalogue(
+        session, [order for order in orders if order.id not in reports], hospital_id=tenant_id
+    )
     patients = await patients_service.get_patients_by_ids(
         session, [order.patient_id for order in orders], hospital_id=tenant_id
     )
@@ -375,8 +379,11 @@ async def get_worklist(
             instructions=order.instructions,
             review_in_visit=order.review_in_visit,
             ordered_at=order.ordered_at,
-            stage=service.worklist_stage(order, report, specimen),
+            stage=service.worklist_stage(order, report, specimen, matched=order.id in matches),
         )
+        if (match := matches.get(order.id)) is not None:
+            entry.matched_catalogue_item_id = match.id
+            entry.matched_catalogue_item_name = match.name
         if report is not None:
             entry.report_id = report.id
             entry.report_number = report.report_number

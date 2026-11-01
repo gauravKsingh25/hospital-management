@@ -27,6 +27,7 @@ __all__ = [
     "PatientConsentRead",
     "PatientDetail",
     "PatientIdentifierRead",
+    "PatientIdentify",
     "PatientMergeRequest",
     "PatientRead",
     "PatientRegister",
@@ -99,6 +100,9 @@ class PatientUpdate(BaseModel):
     """Everything optional. Name and phone are here too, but changing either
     re-checks the identity constraint — see `service.update_patient`."""
 
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     full_name: Annotated[str | None, Field(min_length=1, max_length=200)] = None
     phone: Annotated[str | None, Field(min_length=6, max_length=20)] = None
     gender: Gender | None = None
@@ -131,7 +135,8 @@ class PatientRead(BaseModel):
     id: uuid.UUID
     uhid: str
     full_name: str
-    phone: str
+    # Null only on an unidentified emergency record.
+    phone: str | None
     gender: Gender
     birth_date: date | None
     birth_date_is_estimated: bool
@@ -139,6 +144,8 @@ class PatientRead(BaseModel):
     city: str | None
     is_active: bool
     is_deceased: bool
+    is_unidentified: bool
+    emergency_tag: str | None
     merged_into_id: uuid.UUID | None
     registered_at: datetime
 
@@ -228,6 +235,7 @@ class PatientDetail(PatientRead):
     abha_address: str | None
     preferred_language: str
     deceased_at: datetime | None
+    identified_at: datetime | None
 
     alerts: list[PatientAlertRead] = Field(default_factory=list)
     consents: list[PatientConsentRead] = Field(default_factory=list)
@@ -279,6 +287,50 @@ class IdentifierCreate(BaseModel):
     identifier_value: Annotated[str, Field(min_length=1, max_length=64)]
     issued_by: Annotated[str | None, Field(max_length=100)] = None
     valid_until: date | None = None
+
+
+class PatientIdentify(BaseModel):
+    """Say who an unidentified emergency patient is (UX-01).
+
+    Exactly one of two forms:
+
+    * **somebody already registered** — `existing_patient_id`, and nothing
+      else. Their record folds into the emergency one, which keeps the live
+      visit, bed and bill pointing at the right person;
+    * **a new person** — the same four fields registration asks for. The
+      mobile is required here even though the emergency record had none: a
+      known patient with no number is one every message silently fails for.
+
+    Mixing the two is refused rather than resolved, because which identity
+    would win is a guess.
+    """
+
+    existing_patient_id: uuid.UUID | None = None
+
+    full_name: Annotated[str | None, Field(min_length=1, max_length=200)] = None
+    phone: Annotated[str | None, Field(min_length=6, max_length=20)] = None
+    gender: Gender | None = None
+    age_years: Annotated[int | None, Field(ge=0, le=130)] = None
+    birth_date: date | None = None
+
+    @model_validator(mode="after")
+    def _one_form(self) -> Self:
+        details = (self.full_name, self.phone, self.gender, self.age_years, self.birth_date)
+        if self.existing_patient_id is not None:
+            if any(value is not None for value in details):
+                raise ValueError(
+                    "Either link to an existing record or enter new details, not both."
+                )
+            return self
+        if not self.full_name or not self.full_name.strip():
+            raise ValueError("A name is required.")
+        if not self.phone or not normalize_phone(self.phone):
+            raise ValueError("A mobile number is required.")
+        if self.gender is None:
+            raise ValueError("Gender is required.")
+        if self.age_years is None and self.birth_date is None:
+            raise ValueError("Provide either age_years or birth_date.")
+        return self
 
 
 class PatientMergeRequest(BaseModel):

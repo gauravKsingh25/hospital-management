@@ -16,6 +16,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.models import utc_now
 from app.modules.identity.models import User
 from app.modules.identity.rbac import Roles
 from app.modules.tenancy.models import Hospital
@@ -358,7 +359,7 @@ class TestSettlement:
         recorded = await api.post(
             f"{ENCOUNTERS}/{encounter_id}/death",
             json={
-                "deceased_at": "2026-08-08T14:20:00Z",
+                "deceased_at": utc_now().isoformat(),
                 "death_certified_by_id": str(doctor_user.id),
                 "cause_of_death": "Cardiac arrest.",
                 "death_place": "Casualty",

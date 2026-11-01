@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:https": "next dev --experimental-https --hostname 0.0.0.0",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -28,6 +29,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "jsqr": "1.4.0",
     "lucide-react": "^1.31.0",
     "next": "^16.3.1",
     "next-intl": "^4.13.6",

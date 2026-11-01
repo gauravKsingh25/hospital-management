@@ -301,7 +301,7 @@ export function PatientIndex({ canSeeVisits }: { canSeeVisits: boolean }) {
                       <TableCell>
                         <span className="font-medium">{row.full_name}</span>
                         {row.is_deceased ? (
-                          <span className="bg-foreground/85 text-background ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                          <span className="bg-foreground/85 text-background ml-2 rounded px-1.5 py-0.5 text-xs font-medium">
                             {patient("deceased")}
                           </span>
                         ) : null}

@@ -39,7 +39,15 @@ import { clearSession, readSession, writeSession, type Session } from "@/lib/ses
  */
 
 /** Endpoints that issue or destroy sessions. Not reachable through here. */
-const SESSION_ENDPOINTS = new Set(["auth/login", "auth/refresh", "auth/logout"]);
+const SESSION_ENDPOINTS = new Set([
+  "auth/login",
+  "auth/refresh",
+  "auth/logout",
+  // SEC-05: the second step of signing in also mints a session.
+  "auth/2fa/verify",
+  "auth/2fa/enrol/start",
+  "auth/2fa/enrol/confirm",
+]);
 
 /**
  * Response headers worth passing back. An allowlist rather than a copy: the

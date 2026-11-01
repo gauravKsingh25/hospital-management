@@ -1,8 +1,9 @@
 "use client";
 
 import { useTranslations } from "next-intl";
+import { useRouter } from "next/navigation";
 import { useTransition } from "react";
-import { LogOut, User } from "lucide-react";
+import { LogOut, ShieldCheck, User } from "lucide-react";
 
 import { signOut } from "@/features/auth/actions";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,8 @@ import type { CurrentUser } from "@/types/api";
  */
 export function UserMenu({ user }: { user: CurrentUser }) {
   const t = useTranslations("common");
+  const tAuth = useTranslations("auth");
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
 
   const initials = user.full_name
@@ -43,7 +46,7 @@ export function UserMenu({ user }: { user: CurrentUser }) {
             <span className="bg-primary/10 text-primary flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
               {initials || <User aria-hidden className="size-4" />}
             </span>
-            <span className="hidden max-w-32 truncate text-sm font-medium sm:inline">
+            <span className="hidden max-w-32 truncate text-sm font-medium lg:inline">
               {user.full_name}
             </span>
           </Button>
@@ -62,6 +65,10 @@ export function UserMenu({ user }: { user: CurrentUser }) {
           </DropdownMenuLabel>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => router.push("/account/two-factor")}>
+          <ShieldCheck aria-hidden className="size-4" />
+          {tAuth("twoFactorSettings")}
+        </DropdownMenuItem>
         <DropdownMenuItem
           disabled={pending}
           // A server action, so the refresh token is revoked on the backend

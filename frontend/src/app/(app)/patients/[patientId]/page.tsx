@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { NoPermission } from "@/components/no-permission";
 import { SafetyBanner } from "@/components/patient/safety-banner";
+import { UnidentifiedBanner } from "@/features/emergency/unidentified-banner";
 import { PatientMessaging } from "@/features/messages/patient-messaging";
 import { ProblemList } from "@/features/patients/record/problem-list";
 import { ProfilePanel } from "@/features/patients/record/profile-panel";
@@ -21,6 +22,7 @@ import { VitalsCard } from "@/features/patients/record/vitals-card";
 import { ApiError } from "@/lib/api/error";
 import { getCurrentUser, serverFetch } from "@/lib/api/server";
 import { can } from "@/lib/permissions";
+import { safetyBannerFor } from "@/lib/safety-banner";
 import type {
   AdmissionSummary,
   DischargeSummary,
@@ -31,7 +33,6 @@ import type {
   PatientClinicalSummary,
   PatientVisit,
   ReportSummary,
-  SafetyBanner as SafetyBannerData,
 } from "@/types/api";
 
 const VISITS_PAGE_SIZE = 10;
@@ -121,20 +122,10 @@ export default async function PatientPage({
     canRecordReferral: can(user, "encounter:record_referral"),
     canRecordLama: can(user, "encounter:record_lama"),
     canRecordDiagnosis: can(user, "diagnosis:record"),
+    currentUserId: user.id,
   };
 
-  const activeAlerts = (patient.alerts ?? []).filter((alert) => alert.is_active);
-  const banner: SafetyBannerData = {
-    patient_id: patient.id,
-    uhid: patient.uhid,
-    full_name: patient.full_name,
-    age_years: patient.age_years ?? null,
-    gender: patient.gender,
-    blood_group: patient.blood_group,
-    is_deceased: patient.is_deceased,
-    alerts: activeAlerts.map((alert) => (alert.detail ? `${alert.label} — ${alert.detail}` : alert.label)),
-    has_critical_alert: activeAlerts.some((alert) => alert.severity === "CRITICAL"),
-  };
+  const banner = safetyBannerFor(patient);
 
   const tabs = (
     [
@@ -150,6 +141,19 @@ export default async function PatientPage({
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <RecordHeader patient={patient} />
+
+      {patient.is_unidentified ? (
+        <UnidentifiedBanner
+          patient={{
+            id: patient.id,
+            full_name: patient.full_name,
+            uhid: patient.uhid,
+            gender: patient.gender,
+            age_years: patient.age_years,
+          }}
+          canIdentify={can(user, "patient:update")}
+        />
+      ) : null}
 
       {/* Never collapsed, never behind a tab (CLAUDE.md §7b). */}
       <SafetyBanner banner={banner} />

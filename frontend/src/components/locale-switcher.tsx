@@ -43,9 +43,17 @@ export function LocaleSwitcher() {
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <Button variant="ghost" size="sm" disabled={pending} aria-label={t("language")}>
+          <Button
+            variant="ghost"
+            // A full tap target (UX-03): it was 28 px, on the device people
+            // hold at arm's length.
+            className="h-tap min-w-tap"
+            disabled={pending}
+            aria-label={t("language")}
+          >
             <Languages aria-hidden className="size-4" />
-            {LOCALE_LABELS[locale]}
+            {/* The name only where there is room; the icon says what it is. */}
+            <span className="hidden lg:inline">{LOCALE_LABELS[locale]}</span>
           </Button>
         }
       />

@@ -160,6 +160,10 @@ _NURSE = (
     # Nurses perform half the procedures on a ward. Same reasoning as the doctor.
     ClinicalPermissions.ORDER_FULFIL,
     ClinicalPermissions.TEMPLATE_READ,
+    # UX-04: on a night ward the doctor may not be on the floor, and "absconded
+    # at 02:10" is written down when it is noticed, by the nurse in charge.
+    # Death and referral stay with doctors and records.
+    ClinicalPermissions.ENCOUNTER_RECORD_LAMA,
 )
 
 # Reception runs the front of house and never sees the chart.

@@ -137,6 +137,12 @@ class SuppressionReason(enum.StrEnum):
     INVALID_CONTACT = "INVALID_CONTACT"
     # A judgement call by staff, with a note. Rare and deliberate.
     STAFF_BLOCK = "STAFF_BLOCK"
+    # The patient is an unidentified emergency arrival (`Unknown Male EM-0034`).
+    # A message would greet a stranger by a placeholder at whatever number is
+    # on the record — often whoever brought them in. Like DISABLED it only
+    # appears on a `Notification`: it is a fact about the record, cleared by
+    # identifying the patient, never a block somebody adds or lifts.
+    UNIDENTIFIED = "UNIDENTIFIED"
     # Messaging is switched off for the whole deployment
     # (`NOTIFICATIONS_ENABLED=false`). Only ever appears on a `Notification`,
     # never on a `NotificationSuppression` row — it is a fact about the

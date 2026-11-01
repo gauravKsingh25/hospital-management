@@ -55,6 +55,9 @@ class BillingPermissions:
     PAYMENT_RECORD = "payment:record"
     # Giving money back. Never bundled with taking it.
     PAYMENT_REVERSE = "payment:reverse"
+    # SEC-07. Record a payment as received before today: a cheque that
+    # cleared on Friday, entered on Monday. Accounts' decision, not the counter's.
+    PAYMENT_BACKDATE = "payment:backdate"
 
     # --- claims -----------------------------------------------------------
     CLAIM_READ = "claim:read"
@@ -88,6 +91,11 @@ PERMISSION_CATALOGUE: Final[tuple[PermissionDef, ...]] = (
     PermissionDef(BillingPermissions.PAYMENT_READ, MODULE, "View payments and receipts."),
     PermissionDef(BillingPermissions.PAYMENT_RECORD, MODULE, "Record a payment."),
     PermissionDef(BillingPermissions.PAYMENT_REVERSE, MODULE, "Reverse a payment."),
+    PermissionDef(
+        BillingPermissions.PAYMENT_BACKDATE,
+        MODULE,
+        "Record a payment as received on an earlier day.",
+    ),
     PermissionDef(BillingPermissions.CLAIM_READ, MODULE, "View insurance and scheme claims."),
     PermissionDef(BillingPermissions.CLAIM_MANAGE, MODULE, "Raise and progress a claim."),
     PermissionDef(

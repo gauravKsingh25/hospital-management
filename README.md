@@ -48,7 +48,7 @@ gate unreachable for reasons no amount of frontend work can fix.
 | Data fetching | TanStack Query v5 through a server-side BFF proxy |
 | Forms | React Hook Form + Zod (mirroring the Pydantic schemas) |
 | QR (print) | `qrcode-generator` (zero dependencies), rendered to SVG server-side |
-| QR (camera) | the browser's own `BarcodeDetector` — no decoder library |
+| QR (camera) | the browser's own `BarcodeDetector`; `jsqr` downloaded on first tap where there is none |
 | Charts | Recharts 3, behind `next/dynamic` — one route loads it |
 | i18n | next-intl — English + Hindi, cookie-resolved |
 | e2e | Playwright, against a real backend |
@@ -1425,19 +1425,43 @@ they run without a browser — Playwright as the runner rather than a second tes
 framework for one pure module.
 
 **Camera scan.** The third way in, for a device with no scanner attached —
-a nurse doing a ward round with a tablet. `CameraScanButton` on `/reception`
-and `/queue` uses the browser's own `BarcodeDetector`, so it ships **no decoder
-library**: the usual choice costs 40–90 kB on every page that imports it and
-does nothing the platform does not already do natively.
+a nurse on a ward round with a tablet, a doctor with a phone. The scanner icon
+sits in the **top bar**, so it is one tap from every screen, for anyone holding
+`patient:read`.
 
-The price is that the API is not everywhere, and the button **renders nothing
-where it cannot work** — which includes Windows desktop Chrome, every Firefox,
-and any deployment without TLS, since `getUserMedia` does not exist outside a
-secure context. That is the right failure: a counter PC has a USB scanner and
-needs none of this, and a button that opens a dialog to explain its own
-impossibility teaches staff to ignore buttons. Camera denial, a missing camera
-and any other failure each get their own sentence, and all three end by saying
-the counter scanner and typing the UHID still work. There is no dead end.
+It works on any device with a camera and TLS — iPhone, iPad, Android, a laptop
+with a webcam. Where the browser has its own `BarcodeDetector` (Chrome on
+Android, macOS, ChromeOS) that is used and nothing is downloaded. Where it does
+not — **every browser on iOS and iPadOS**, since they are all Safari underneath,
+plus Firefox and Windows desktop Chrome — `jsqr` is fetched the first time the
+icon is tapped: its own 46 kB (gzipped) chunk, in no page's bundle. `jsqr` was
+chosen over the `barcode-detector` polyfill because that one fetches a ~1 MB
+WebAssembly build from a public CDN, which would mean loosening `connect-src`
+— the directive that stops a compromised dependency posting patient data
+elsewhere. `jsqr` is plain JavaScript with no dependencies and no network
+access, pinned to an exact version.
+
+The icon **renders nothing where it cannot work**: no camera (a counter PC —
+it has a USB scanner) or no TLS, since `getUserMedia` does not exist outside a
+secure context. A button that opens a dialog to explain its own impossibility
+teaches staff to ignore buttons. Camera denial, a missing camera and any other
+failure each get their own sentence, all ending with the counter scanner and
+typing the UHID still working. There is no dead end.
+
+The camera is released on every exit — a read, closing the dialog, the screen
+being hidden or locked, and a sixty-second give-up. The idle lock covers the
+screen without closing dialogs, so without that last one a scanner left open
+would keep filming behind the lock screen.
+
+**`Permissions-Policy` is `camera=(self)`.** It used to be `camera=()`, which
+denies the camera to every page including our own, so the camera path could
+never have worked outside a stubbed test. `(self)` grants it to this origin
+only; microphone, geolocation and payment stay off.
+
+**Testing on a phone or tablet** needs HTTPS, because a LAN address over plain
+HTTP is not a secure context. `npm run dev:https` serves the dev server with a
+self-signed certificate on all interfaces; open `https://<laptop-ip>:3000` on
+the device and accept the certificate warning once.
 
 Both scan paths resolve through one `useResolveScan`, and one `normaliseUhid`
 decides what counts as a card, so the keyboard and the camera cannot drift into
@@ -1450,9 +1474,11 @@ aliasing blurs module boundaries on a 203 dpi thermal head), and a physical
 size set in millimetres with a 20 mm floor. **None of that is provable in an
 automated test.** Printing one and scanning it is the only check that counts,
 and it is the single step on this feature's critical path that is not code —
-which is equally true of the camera path: headless Chromium has neither the API
-nor a lens, so its tests stub exactly those two platform pieces and genuinely
-exercise everything between them, including releasing the camera afterwards.
+which is equally true of the camera path: headless Chromium has no lens, so
+its tests replace the camera with a canvas stream. For the iPad case that
+canvas paints the card's *real* QR, so the downloaded decoder is exercised from
+the pixels up; `qr-decode.spec.ts` separately round-trips a code encoded
+exactly as `QrSvg` prints one.
 
 ### How a visit ended, when it did not end well
 

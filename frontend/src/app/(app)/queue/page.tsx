@@ -2,7 +2,6 @@ import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 
 import { LiveQueue } from "@/features/queue/live-queue";
-import { CameraScanButton } from "@/features/scan/camera-scan-button";
 import { NoPermission } from "@/components/no-permission";
 import { getCurrentUser } from "@/lib/api/server";
 import { can } from "@/lib/permissions";
@@ -33,9 +32,6 @@ export default async function QueuePage() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-        {/* The screen this matters most on: a nurse working the queue from a
-            tablet has no USB scanner within reach. */}
-        {can(user, "patient:read") ? <CameraScanButton /> : null}
       </header>
       <LiveQueue
         canRecordVitals={can(user, "vitals:record")}

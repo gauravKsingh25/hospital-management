@@ -76,7 +76,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import ColumnElement, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +87,7 @@ from app.core.events import event_bus
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.models import utc_now
 from app.core.pagination import PageParams
+from app.modules.clinical import service as clinical_service
 from app.modules.identity.models import User
 from app.modules.notifications import templates as tpl
 from app.modules.notifications.events import (
@@ -120,6 +121,8 @@ from app.modules.notifications.schemas import (
     SuppressionCreate,
 )
 from app.modules.patients import service as patients_service
+from app.modules.patients.models import Patient
+from app.modules.tenancy import service as tenancy_service
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +132,10 @@ __all__ = [
     "cancel",
     "cancel_pending_for_patient",
     "create_template",
+    "delete_template",
     "dispatch",
     "enqueue",
+    "format_day",
     "get_notification",
     "get_suppression",
     "get_template",
@@ -144,6 +149,7 @@ __all__ = [
     "retry",
     "retry_failed",
     "send_adhoc",
+    "send_follow_up_reminders",
     "suppress",
     "suppress_for_death",
     "update_template",
@@ -187,7 +193,10 @@ async def _patient_recipient(session: AsyncSession, patient_id: uuid.UUID) -> Re
     the follow-up SMS reaching the family, and the family's number is usually
     this one.
     """
-    patient = await patients_service.get_patient(session, patient_id)
+    return _recipient_from(await patients_service.get_patient(session, patient_id))
+
+
+def _recipient_from(patient: Patient) -> Recipient:
     return Recipient(
         recipient_type=RecipientType.PATIENT,
         name=patient.full_name,
@@ -215,20 +224,62 @@ def _staff_recipient(user: User) -> Recipient:
 # ---------------------------------------------------------------------------
 # Templates
 # ---------------------------------------------------------------------------
+def _check_language(language: str) -> str:
+    """Normalise a template's language, refusing one no patient can be matched to."""
+    normalised = language.strip().lower()
+    if normalised not in tpl.SUPPORTED_LANGUAGES:
+        raise ValidationError(
+            f"'{language}' is not a language messages can be sent in.",
+            code="unsupported_language",
+            details={"language": language, "allowed": sorted(tpl.SUPPORTED_LANGUAGES)},
+        )
+    return normalised
+
+
+def _check_copy(code: str, text: str | None, *, field: str) -> None:
+    """Refuse wording that would reach the patient with a placeholder unfilled.
+
+    Previewing already reported these, and a corrupted template was saved and
+    sent anyway. Checked on every write, so the only copy that can exist is copy
+    that renders.
+    """
+    if not text:
+        return
+    problems = tpl.check_template_text(code, text)
+    allowed = sorted(tpl.allowed_placeholders(code))
+    if problems.malformed:
+        raise ValidationError(
+            "Placeholders are written in double braces, e.g. {{patient_name}}. "
+            f"This will not be filled in: {', '.join(problems.malformed)}.",
+            code="malformed_placeholder",
+            details={"field": field, "malformed": list(problems.malformed), "allowed": allowed},
+        )
+    if problems.unknown:
+        raise ValidationError(
+            f"{code.strip().upper()} does not supply "
+            f"{', '.join('{{' + name + '}}' for name in problems.unknown)}.",
+            code="unknown_placeholder",
+            details={"field": field, "unknown": list(problems.unknown), "allowed": allowed},
+        )
+
+
 async def create_template(
     session: AsyncSession, payload: MessageTemplateCreate, *, hospital_id: uuid.UUID
 ) -> NotificationTemplate:
+    language = _check_language(payload.language)
+    _check_copy(payload.code, payload.subject, field="subject")
+    _check_copy(payload.code, payload.body, field="body")
+
     existing = await _find_template(
         session,
         hospital_id=hospital_id,
         code=payload.code,
         channel=payload.channel,
-        language=payload.language,
+        language=language,
     )
     if existing is not None:
         raise ConflictError(
-            f"A {payload.channel.value} template for {payload.code} already exists "
-            f"in {payload.language}.",
+            f"A {payload.channel.value} template for {payload.code} already exists in {language}.",
             code="template_exists",
             details={"template_id": str(existing.id)},
         )
@@ -237,7 +288,7 @@ async def create_template(
         hospital_id=hospital_id,
         code=payload.code.strip().upper(),
         channel=payload.channel,
-        language=payload.language.strip().lower(),
+        language=language,
         category=payload.category,
         subject=payload.subject,
         body=payload.body,
@@ -281,6 +332,8 @@ async def update_template(
     """
     if payload.subject is not None and template.channel is not NotificationChannel.EMAIL:
         raise ValidationError("Only an email template has a subject line.")
+    _check_copy(template.code, payload.subject, field="subject")
+    _check_copy(template.code, payload.body, field="body")
 
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
@@ -289,6 +342,18 @@ async def update_template(
     await session.flush()
     await session.refresh(template)
     return template
+
+
+async def delete_template(session: AsyncSession, template: NotificationTemplate) -> None:
+    """Retire a hospital's override. Its shipped wording applies again at once.
+
+    Soft, like every other record here: messages already sent keep their frozen
+    text, and the audit trail keeps the row. The (code, channel, language) slot
+    is free for a corrected template straight away.
+    """
+    template.mark_deleted()
+    session.add(template)
+    await session.flush()
 
 
 async def list_templates(
@@ -495,6 +560,10 @@ async def _blocking_reason(
     patient = await patients_service.get_patient(session, patient_id)
     if patient.is_deceased:
         return SuppressionReason.DECEASED
+    # An unidentified emergency record (UX-01). Read live, like the death flag,
+    # so identifying the patient is all it takes for messages to flow again.
+    if patient.is_unidentified:
+        return SuppressionReason.UNIDENTIFIED
 
     for suppression in await active_suppressions(
         session, hospital_id=hospital_id, patient_id=patient_id
@@ -519,7 +588,11 @@ async def suppress(
     from inside the transaction that records the death. Two ways to create the
     same row would mean two places for the invariant to be got wrong.
     """
-    if payload.reason in (SuppressionReason.DECEASED, SuppressionReason.DISABLED):
+    if payload.reason in (
+        SuppressionReason.DECEASED,
+        SuppressionReason.DISABLED,
+        SuppressionReason.UNIDENTIFIED,
+    ):
         raise ValidationError(
             "That reason is not recorded by hand.",
             code="suppression_reason_not_manual",
@@ -1295,6 +1368,83 @@ async def send_adhoc(
         subject_override=payload.subject,
         triggered_by=actor,
     )
+
+
+# ---------------------------------------------------------------------------
+# Follow-up reminders
+# ---------------------------------------------------------------------------
+# The reminder goes out on the day before, from this hour on the hospital's
+# clock. The sweep runs all night, and a hospital message at ten past midnight
+# wakes a household for something that could have waited until breakfast.
+FOLLOW_UP_REMINDER_FROM = time(9, 0)
+
+
+def format_day(day: date) -> str:
+    """A date as a patient reads it: "05 Nov 2026"."""
+    return day.strftime("%d %b %Y")
+
+
+async def send_follow_up_reminders(
+    session: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    now: datetime | None = None,
+    gateway: Gateway | None = None,
+) -> int:
+    """Remind patients whose follow-up is tomorrow. Returns how many were raised.
+
+    Run by the worker's sweep, which fires many times a day; one reminder per
+    visit is guaranteed by keying the message on the visit (`source_id`), the
+    same idempotency every trigger relies on. A death recorded since the visit
+    closed is caught where it always is — the suppression check in `enqueue`,
+    and again in `dispatch` — so the row is kept as SUPPRESSED, saying why, and
+    nothing reaches the family.
+    """
+    zone = await tenancy_service.local_zone(session, hospital_id)
+    local = (now or utc_now()).astimezone(zone)
+    if local.time() < FOLLOW_UP_REMINDER_FROM:
+        return 0
+
+    tomorrow = local.date() + timedelta(days=1)
+    visits = await clinical_service.follow_ups_due(session, hospital_id=hospital_id, on=tomorrow)
+    if not visits:
+        return 0
+
+    hospital = await tenancy_service.get_hospital(session, hospital_id)
+    raised = 0
+    for visit in visits:
+        already = await _find_by_source(
+            session,
+            hospital_id=hospital_id,
+            source_module="clinical",
+            source_type="follow_up_due",
+            source_id=visit.id,
+            code=tpl.TemplateCode.FOLLOW_UP_DUE,
+        )
+        if already is not None:
+            continue
+
+        patient = await patients_service.get_patient(session, visit.patient_id)
+        await notify(
+            session,
+            hospital_id=hospital_id,
+            code=tpl.TemplateCode.FOLLOW_UP_DUE,
+            recipient=_recipient_from(patient),
+            context={
+                "hospital_name": hospital.name,
+                "patient_name": patient.full_name,
+                "uhid": patient.uhid,
+                "follow_up_date": format_day(tomorrow),
+            },
+            category=NotificationCategory.FOLLOW_UP,
+            encounter_id=visit.id,
+            source_module="clinical",
+            source_type="follow_up_due",
+            source_id=visit.id,
+            gateway=gateway,
+        )
+        raised += 1
+    return raised
 
 
 # ---------------------------------------------------------------------------

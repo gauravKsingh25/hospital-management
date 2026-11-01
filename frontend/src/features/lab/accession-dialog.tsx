@@ -29,14 +29,13 @@ import type { DiagnosticReport, WorklistEntry } from "@/types/api";
 import { useCatalogue } from "@/features/lab/worklist";
 
 /**
- * Accepting a doctor's request onto the bench.
+ * Mapping a free-text request to a catalogue test, and accepting it onto the
+ * bench.
  *
- * The one decision here is which catalogue entry the request means, and the
- * lab makes it rather than the doctor. That is deliberate on the backend's
- * part (`AccessionRequest.catalogue_item_id`) and worth preserving here: a
- * doctor writes "CBC" at speed, and the technician is the person who knows
- * which panel that is and can correct a typo without bouncing the request
- * back to the consulting room.
+ * Only opened for `NEEDS_MAPPING` — a request that carries a catalogue code
+ * is accessioned straight from the worklist row. For the rest the technician
+ * is the person who knows which panel "sugar test" means, and can correct a
+ * typo without bouncing the request back to the consulting room.
  *
  * The written request is shown verbatim above the picker, because matching it
  * to a catalogue entry is exactly the judgement being asked for.

@@ -491,6 +491,123 @@ async def test_a_death_can_be_recorded_from_a_ward(
     assert updated.status is S.DECEASED
 
 
+async def test_a_death_certified_by_a_cashier_is_refused(
+    session: AsyncSession, tenant: Hospital, encounter: Encounter, doctor_user: User
+) -> None:
+    """A death certificate signed by the cash counter is not a medical record.
+
+    The certifier existed and worked here; it was the role nobody checked.
+    """
+    from tests.conftest import _make_user
+
+    cashier = await _make_user(session, role_code=Roles.CASHIER, hospital_id=tenant.id)
+    await db.set_tenant_context(session, tenant.id)
+
+    with pytest.raises(ValidationError) as error:
+        await service.record_death(
+            session,
+            encounter,
+            DeathRecord(
+                deceased_at=utc_now(),
+                death_certified_by_id=cashier.id,
+                cause_of_death="Cardiac arrest",
+            ),
+            actor=doctor_user,
+        )
+    assert error.value.code == "certifier_not_a_doctor"
+    assert encounter.status is S.REGISTERED
+
+
+async def test_a_death_certified_by_a_deactivated_doctor_is_refused(
+    session: AsyncSession, tenant: Hospital, encounter: Encounter, doctor_user: User
+) -> None:
+    """A doctor who has left cannot sign today's deaths."""
+    from tests.conftest import _make_user
+
+    former = await _make_user(session, role_code=Roles.DOCTOR, hospital_id=tenant.id)
+    async with db.system_context(session):
+        former.is_active = False
+        session.add(former)
+        await session.flush()
+    await db.set_tenant_context(session, tenant.id)
+
+    with pytest.raises(ValidationError) as error:
+        await service.record_death(
+            session,
+            encounter,
+            DeathRecord(
+                deceased_at=utc_now(),
+                death_certified_by_id=former.id,
+                cause_of_death="Cardiac arrest",
+            ),
+            actor=doctor_user,
+        )
+    assert error.value.code == "certifier_inactive"
+
+
+async def test_a_death_years_before_the_visit_is_refused(
+    session: AsyncSession, encounter: Encounter, doctor_user: User
+) -> None:
+    """The audit's case: a visit opened today, a death dated 2015."""
+    with pytest.raises(ValidationError) as error:
+        await service.record_death(
+            session,
+            encounter,
+            DeathRecord(
+                deceased_at=datetime(2015, 1, 1, tzinfo=UTC),
+                death_certified_by_id=doctor_user.id,
+                cause_of_death="Cardiac arrest",
+            ),
+            actor=doctor_user,
+        )
+    assert error.value.code == "recorded_before_visit"
+    assert error.value.details["field"] == "deceased_at"
+    assert encounter.status is S.REGISTERED
+
+
+async def test_a_patient_brought_in_dead_can_be_dated_just_before_the_visit(
+    session: AsyncSession, encounter: Encounter, doctor_user: User
+) -> None:
+    """Brought in dead: the chart is opened after the death, not before it."""
+    updated = await service.record_death(
+        session,
+        encounter,
+        DeathRecord(
+            deceased_at=encounter.started_at - timedelta(minutes=50),
+            death_certified_by_id=doctor_user.id,
+            cause_of_death="Road traffic accident",
+        ),
+        actor=doctor_user,
+    )
+    await session.commit()
+    assert updated.status is S.DECEASED
+
+
+async def test_a_death_before_a_documented_birth_is_refused(
+    session: AsyncSession, encounter: Encounter, doctor_user: User, patient: Patient
+) -> None:
+    """A visit carried over from older records can predate a corrected birth date;
+    the death still cannot."""
+    patient.birth_date = datetime(2021, 3, 1, tzinfo=UTC).date()
+    patient.birth_date_is_estimated = False
+    encounter.started_at = datetime(2020, 1, 1, tzinfo=UTC)
+    session.add_all([patient, encounter])
+    await session.flush()
+
+    with pytest.raises(ValidationError) as error:
+        await service.record_death(
+            session,
+            encounter,
+            DeathRecord(
+                deceased_at=datetime(2020, 6, 1, tzinfo=UTC),
+                death_certified_by_id=doctor_user.id,
+                cause_of_death="Cardiac arrest",
+            ),
+            actor=doctor_user,
+        )
+    assert error.value.code == "recorded_before_birth"
+
+
 # ---------------------------------------------------------------------------
 # Edge case: referral out
 # ---------------------------------------------------------------------------
@@ -518,6 +635,24 @@ async def test_referral_records_destination_and_still_owes_a_bill(
     assert updated.referred_to_facility == "AIIMS Delhi"
     assert updated.referred_at is not None
     assert seen[0].requires_settlement is True
+
+
+async def test_a_referral_dated_before_the_visit_is_refused(
+    session: AsyncSession, encounter: Encounter, doctor_user: User
+) -> None:
+    with pytest.raises(ValidationError) as error:
+        await service.record_referral(
+            session,
+            encounter,
+            ReferralRecord(
+                referred_to_facility="AIIMS Delhi",
+                referral_reason="Neurosurgery unavailable here.",
+                referred_at=encounter.started_at - timedelta(days=3),
+            ),
+            actor=doctor_user,
+        )
+    assert error.value.code == "recorded_before_visit"
+    assert error.value.details["field"] == "referred_at"
 
 
 async def test_referral_without_a_destination_is_refused(
@@ -550,6 +685,23 @@ async def test_lama_records_who_pressed_the_button(
     assert updated.status is S.LAMA
     assert updated.lama_recorded_by_id == doctor_user.id
     assert updated.lama_form_signed is True
+
+
+async def test_a_lama_dated_before_the_visit_is_refused(
+    session: AsyncSession, encounter: Encounter, doctor_user: User
+) -> None:
+    with pytest.raises(ValidationError) as error:
+        await service.record_lama(
+            session,
+            encounter,
+            LamaRecord(
+                lama_reason="Absconded from the ward.",
+                lama_at=encounter.started_at - timedelta(hours=2),
+            ),
+            actor=doctor_user,
+        )
+    assert error.value.code == "recorded_before_visit"
+    assert error.value.details["field"] == "lama_at"
 
 
 async def test_an_unsigned_lama_is_recorded_as_unsigned(

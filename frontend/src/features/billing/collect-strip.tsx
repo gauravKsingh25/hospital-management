@@ -44,9 +44,12 @@ const ARM_MS = 4_000;
 export function CollectStrip({
   entry,
   className,
+  onCollected,
 }: {
   entry: QueueBoardEntry;
   className?: string;
+  /** Called once the money is recorded — the board closes the line on it. */
+  onCollected?: () => void;
 }) {
   const t = useTranslations("billing");
   const common = useTranslations("common");
@@ -89,7 +92,13 @@ export function CollectStrip({
   const send = (body: CollectPayment, onSuccess?: () => void) =>
     collect.mutate(
       { ...body, expected_amount: body.expected_amount ?? due },
-      { onSuccess, onSettled: () => setArmed(false) },
+      {
+        onSuccess: () => {
+          onSuccess?.();
+          onCollected?.();
+        },
+        onSettled: () => setArmed(false),
+      },
     );
 
   return (
@@ -101,7 +110,7 @@ export function CollectStrip({
         <span className="tabular text-sm leading-tight font-semibold" data-testid="amount-due">
           {formatMoney(due)}
         </span>
-        <span className="text-caution-foreground text-[10px] font-medium uppercase">
+        <span className="text-caution-foreground text-xs font-medium uppercase">
           {t("due")}
         </span>
       </div>

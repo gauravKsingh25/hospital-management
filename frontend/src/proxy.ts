@@ -30,7 +30,9 @@ import { isExpiring, parseSession, SESSION_COOKIE_NAME } from "@/lib/session-coo
  */
 
 /** Reachable without a session. Everything else requires one. */
-const PUBLIC_PATHS = ["/login", "/auth/refresh", "/health"];
+// The idle lock's two handlers (SEC-04) are public: unlocking happens with
+// no session at all, which is the point of a lock.
+const PUBLIC_PATHS = ["/login", "/auth/refresh", "/auth/lock", "/auth/unlock", "/health"];
 
 /** Where a user with `must_change_password` is allowed to go (CLAUDE.md §12). */
 const PASSWORD_CHANGE_PATH = "/change-password";
@@ -95,9 +97,12 @@ function withSecurityHeaders(
   // Patient identifiers appear in URLs. Never leak one in a Referer header.
   response.headers.set("Referrer-Policy", "no-referrer");
   response.headers.set("X-Frame-Options", framable ? "SAMEORIGIN" : "DENY");
+  // The camera is this app's alone: the scanner in the top bar reads patient
+  // cards with it. `(self)` rather than `*`, so no framed page and no
+  // third-party iframe can ask for it. Everything else stays switched off.
   response.headers.set(
     "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=(), payment=()",
+    "camera=(self), microphone=(), geolocation=(), payment=()",
   );
   return response;
 }

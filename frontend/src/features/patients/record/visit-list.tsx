@@ -26,6 +26,8 @@ export type VisitPermissions = {
   canRecordReferral: boolean;
   canRecordLama: boolean;
   canRecordDiagnosis: boolean;
+  /** Who is signed in, so a doctor recording a death starts as its certifier. */
+  currentUserId?: string;
 };
 
 /**
@@ -200,6 +202,7 @@ function VisitCard({
               canRecordDeath={permissions.canRecordDeath}
               canRecordReferral={permissions.canRecordReferral}
               canRecordLama={permissions.canRecordLama}
+              currentUserId={permissions.currentUserId}
             />
           </div>
         ) : null}

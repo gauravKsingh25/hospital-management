@@ -13,6 +13,7 @@ import { api } from "@/lib/api/client";
 import { BOARD_PAGE_SIZE } from "@/lib/pagination";
 import { useElapsed } from "@/lib/hooks/use-elapsed";
 import { cn } from "@/lib/utils";
+import { useWaitFormatter } from "@/lib/hooks/use-wait";
 import type { AccountBoardEntry, EncounterStatus, Page } from "@/types/api";
 
 import { formatMoney } from "@/features/billing/money";
@@ -109,6 +110,7 @@ const SETTLEMENT_STATUSES: EncounterStatus[] = ["DECEASED", "REFERRED_OUT", "LAM
 
 function AccountRow({ entry }: { entry: AccountBoardEntry }) {
   const t = useTranslations("billing");
+  const wait = useWaitFormatter();
   const common = useTranslations("common");
   const waiting = useElapsed(entry.outstanding_since);
 
@@ -140,7 +142,7 @@ function AccountRow({ entry }: { entry: AccountBoardEntry }) {
           ) : null}
         </div>
         <div className="text-muted-foreground mt-1 text-xs">
-          {t("waitingMinutes", { count: waiting })}
+          {t("waitingMinutes", { duration: wait(waiting) })}
         </div>
       </td>
 

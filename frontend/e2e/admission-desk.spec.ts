@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import {
   ACCOUNTS,
   chooseGender,
+  openLine,
   releaseTrackedBeds,
   signIn,
   signOut,
@@ -39,10 +40,12 @@ test("reception sends a seen patient and the admission desk admits them", async 
   await page.goto("/reception");
   const row = page.getByTestId("queue-row").filter({ hasText: patient.name });
   await expect(row).toBeVisible({ timeout: 30_000 });
+  await openLine(row);
   await row.getByTestId("mark-seen").click();
 
   const seenRow = page.getByTestId("seen-row").filter({ hasText: patient.name });
   await expect(seenRow).toBeVisible({ timeout: 20_000 });
+  await openLine(seenRow);
   await seenRow.getByTestId("send-to-admission").click();
 
   const send = page.getByRole("dialog");

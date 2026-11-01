@@ -93,12 +93,18 @@ class User(IdentifiedModel, SoftDeleteMixin, table=True):
         sa_type=DateTime(timezone=True),  # type: ignore[call-overload]
     )
 
-    # --- 2FA (CLAUDE.md §12) ------------------------------------------------
-    # Columns reserved now so enabling TOTP for admin and doctor roles later is
-    # a feature, not a migration of a live user table. The enrolment and
-    # challenge flow is deliberately NOT part of this phase.
+    # --- 2FA (CLAUDE.md §12, SEC-05) ----------------------------------------
+    # `totp_secret` is set at enrolment and only switches two-step on once a
+    # code from the app has proved it works (`two_factor_enabled`). The
+    # secret is stored as issued, behind the same row-level security as the
+    # rest of the user: encrypting it under a key the application holds anyway
+    # would protect it from nothing the application is not already trusted
+    # with.
     two_factor_enabled: bool = Field(default=False)
     totp_secret: str | None = Field(default=None, max_length=64)
+    # The last 30-second step a code was accepted for. A code is good once:
+    # not the same person twice, and not whoever read it over their shoulder.
+    totp_last_step: int | None = Field(default=None)
 
 
 class Role(IdentifiedModel, SoftDeleteMixin, table=True):
@@ -240,6 +246,14 @@ class RefreshToken(IdentifiedModel, table=True):
     revoked_reason: str | None = Field(default=None, max_length=64)
     replaced_by_id: uuid.UUID | None = Field(
         default=None, foreign_key="refresh_tokens.id", ondelete="SET NULL", nullable=True
+    )
+
+    # When the person signed in. Carried unchanged through every rotation, so
+    # the shift-length cap (SEC-04) counts from sign-in, not from the last
+    # refresh. Null only on tokens issued before the column existed.
+    session_started_at: datetime | None = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),  # type: ignore[call-overload]
     )
 
     # Session provenance — shown on a "your active sessions" screen later.

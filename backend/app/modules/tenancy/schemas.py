@@ -85,6 +85,9 @@ class HospitalUpdate(BaseModel):
     it change would orphan records that are already on paper.
     """
 
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=2, max_length=200)] = None
     legal_name: Annotated[str | None, Field(max_length=200)] = None
     hfr_facility_id: Annotated[str | None, Field(max_length=64)] = None
@@ -137,6 +140,9 @@ class DepartmentCreate(BaseModel):
 
 
 class DepartmentUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=2, max_length=120)] = None
     department_type: DepartmentType | None = None
     description: Annotated[str | None, Field(max_length=500)] = None

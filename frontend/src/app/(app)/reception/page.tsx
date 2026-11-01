@@ -1,8 +1,8 @@
 import { getTranslations } from "next-intl/server";
-import { UserPlus, Users } from "lucide-react";
+import { Siren, UserPlus, Users } from "lucide-react";
 
+import { NeedsIdentification } from "@/features/emergency/needs-identification";
 import { DoctorQueues } from "@/features/queue/doctor-queues";
-import { CameraScanButton } from "@/features/scan/camera-scan-button";
 import { DelayAlert } from "@/features/reports/delay-alert";
 import { NoPermission } from "@/components/no-permission";
 import { LinkButton } from "@/components/ui/link-button";
@@ -33,6 +33,7 @@ export async function generateMetadata() {
 export default async function ReceptionPage() {
   const t = await getTranslations("nav");
   const tRegister = await getTranslations("registration");
+  const tEmergency = await getTranslations("emergency");
   const user = await getCurrentUser();
 
   if (!can(user, "patient:read")) return <NoPermission />;
@@ -43,11 +44,21 @@ export default async function ReceptionPage() {
         <h1 className="text-2xl font-semibold tracking-tight">{t("reception")}</h1>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* No permission check: the page already returns early without
-              `patient:read`. Renders nothing unless the device can actually
-              scan — a counter PC has a USB scanner and no `BarcodeDetector`,
-              so most of the time nothing appears here at all. */}
-          <CameraScanButton />
+          {/* UX-01: the patient nobody can name. Red and first, because it is
+              the one button on this screen that cannot wait its turn. */}
+          {canAll(user, "patient:create", "appointment:create") ? (
+            <LinkButton
+              className="h-tap bg-destructive hover:bg-destructive/90 text-white"
+              href="/reception/emergency"
+              data-testid="emergency-link"
+            >
+              <Siren aria-hidden className="size-4" />
+              {tEmergency("button")}
+              <kbd className="ml-1 hidden rounded bg-white/20 px-1.5 py-0.5 text-xs font-medium sm:inline-block">
+                F9
+              </kbd>
+            </LinkButton>
+          ) : null}
 
           {can(user, "patient:create") ? (
             <LinkButton className="h-tap" href="/reception/register">
@@ -55,13 +66,17 @@ export default async function ReceptionPage() {
               {tRegister("title")}
               {/* The key is shown on the button itself. A shortcut nobody can
                   discover is a shortcut nobody uses. */}
-              <kbd className="bg-primary-foreground/15 ml-1 hidden rounded px-1.5 py-0.5 text-[10px] font-medium sm:inline-block">
+              <kbd className="bg-primary-foreground/15 ml-1 hidden rounded px-1.5 py-0.5 text-xs font-medium sm:inline-block">
                 F2
               </kbd>
             </LinkButton>
           ) : null}
         </div>
       </header>
+
+      {can(user, "patient:list") ? (
+        <NeedsIdentification canIdentify={can(user, "patient:update")} />
+      ) : null}
 
       {can(user, "report:operational") ? <DelayAlert /> : null}
 

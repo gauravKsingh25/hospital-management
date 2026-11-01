@@ -2,12 +2,19 @@
   "components": {
     "schemas": {
       "AccessionRequest": {
-        "description": "The lab accepting a doctor's order onto its bench.\n\n`catalogue_item_id` is chosen here rather than at ordering time on purpose:\na doctor writes \"CBC\" at speed, and the lab is the one that knows which\ncatalogue entry that is — and can correct a typo without bouncing the order\nback to the consulting room.",
+        "description": "The lab accepting a doctor's order onto its bench.\n\n`catalogue_item_id` may be left out when the order already carries a\ncatalogue code — the test is named, and picking it again is an extra step\nand a chance to pick the wrong price. A free-text order (\"Complete Blood\nCount\", no code) still needs the lab to say which test it means, and is\nrefused (`needs_mapping`) until it does; the lab can correct a typo without\nbouncing the order back to the consulting room.",
         "properties": {
           "catalogue_item_id": {
-            "format": "uuid",
-            "title": "Catalogue Item Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogue Item Id"
           },
           "notes": {
             "anyOf": [
@@ -28,8 +35,7 @@
           }
         },
         "required": [
-          "order_id",
-          "catalogue_item_id"
+          "order_id"
         ],
         "title": "AccessionRequest",
         "type": "object"
@@ -1198,6 +1204,7 @@
         "type": "object"
       },
       "AdmissionUpdate": {
+        "additionalProperties": false,
         "properties": {
           "admission_notes": {
             "anyOf": [
@@ -1974,8 +1981,15 @@
       "AttemptRead": {
         "properties": {
           "address": {
-            "title": "Address",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
           },
           "attempt": {
             "title": "Attempt",
@@ -2503,6 +2517,7 @@
         "type": "string"
       },
       "BedUpdate": {
+        "additionalProperties": false,
         "properties": {
           "bed_class": {
             "anyOf": [
@@ -3428,6 +3443,7 @@
         "type": "object"
       },
       "CatalogueItemUpdate": {
+        "additionalProperties": false,
         "properties": {
           "container": {
             "anyOf": [
@@ -4131,6 +4147,7 @@
         "type": "string"
       },
       "ClaimUpdate": {
+        "additionalProperties": false,
         "properties": {
           "approved_amount": {
             "anyOf": [
@@ -4631,6 +4648,11 @@
           "two_factor_enabled": {
             "title": "Two Factor Enabled",
             "type": "boolean"
+          },
+          "two_factor_required": {
+            "default": false,
+            "title": "Two Factor Required",
+            "type": "boolean"
           }
         },
         "required": [
@@ -5047,6 +5069,7 @@
         "type": "string"
       },
       "DepartmentUpdate": {
+        "additionalProperties": false,
         "properties": {
           "department_type": {
             "anyOf": [
@@ -5883,6 +5906,7 @@
         "type": "object"
       },
       "DoctorUpdate": {
+        "additionalProperties": false,
         "properties": {
           "default_slot_minutes": {
             "anyOf": [
@@ -6014,6 +6038,18 @@
             "title": "Admission Id",
             "type": "string"
           },
+          "allergy_conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allergy Conflicts",
+            "type": "array"
+          },
+          "allergy_unreviewed": {
+            "default": false,
+            "title": "Allergy Unreviewed",
+            "type": "boolean"
+          },
           "auto_missed": {
             "title": "Auto Missed",
             "type": "boolean"
@@ -6062,6 +6098,13 @@
               }
             ],
             "title": "Notes"
+          },
+          "patient_allergies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Patient Allergies",
+            "type": "array"
           },
           "patient_id": {
             "format": "uuid",
@@ -6245,6 +6288,149 @@
           "reason"
         ],
         "title": "DuplicateCandidate",
+        "type": "object"
+      },
+      "EmergencyRegister": {
+        "description": "One tap at the casualty door (UX-01): a patient nobody can name.\n\nNo name and no mobile — the patient is registered as `Unknown Male\nEM-0034` and identified later. Gender is the one thing staff can always\nsee (or say they cannot: `UNKNOWN`); an age is a guess and may be left out.",
+        "properties": {
+          "age_years": {
+            "anyOf": [
+              {
+                "maximum": 130.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Years"
+          },
+          "complaint": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Complaint"
+          },
+          "doctor_id": {
+            "format": "uuid",
+            "title": "Doctor Id",
+            "type": "string"
+          },
+          "gender": {
+            "$ref": "#/components/schemas/Gender"
+          },
+          "send_to_admission": {
+            "default": false,
+            "title": "Send To Admission",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "gender",
+          "doctor_id"
+        ],
+        "title": "EmergencyRegister",
+        "type": "object"
+      },
+      "EmergencyResponse": {
+        "description": "The token slip, plus what casualty calls the patient until they are named.",
+        "properties": {
+          "admission_request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission Request Id"
+          },
+          "appointment": {
+            "$ref": "#/components/schemas/AppointmentRead"
+          },
+          "department_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Name"
+          },
+          "doctor_name": {
+            "title": "Doctor Name",
+            "type": "string"
+          },
+          "emergency_tag": {
+            "title": "Emergency Tag",
+            "type": "string"
+          },
+          "encounter_id": {
+            "format": "uuid",
+            "title": "Encounter Id",
+            "type": "string"
+          },
+          "encounter_number": {
+            "title": "Encounter Number",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "patient_name": {
+            "title": "Patient Name",
+            "type": "string"
+          },
+          "patients_ahead": {
+            "title": "Patients Ahead",
+            "type": "integer"
+          },
+          "queue_entry": {
+            "$ref": "#/components/schemas/QueueEntryRead"
+          },
+          "token_number": {
+            "title": "Token Number",
+            "type": "integer"
+          },
+          "uhid": {
+            "title": "Uhid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appointment",
+          "queue_entry",
+          "patient_name",
+          "uhid",
+          "token_number",
+          "doctor_name",
+          "department_name",
+          "location",
+          "patients_ahead",
+          "encounter_id",
+          "encounter_number",
+          "emergency_tag"
+        ],
+        "title": "EmergencyResponse",
         "type": "object"
       },
       "EncounterChart": {
@@ -6895,6 +7081,7 @@
         "type": "string"
       },
       "EncounterUpdate": {
+        "additionalProperties": false,
         "properties": {
           "chief_complaint": {
             "anyOf": [
@@ -7467,6 +7654,7 @@
         "type": "object"
       },
       "HospitalUpdate": {
+        "additionalProperties": false,
         "description": "Every field optional — `code` is deliberately absent.\n\nThe code is printed on patient cards and embedded in identifiers; letting\nit change would orphan records that are already on paper.",
         "properties": {
           "address_line1": {
@@ -8439,6 +8627,18 @@
       },
       "LoginRequest": {
         "properties": {
+          "device_token": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Token"
+          },
           "email": {
             "format": "email",
             "title": "Email",
@@ -8473,6 +8673,19 @@
       },
       "MedicationOrderCreate": {
         "properties": {
+          "allergy_override_reason": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allergy Override Reason"
+          },
           "dose": {
             "maxLength": 60,
             "minLength": 1,
@@ -8609,6 +8822,24 @@
             "format": "uuid",
             "title": "Admission Id",
             "type": "string"
+          },
+          "allergy_conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allergy Conflicts",
+            "type": "array"
+          },
+          "allergy_override_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allergy Override Reason"
           },
           "dose": {
             "title": "Dose",
@@ -9162,6 +9393,7 @@
         "type": "object"
       },
       "MedicineItemUpdate": {
+        "additionalProperties": false,
         "description": "Every field optional; `price` changes the default rate card's price.",
         "properties": {
           "dose": {
@@ -9403,6 +9635,7 @@
         "type": "object"
       },
       "MessageTemplateUpdate": {
+        "additionalProperties": false,
         "properties": {
           "body": {
             "anyOf": [
@@ -9772,6 +10005,7 @@
         "type": "object"
       },
       "NoteTemplateUpdate": {
+        "additionalProperties": false,
         "properties": {
           "body": {
             "anyOf": [
@@ -9890,8 +10124,15 @@
             "type": "integer"
           },
           "body": {
-            "title": "Body",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
           },
           "cancellation_reason": {
             "anyOf": [
@@ -10366,6 +10607,19 @@
       },
       "OrderCreate": {
         "properties": {
+          "allergy_override_reason": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allergy Override Reason"
+          },
           "blocks_closure": {
             "default": true,
             "title": "Blocks Closure",
@@ -10432,6 +10686,17 @@
       },
       "OrderRead": {
         "properties": {
+          "allergy_override_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allergy Override Reason"
+          },
           "blocks_closure": {
             "title": "Blocks Closure",
             "type": "boolean"
@@ -12587,6 +12852,17 @@
             ],
             "title": "Email"
           },
+          "emergency_tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Tag"
+          },
           "full_name": {
             "title": "Full Name",
             "type": "string"
@@ -12632,12 +12908,28 @@
             "title": "Id",
             "type": "string"
           },
+          "identified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identified At"
+          },
           "is_active": {
             "title": "Is Active",
             "type": "boolean"
           },
           "is_deceased": {
             "title": "Is Deceased",
+            "type": "boolean"
+          },
+          "is_unidentified": {
+            "title": "Is Unidentified",
             "type": "boolean"
           },
           "marital_status": {
@@ -12679,8 +12971,15 @@
             "title": "Occupation"
           },
           "phone": {
-            "title": "Phone",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
           },
           "pincode": {
             "anyOf": [
@@ -12730,6 +13029,8 @@
           "city",
           "is_active",
           "is_deceased",
+          "is_unidentified",
+          "emergency_tag",
           "merged_into_id",
           "registered_at",
           "alternate_phone",
@@ -12750,6 +13051,7 @@
           "abha_address",
           "preferred_language",
           "deceased_at",
+          "identified_at",
           "age_years"
         ],
         "title": "PatientDetail",
@@ -12802,6 +13104,86 @@
           "valid_until"
         ],
         "title": "PatientIdentifierRead",
+        "type": "object"
+      },
+      "PatientIdentify": {
+        "description": "Say who an unidentified emergency patient is (UX-01).\n\nExactly one of two forms:\n\n* **somebody already registered** — `existing_patient_id`, and nothing\n  else. Their record folds into the emergency one, which keeps the live\n  visit, bed and bill pointing at the right person;\n* **a new person** — the same four fields registration asks for. The\n  mobile is required here even though the emergency record had none: a\n  known patient with no number is one every message silently fails for.\n\nMixing the two is refused rather than resolved, because which identity\nwould win is a guess.",
+        "properties": {
+          "age_years": {
+            "anyOf": [
+              {
+                "maximum": 130.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Years"
+          },
+          "birth_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Birth Date"
+          },
+          "existing_patient_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Patient Id"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Gender"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "title": "PatientIdentify",
         "type": "object"
       },
       "PatientMergeRequest": {
@@ -12872,6 +13254,17 @@
             ],
             "title": "City"
           },
+          "emergency_tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Tag"
+          },
           "full_name": {
             "title": "Full Name",
             "type": "string"
@@ -12892,6 +13285,10 @@
             "title": "Is Deceased",
             "type": "boolean"
           },
+          "is_unidentified": {
+            "title": "Is Unidentified",
+            "type": "boolean"
+          },
           "merged_into_id": {
             "anyOf": [
               {
@@ -12905,8 +13302,15 @@
             "title": "Merged Into Id"
           },
           "phone": {
-            "title": "Phone",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
           },
           "registered_at": {
             "format": "date-time",
@@ -12930,6 +13334,8 @@
           "city",
           "is_active",
           "is_deceased",
+          "is_unidentified",
+          "emergency_tag",
           "merged_into_id",
           "registered_at",
           "age_years"
@@ -13179,6 +13585,7 @@
         "type": "string"
       },
       "PatientUpdate": {
+        "additionalProperties": false,
         "description": "Everything optional. Name and phone are here too, but changing either\nre-checks the identity constraint — see `service.update_patient`.",
         "properties": {
           "abha_address": {
@@ -14467,6 +14874,11 @@
             "title": "Patient Is Deceased",
             "type": "boolean"
           },
+          "patient_is_unidentified": {
+            "default": false,
+            "title": "Patient Is Unidentified",
+            "type": "boolean"
+          },
           "patient_name": {
             "anyOf": [
               {
@@ -15190,6 +15602,7 @@
         "type": "object"
       },
       "RateCardUpdate": {
+        "additionalProperties": false,
         "properties": {
           "is_active": {
             "anyOf": [
@@ -15752,6 +16165,17 @@
             ],
             "title": "Email"
           },
+          "emergency_tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Tag"
+          },
           "full_name": {
             "title": "Full Name",
             "type": "string"
@@ -15797,12 +16221,28 @@
             "title": "Id",
             "type": "string"
           },
+          "identified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identified At"
+          },
           "is_active": {
             "title": "Is Active",
             "type": "boolean"
           },
           "is_deceased": {
             "title": "Is Deceased",
+            "type": "boolean"
+          },
+          "is_unidentified": {
+            "title": "Is Unidentified",
             "type": "boolean"
           },
           "marital_status": {
@@ -15844,8 +16284,15 @@
             "title": "Occupation"
           },
           "phone": {
-            "title": "Phone",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
           },
           "pincode": {
             "anyOf": [
@@ -15902,6 +16349,8 @@
           "city",
           "is_active",
           "is_deceased",
+          "is_unidentified",
+          "emergency_tag",
           "merged_into_id",
           "registered_at",
           "alternate_phone",
@@ -15922,6 +16371,7 @@
           "abha_address",
           "preferred_language",
           "deceased_at",
+          "identified_at",
           "age_years"
         ],
         "title": "RegistrationResponse",
@@ -16639,6 +17089,12 @@
             "title": "Discounts Given",
             "type": "string"
           },
+          "given_up": {
+            "default": "0.00",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Given Up",
+            "type": "string"
+          },
           "outstanding_total": {
             "default": "0.00",
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -17247,6 +17703,7 @@
         "type": "object"
       },
       "ServiceItemUpdate": {
+        "additionalProperties": false,
         "properties": {
           "category": {
             "anyOf": [
@@ -18067,6 +18524,7 @@
         "type": "string"
       },
       "SummaryUpdate": {
+        "additionalProperties": false,
         "description": "Every section is optional: the doctor edits what is wrong, not everything.",
         "properties": {
           "condition_at_discharge": {
@@ -18428,6 +18886,7 @@
           "OPTED_OUT",
           "INVALID_CONTACT",
           "STAFF_BLOCK",
+          "UNIDENTIFIED",
           "DISABLED"
         ],
         "title": "SuppressionReason",
@@ -18504,6 +18963,18 @@
             "title": "Access Token",
             "type": "string"
           },
+          "device_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the person asked to remember this device (SEC-05).",
+            "title": "Device Token"
+          },
           "expires_in": {
             "description": "Access token lifetime in seconds.",
             "title": "Expires In",
@@ -18557,6 +19028,151 @@
           "to_bed_id"
         ],
         "title": "TransferRequest",
+        "type": "object"
+      },
+      "TwoFactorChallengeRead": {
+        "description": "The password was right; a code from the authenticator app is next.\n\n`enrol` is true when the person's role requires two-step sign-in and they\nhave not set the app up yet.",
+        "properties": {
+          "challenge_token": {
+            "title": "Challenge Token",
+            "type": "string"
+          },
+          "enrol": {
+            "title": "Enrol",
+            "type": "boolean"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "two_factor_required": {
+            "default": true,
+            "title": "Two Factor Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enrol",
+          "challenge_token",
+          "expires_in"
+        ],
+        "title": "TwoFactorChallengeRead",
+        "type": "object"
+      },
+      "TwoFactorCode": {
+        "properties": {
+          "code": {
+            "maxLength": 12,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "TwoFactorCode",
+        "type": "object"
+      },
+      "TwoFactorDisable": {
+        "properties": {
+          "code": {
+            "maxLength": 12,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "password",
+          "code"
+        ],
+        "title": "TwoFactorDisable",
+        "type": "object"
+      },
+      "TwoFactorEnrolStart": {
+        "properties": {
+          "challenge_token": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Challenge Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge_token"
+        ],
+        "title": "TwoFactorEnrolStart",
+        "type": "object"
+      },
+      "TwoFactorSecretRead": {
+        "description": "What the authenticator app needs: scan the URI as a QR code, or type\nthe secret.",
+        "properties": {
+          "otpauth_uri": {
+            "title": "Otpauth Uri",
+            "type": "string"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret",
+          "otpauth_uri"
+        ],
+        "title": "TwoFactorSecretRead",
+        "type": "object"
+      },
+      "TwoFactorStatusRead": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "required"
+        ],
+        "title": "TwoFactorStatusRead",
+        "type": "object"
+      },
+      "TwoFactorVerify": {
+        "properties": {
+          "challenge_token": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Challenge Token",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 12,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          },
+          "remember_device": {
+            "default": false,
+            "title": "Remember Device",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "challenge_token",
+          "code"
+        ],
+        "title": "TwoFactorVerify",
         "type": "object"
       },
       "UserCreate": {
@@ -18711,6 +19327,7 @@
         "type": "object"
       },
       "UserUpdate": {
+        "additionalProperties": false,
         "properties": {
           "full_name": {
             "anyOf": [
@@ -19733,6 +20350,7 @@
         "type": "object"
       },
       "WardUpdate": {
+        "additionalProperties": false,
         "properties": {
           "department_id": {
             "anyOf": [
@@ -19885,6 +20503,29 @@
           "item_name": {
             "title": "Item Name",
             "type": "string"
+          },
+          "matched_catalogue_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Catalogue Item Id"
+          },
+          "matched_catalogue_item_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Catalogue Item Name"
           },
           "order_id": {
             "format": "uuid",
@@ -20042,6 +20683,7 @@
       "WorklistStage": {
         "description": "What one diagnostic request is waiting for.\n\nDerived, never stored — it is the combination of an order's status, its\nsample's status and its report's status, which is three enums the person at\nthe bench should not have to hold in their head at once. Derived on the\nserver so the rule has one implementation rather than one per client.",
         "enum": [
+          "NEEDS_MAPPING",
           "AWAITING_ACCESSION",
           "AWAITING_COLLECTION",
           "AWAITING_RECEIPT",
@@ -20604,6 +21246,247 @@
         ]
       }
     },
+    "/api/v1/auth/2fa/disable": {
+      "post": {
+        "operationId": "disable_two_factor_api_v1_auth_2fa_disable_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorDisable"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorStatusRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Turn two-step off",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/2fa/enable": {
+      "post": {
+        "operationId": "enable_two_factor_api_v1_auth_2fa_enable_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorStatusRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Turn two-step on: confirm",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/2fa/enrol/confirm": {
+      "post": {
+        "operationId": "confirm_enrolment_api_v1_auth_2fa_enrol_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorVerify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prove the app works, switch two-step on, and sign in",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/2fa/enrol/start": {
+      "post": {
+        "operationId": "start_enrolment_api_v1_auth_2fa_enrol_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorEnrolStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorSecretRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "First sign-in of a required role: the secret to scan",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/2fa/setup": {
+      "post": {
+        "operationId": "setup_two_factor_api_v1_auth_2fa_setup_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorSecretRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Turn two-step on: the secret",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/2fa/verify": {
+      "post": {
+        "operationId": "verify_two_factor_api_v1_auth_2fa_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoFactorVerify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish signing in with a code",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/v1/auth/change-password": {
       "post": {
         "operationId": "change_password_api_v1_auth_change_password_post",
@@ -20645,6 +21528,7 @@
     },
     "/api/v1/auth/login": {
       "post": {
+        "description": "Tokens — or, when an authenticator code is needed next (SEC-05), a\nfive-minute challenge to finish at `/auth/2fa/verify` or, for someone who\nhas yet to set the app up, `/auth/2fa/enrol/*`.",
         "operationId": "login_api_v1_auth_login_post",
         "requestBody": {
           "content": {
@@ -20661,7 +21545,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenPair"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TokenPair"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TwoFactorChallengeRead"
+                    }
+                  ],
+                  "title": "Response Login Api V1 Auth Login Post"
                 }
               }
             },
@@ -25566,7 +26458,7 @@
     },
     "/api/v1/diagnostics/worklist": {
       "get": {
-        "description": "Every open lab and radiology request, in the order the bench should work\nthem, each carrying the one thing it is waiting for.\n\nBuilt from *orders*, not reports. A request that nobody has accessioned yet\nhas no report to list, and it is exactly the one most likely to be\nforgotten — a worklist assembled from reports only ever shows work somebody\nalready remembered to start.\n\nThree bulk lookups decorate the whole page — reports, samples, patients —\nrather than three per row. The cost is flat in the length of the list, which\nis what stops the busiest screen in the building from being the slowest.",
+        "description": "Every open lab and radiology request, in the order the bench should work\nthem, each carrying the one thing it is waiting for.\n\nBuilt from *orders*, not reports. A request that nobody has accessioned yet\nhas no report to list, and it is exactly the one most likely to be\nforgotten — a worklist assembled from reports only ever shows work somebody\nalready remembered to start.\n\nFour bulk lookups decorate the whole page — reports, samples, catalogue\nmatches, patients — rather than four per row. The cost is flat in the\nlength of the list, which\nis what stops the busiest screen in the building from being the slowest.",
         "operationId": "get_worklist_api_v1_diagnostics_worklist_get",
         "parameters": [
           {
@@ -30940,7 +31832,7 @@
     },
     "/api/v1/notifications": {
       "get": {
-        "description": "The outbox, and — via `needs_template` — the missing-copy worklist.",
+        "description": "The outbox, and — via `needs_template` — the missing-copy worklist.\n\nWithout a patient or a visit to narrow it, this is every message to every\npatient — `notification:read_all` (SEC-03). With one, it is that patient's\nmessages, which anybody who reads messages may see.",
         "operationId": "list_notifications_api_v1_notifications_get",
         "parameters": [
           {
@@ -31516,7 +32408,7 @@
     },
     "/api/v1/notifications/templates/codes": {
       "get": {
-        "description": "What an administrator needs before they can write anything useful.\n\nReturns the codes and the placeholders each one's fallback copy expects, so\na template can be authored without reading the source.",
+        "description": "What an administrator needs before they can write anything useful.\n\nReturns the codes and every placeholder each one's trigger supplies — the\nsame set a template is checked against when it is saved — so a template can\nbe authored without reading the source.",
         "operationId": "list_template_codes_api_v1_notifications_templates_codes_get",
         "responses": {
           "200": {
@@ -31549,6 +32441,45 @@
       }
     },
     "/api/v1/notifications/templates/{template_id}": {
+      "delete": {
+        "operationId": "delete_template_api_v1_notifications_templates__template_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a template; the shipped wording applies again",
+        "tags": [
+          "notifications"
+        ]
+      },
       "get": {
         "operationId": "get_template_api_v1_notifications_templates__template_id__get",
         "parameters": [
@@ -32185,6 +33116,22 @@
                 }
               ],
               "title": "Deceased"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unidentified",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Unidentified"
             }
           },
           {
@@ -32907,6 +33854,65 @@
         ]
       }
     },
+    "/api/v1/patients/{patient_id}/identify": {
+      "post": {
+        "description": "Name an `Unknown Male EM-0034` — as a new person, or as somebody\nalready registered.\n\n`patient:update`, not `patient:merge`, even when it folds an old record in:\nrelatives arrive at reception, often at night with no records officer on\nduty, and this link is narrow — it only ever takes an unidentified\nemergency record as the survivor. The general merge still needs\n`patient:merge`, and refuses unidentified records.",
+        "operationId": "identify_patient_api_v1_patients__patient_id__identify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatientIdentify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Say who an unidentified emergency patient is",
+        "tags": [
+          "patients"
+        ]
+      }
+    },
     "/api/v1/patients/{patient_id}/merge": {
       "post": {
         "operationId": "merge_patients_api_v1_patients__patient_id__merge_post",
@@ -33169,6 +34175,53 @@
           }
         ],
         "summary": "Call the next patient",
+        "tags": [
+          "queue"
+        ]
+      }
+    },
+    "/api/v1/queue/emergency": {
+      "post": {
+        "description": "UX-01 — the casualty door, in one call and one transaction.\n\nAn unconscious patient with no name and no mobile becomes `Unknown Male\nEM-0034`, gets a UHID, a token at the top of the chosen doctor's line and\nan EMERGENCY chart — and, if asked, a place on the admission desk's list.\nOne transaction because the alternative failure is the worst one: an\nunknown patient registered with no visit is a record nobody can name and\nnobody is looking after.",
+        "operationId": "register_emergency_api_v1_queue_emergency_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmergencyRegister"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmergencyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Emergency: register an unidentified patient and put them first in line",
         "tags": [
           "queue"
         ]

@@ -2,11 +2,13 @@ import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 
 import { NoPermission } from "@/components/no-permission";
+import { SafetyBanner } from "@/components/patient/safety-banner";
 import { ReportScreen } from "@/features/lab/report-screen";
 import { ApiError } from "@/lib/api/error";
 import { getCurrentUser, serverFetch, serverFetchOptional } from "@/lib/api/server";
 import { can } from "@/lib/permissions";
-import type { Analyte, DiagnosticReport } from "@/types/api";
+import { safetyBannerFor } from "@/lib/safety-banner";
+import type { Analyte, DiagnosticReport, Patient } from "@/types/api";
 
 export async function generateMetadata() {
   const t = await getTranslations("lab");
@@ -47,12 +49,20 @@ export default async function ReportPage({ params }: PageProps<"/lab/reports/[re
       )) ?? [];
   }
 
+  // UX-04: allergies and infection precautions matter to whoever handles the
+  // sample, not only to whoever treats the patient. Optional, so a bench role
+  // without `patient:read` still gets a working screen.
+  const patient = await serverFetchOptional<Patient>(`/patients/${report.patient_id}`);
+
   return (
-    <ReportScreen
-      initialReport={report}
-      analytes={analytes}
-      canEnter={can(user, "result:enter")}
-      canVerify={can(user, "result:verify")}
-    />
+    <div className="space-y-4">
+      {patient ? <SafetyBanner banner={safetyBannerFor(patient)} /> : null}
+      <ReportScreen
+        initialReport={report}
+        analytes={analytes}
+        canEnter={can(user, "result:enter")}
+        canVerify={can(user, "result:verify")}
+      />
+    </div>
   );
 }

@@ -124,6 +124,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/2fa/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Turn two-step off */
+        post: operations["disable_two_factor_api_v1_auth_2fa_disable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/2fa/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Turn two-step on: confirm */
+        post: operations["enable_two_factor_api_v1_auth_2fa_enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/2fa/enrol/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prove the app works, switch two-step on, and sign in */
+        post: operations["confirm_enrolment_api_v1_auth_2fa_enrol_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/2fa/enrol/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** First sign-in of a required role: the secret to scan */
+        post: operations["start_enrolment_api_v1_auth_2fa_enrol_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/2fa/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Turn two-step on: the secret */
+        post: operations["setup_two_factor_api_v1_auth_2fa_setup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/2fa/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finish signing in with a code */
+        post: operations["verify_two_factor_api_v1_auth_2fa_verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/change-password": {
         parameters: {
             query?: never;
@@ -150,7 +252,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Exchange credentials for tokens */
+        /**
+         * Exchange credentials for tokens
+         * @description Tokens — or, when an authenticator code is needed next (SEC-05), a
+         *     five-minute challenge to finish at `/auth/2fa/verify` or, for someone who
+         *     has yet to set the app up, `/auth/2fa/enrol/*`.
+         */
         post: operations["login_api_v1_auth_login_post"];
         delete?: never;
         options?: never;
@@ -1422,8 +1529,9 @@ export interface paths {
          *     forgotten — a worklist assembled from reports only ever shows work somebody
          *     already remembered to start.
          *
-         *     Three bulk lookups decorate the whole page — reports, samples, patients —
-         *     rather than three per row. The cost is flat in the length of the list, which
+         *     Four bulk lookups decorate the whole page — reports, samples, catalogue
+         *     matches, patients — rather than four per row. The cost is flat in the
+         *     length of the list, which
          *     is what stops the busiest screen in the building from being the slowest.
          */
         get: operations["get_worklist_api_v1_diagnostics_worklist_get"];
@@ -2694,6 +2802,10 @@ export interface paths {
         /**
          * Messages sent and queued
          * @description The outbox, and — via `needs_template` — the missing-copy worklist.
+         *
+         *     Without a patient or a visit to narrow it, this is every message to every
+         *     patient — `notification:read_all` (SEC-03). With one, it is that patient's
+         *     messages, which anybody who reads messages may see.
          */
         get: operations["list_notifications_api_v1_notifications_get"];
         put?: never;
@@ -2789,8 +2901,9 @@ export interface paths {
          * Every template code the system can send
          * @description What an administrator needs before they can write anything useful.
          *
-         *     Returns the codes and the placeholders each one's fallback copy expects, so
-         *     a template can be authored without reading the source.
+         *     Returns the codes and every placeholder each one's trigger supplies — the
+         *     same set a template is checked against when it is saved — so a template can
+         *     be authored without reading the source.
          */
         get: operations["list_template_codes_api_v1_notifications_templates_codes_get"];
         put?: never;
@@ -2812,7 +2925,8 @@ export interface paths {
         get: operations["get_template_api_v1_notifications_templates__template_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Remove a template; the shipped wording applies again */
+        delete: operations["delete_template_api_v1_notifications_templates__template_id__delete"];
         options?: never;
         head?: never;
         /** Edit a template */
@@ -3124,6 +3238,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/patients/{patient_id}/identify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say who an unidentified emergency patient is
+         * @description Name an `Unknown Male EM-0034` — as a new person, or as somebody
+         *     already registered.
+         *
+         *     `patient:update`, not `patient:merge`, even when it folds an old record in:
+         *     relatives arrive at reception, often at night with no records officer on
+         *     duty, and this link is narrow — it only ever takes an unidentified
+         *     emergency record as the survivor. The general merge still needs
+         *     `patient:merge`, and refuses unidentified records.
+         */
+        post: operations["identify_patient_api_v1_patients__patient_id__identify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/patients/{patient_id}/merge": {
         parameters: {
             query?: never;
@@ -3198,6 +3339,33 @@ export interface paths {
         put?: never;
         /** Call the next patient */
         post: operations["call_next_api_v1_queue_call_next_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queue/emergency": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Emergency: register an unidentified patient and put them first in line
+         * @description UX-01 — the casualty door, in one call and one transaction.
+         *
+         *     An unconscious patient with no name and no mobile becomes `Unknown Male
+         *     EM-0034`, gets a UHID, a token at the top of the chosen doctor's line and
+         *     an EMERGENCY chart — and, if asked, a place on the admission desk's list.
+         *     One transaction because the alternative failure is the worst one: an
+         *     unknown patient registered with no visit is a record nobody can name and
+         *     nobody is looking after.
+         */
+        post: operations["register_emergency_api_v1_queue_emergency_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3745,17 +3913,16 @@ export interface components {
          * AccessionRequest
          * @description The lab accepting a doctor's order onto its bench.
          *
-         *     `catalogue_item_id` is chosen here rather than at ordering time on purpose:
-         *     a doctor writes "CBC" at speed, and the lab is the one that knows which
-         *     catalogue entry that is — and can correct a typo without bouncing the order
-         *     back to the consulting room.
+         *     `catalogue_item_id` may be left out when the order already carries a
+         *     catalogue code — the test is named, and picking it again is an extra step
+         *     and a chance to pick the wrong price. A free-text order ("Complete Blood
+         *     Count", no code) still needs the lab to say which test it means, and is
+         *     refused (`needs_mapping`) until it does; the lab can correct a typo without
+         *     bouncing the order back to the consulting room.
          */
         AccessionRequest: {
-            /**
-             * Catalogue Item Id
-             * Format: uuid
-             */
-            catalogue_item_id: string;
+            /** Catalogue Item Id */
+            catalogue_item_id?: string | null;
             /** Notes */
             notes?: string | null;
             /**
@@ -4400,7 +4567,7 @@ export interface components {
         /** AttemptRead */
         AttemptRead: {
             /** Address */
-            address: string;
+            address: string | null;
             /** Attempt */
             attempt: number;
             channel: components["schemas"]["NotificationChannel"];
@@ -5295,6 +5462,11 @@ export interface components {
             roles: string[];
             /** Two Factor Enabled */
             two_factor_enabled: boolean;
+            /**
+             * Two Factor Required
+             * @default false
+             */
+            two_factor_required: boolean;
         };
         /**
          * DailyCount
@@ -5807,6 +5979,13 @@ export interface components {
              * Format: uuid
              */
             admission_id: string;
+            /** Allergy Conflicts */
+            allergy_conflicts?: string[];
+            /**
+             * Allergy Unreviewed
+             * @default false
+             */
+            allergy_unreviewed: boolean;
             /** Auto Missed */
             auto_missed: boolean;
             /** Bed Code */
@@ -5832,6 +6011,8 @@ export interface components {
             medication_order_id: string;
             /** Notes */
             notes: string | null;
+            /** Patient Allergies */
+            patient_allergies?: string[];
             /**
              * Patient Id
              * Format: uuid
@@ -5911,6 +6092,64 @@ export interface components {
             reason: string;
             /** Score */
             score: number;
+        };
+        /**
+         * EmergencyRegister
+         * @description One tap at the casualty door (UX-01): a patient nobody can name.
+         *
+         *     No name and no mobile — the patient is registered as `Unknown Male
+         *     EM-0034` and identified later. Gender is the one thing staff can always
+         *     see (or say they cannot: `UNKNOWN`); an age is a guess and may be left out.
+         */
+        EmergencyRegister: {
+            /** Age Years */
+            age_years?: number | null;
+            /** Complaint */
+            complaint?: string | null;
+            /**
+             * Doctor Id
+             * Format: uuid
+             */
+            doctor_id: string;
+            gender: components["schemas"]["Gender"];
+            /**
+             * Send To Admission
+             * @default false
+             */
+            send_to_admission: boolean;
+        };
+        /**
+         * EmergencyResponse
+         * @description The token slip, plus what casualty calls the patient until they are named.
+         */
+        EmergencyResponse: {
+            /** Admission Request Id */
+            admission_request_id?: string | null;
+            appointment: components["schemas"]["AppointmentRead"];
+            /** Department Name */
+            department_name: string | null;
+            /** Doctor Name */
+            doctor_name: string;
+            /** Emergency Tag */
+            emergency_tag: string;
+            /**
+             * Encounter Id
+             * Format: uuid
+             */
+            encounter_id: string;
+            /** Encounter Number */
+            encounter_number: string;
+            /** Location */
+            location: string | null;
+            /** Patient Name */
+            patient_name: string;
+            /** Patients Ahead */
+            patients_ahead: number;
+            queue_entry: components["schemas"]["QueueEntryRead"];
+            /** Token Number */
+            token_number: number;
+            /** Uhid */
+            uhid: string;
         };
         /**
          * EncounterChart
@@ -6659,6 +6898,8 @@ export interface components {
         };
         /** LoginRequest */
         LoginRequest: {
+            /** Device Token */
+            device_token?: string | null;
             /**
              * Email
              * Format: email
@@ -6674,6 +6915,8 @@ export interface components {
         };
         /** MedicationOrderCreate */
         MedicationOrderCreate: {
+            /** Allergy Override Reason */
+            allergy_override_reason?: string | null;
             /** Dose */
             dose: string;
             /** Dose Times */
@@ -6719,6 +6962,10 @@ export interface components {
              * Format: uuid
              */
             admission_id: string;
+            /** Allergy Conflicts */
+            allergy_conflicts?: string[];
+            /** Allergy Override Reason */
+            allergy_override_reason?: string | null;
             /** Dose */
             dose: string;
             /** Dose Times */
@@ -7144,7 +7391,7 @@ export interface components {
             /** Attempts */
             attempts: number;
             /** Body */
-            body: string;
+            body: string | null;
             /** Cancellation Reason */
             cancellation_reason: string | null;
             category: components["schemas"]["NotificationCategory"];
@@ -7312,6 +7559,8 @@ export interface components {
         };
         /** OrderCreate */
         OrderCreate: {
+            /** Allergy Override Reason */
+            allergy_override_reason?: string | null;
             /**
              * Blocks Closure
              * @default true
@@ -7339,6 +7588,8 @@ export interface components {
         OrderPriority: "ROUTINE" | "URGENT" | "STAT";
         /** OrderRead */
         OrderRead: {
+            /** Allergy Override Reason */
+            allergy_override_reason?: string | null;
             /** Blocks Closure */
             blocks_closure: boolean;
             /** Cancellation Reason */
@@ -8282,6 +8533,8 @@ export interface components {
             district: string | null;
             /** Email */
             email: string | null;
+            /** Emergency Tag */
+            emergency_tag: string | null;
             /** Full Name */
             full_name: string;
             gender: components["schemas"]["Gender"];
@@ -8296,10 +8549,14 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Identified At */
+            identified_at: string | null;
             /** Is Active */
             is_active: boolean;
             /** Is Deceased */
             is_deceased: boolean;
+            /** Is Unidentified */
+            is_unidentified: boolean;
             /** Marital Status */
             marital_status: string | null;
             /** Merged Into Id */
@@ -8309,7 +8566,7 @@ export interface components {
             /** Occupation */
             occupation: string | null;
             /** Phone */
-            phone: string;
+            phone: string | null;
             /** Pincode */
             pincode: string | null;
             /** Preferred Language */
@@ -8341,6 +8598,35 @@ export interface components {
             valid_until: string | null;
         };
         /**
+         * PatientIdentify
+         * @description Say who an unidentified emergency patient is (UX-01).
+         *
+         *     Exactly one of two forms:
+         *
+         *     * **somebody already registered** — `existing_patient_id`, and nothing
+         *       else. Their record folds into the emergency one, which keeps the live
+         *       visit, bed and bill pointing at the right person;
+         *     * **a new person** — the same four fields registration asks for. The
+         *       mobile is required here even though the emergency record had none: a
+         *       known patient with no number is one every message silently fails for.
+         *
+         *     Mixing the two is refused rather than resolved, because which identity
+         *     would win is a guess.
+         */
+        PatientIdentify: {
+            /** Age Years */
+            age_years?: number | null;
+            /** Birth Date */
+            birth_date?: string | null;
+            /** Existing Patient Id */
+            existing_patient_id?: string | null;
+            /** Full Name */
+            full_name?: string | null;
+            gender?: components["schemas"]["Gender"] | null;
+            /** Phone */
+            phone?: string | null;
+        };
+        /**
          * PatientMergeRequest
          * @description Fold `duplicate_id` into `survivor_id`.
          */
@@ -8370,6 +8656,8 @@ export interface components {
             blood_group: components["schemas"]["BloodGroup"];
             /** City */
             city: string | null;
+            /** Emergency Tag */
+            emergency_tag: string | null;
             /** Full Name */
             full_name: string;
             gender: components["schemas"]["Gender"];
@@ -8382,10 +8670,12 @@ export interface components {
             is_active: boolean;
             /** Is Deceased */
             is_deceased: boolean;
+            /** Is Unidentified */
+            is_unidentified: boolean;
             /** Merged Into Id */
             merged_into_id: string | null;
             /** Phone */
-            phone: string;
+            phone: string | null;
             /**
              * Registered At
              * Format: date-time
@@ -8889,6 +9179,11 @@ export interface components {
              * @default false
              */
             patient_is_deceased: boolean;
+            /**
+             * Patient Is Unidentified
+             * @default false
+             */
+            patient_is_unidentified: boolean;
             /** Patient Name */
             patient_name?: string | null;
             /** Patient Uhid */
@@ -9323,6 +9618,8 @@ export interface components {
             district: string | null;
             /** Email */
             email: string | null;
+            /** Emergency Tag */
+            emergency_tag: string | null;
             /** Full Name */
             full_name: string;
             gender: components["schemas"]["Gender"];
@@ -9337,10 +9634,14 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Identified At */
+            identified_at: string | null;
             /** Is Active */
             is_active: boolean;
             /** Is Deceased */
             is_deceased: boolean;
+            /** Is Unidentified */
+            is_unidentified: boolean;
             /** Marital Status */
             marital_status: string | null;
             /** Merged Into Id */
@@ -9350,7 +9651,7 @@ export interface components {
             /** Occupation */
             occupation: string | null;
             /** Phone */
-            phone: string;
+            phone: string | null;
             /** Pincode */
             pincode: string | null;
             /** Possible Duplicates */
@@ -9607,6 +9908,11 @@ export interface components {
              * @default 0.00
              */
             discounts_given: string;
+            /**
+             * Given Up
+             * @default 0.00
+             */
+            given_up: string;
             /**
              * Outstanding Total
              * @default 0.00
@@ -10184,7 +10490,7 @@ export interface components {
          * SuppressionReason
          * @enum {string}
          */
-        SuppressionReason: "DECEASED" | "OPTED_OUT" | "INVALID_CONTACT" | "STAFF_BLOCK" | "DISABLED";
+        SuppressionReason: "DECEASED" | "OPTED_OUT" | "INVALID_CONTACT" | "STAFF_BLOCK" | "UNIDENTIFIED" | "DISABLED";
         /**
          * TemplatePreview
          * @description Render a template against sample values without sending anything.
@@ -10226,6 +10532,11 @@ export interface components {
             /** Access Token */
             access_token: string;
             /**
+             * Device Token
+             * @description Set when the person asked to remember this device (SEC-05).
+             */
+            device_token?: string | null;
+            /**
              * Expires In
              * @description Access token lifetime in seconds.
              */
@@ -10253,6 +10564,73 @@ export interface components {
              * Format: uuid
              */
             to_bed_id: string;
+        };
+        /**
+         * TwoFactorChallengeRead
+         * @description The password was right; a code from the authenticator app is next.
+         *
+         *     `enrol` is true when the person's role requires two-step sign-in and they
+         *     have not set the app up yet.
+         */
+        TwoFactorChallengeRead: {
+            /** Challenge Token */
+            challenge_token: string;
+            /** Enrol */
+            enrol: boolean;
+            /** Expires In */
+            expires_in: number;
+            /**
+             * Two Factor Required
+             * @default true
+             */
+            two_factor_required: boolean;
+        };
+        /** TwoFactorCode */
+        TwoFactorCode: {
+            /** Code */
+            code: string;
+        };
+        /** TwoFactorDisable */
+        TwoFactorDisable: {
+            /** Code */
+            code: string;
+            /** Password */
+            password: string;
+        };
+        /** TwoFactorEnrolStart */
+        TwoFactorEnrolStart: {
+            /** Challenge Token */
+            challenge_token: string;
+        };
+        /**
+         * TwoFactorSecretRead
+         * @description What the authenticator app needs: scan the URI as a QR code, or type
+         *     the secret.
+         */
+        TwoFactorSecretRead: {
+            /** Otpauth Uri */
+            otpauth_uri: string;
+            /** Secret */
+            secret: string;
+        };
+        /** TwoFactorStatusRead */
+        TwoFactorStatusRead: {
+            /** Enabled */
+            enabled: boolean;
+            /** Required */
+            required: boolean;
+        };
+        /** TwoFactorVerify */
+        TwoFactorVerify: {
+            /** Challenge Token */
+            challenge_token: string;
+            /** Code */
+            code: string;
+            /**
+             * Remember Device
+             * @default false
+             */
+            remember_device: boolean;
         };
         /** UserCreate */
         UserCreate: {
@@ -10691,6 +11069,10 @@ export interface components {
             item_code: string | null;
             /** Item Name */
             item_name: string;
+            /** Matched Catalogue Item Id */
+            matched_catalogue_item_id?: string | null;
+            /** Matched Catalogue Item Name */
+            matched_catalogue_item_name?: string | null;
             /**
              * Order Id
              * Format: uuid
@@ -10744,7 +11126,7 @@ export interface components {
          *     server so the rule has one implementation rather than one per client.
          * @enum {string}
          */
-        WorklistStage: "AWAITING_ACCESSION" | "AWAITING_COLLECTION" | "AWAITING_RECEIPT" | "AWAITING_RESULTS" | "AWAITING_VERIFICATION";
+        WorklistStage: "NEEDS_MAPPING" | "AWAITING_ACCESSION" | "AWAITING_COLLECTION" | "AWAITING_RECEIPT" | "AWAITING_RESULTS" | "AWAITING_VERIFICATION";
     };
     responses: never;
     parameters: never;
@@ -11024,6 +11406,191 @@ export interface operations {
             };
         };
     };
+    disable_two_factor_api_v1_auth_2fa_disable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorDisable"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorStatusRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_two_factor_api_v1_auth_2fa_enable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorCode"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorStatusRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_enrolment_api_v1_auth_2fa_enrol_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorVerify"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenPair"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_enrolment_api_v1_auth_2fa_enrol_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorEnrolStart"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorSecretRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    setup_two_factor_api_v1_auth_2fa_setup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TwoFactorSecretRead"];
+                };
+            };
+        };
+    };
+    verify_two_factor_api_v1_auth_2fa_verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TwoFactorVerify"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenPair"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     change_password_api_v1_auth_change_password_post: {
         parameters: {
             query?: never;
@@ -11074,7 +11641,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TokenPair"];
+                    "application/json": components["schemas"]["TokenPair"] | components["schemas"]["TwoFactorChallengeRead"];
                 };
             };
             /** @description Validation Error */
@@ -16944,6 +17511,35 @@ export interface operations {
             };
         };
     };
+    delete_template_api_v1_notifications_templates__template_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_template_api_v1_notifications_templates__template_id__patch: {
         parameters: {
             query?: never;
@@ -17250,6 +17846,7 @@ export interface operations {
                 include_inactive?: boolean;
                 gender?: components["schemas"]["Gender"] | null;
                 deceased?: boolean | null;
+                unidentified?: boolean | null;
                 registered_from?: string | null;
                 registered_to?: string | null;
                 sort?: components["schemas"]["PatientSort"];
@@ -17647,6 +18244,41 @@ export interface operations {
             };
         };
     };
+    identify_patient_api_v1_patients__patient_id__identify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                patient_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatientIdentify"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatientDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     merge_patients_api_v1_patients__patient_id__merge_post: {
         parameters: {
             query?: never;
@@ -17764,6 +18396,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["QueueEntryRead"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_emergency_api_v1_queue_emergency_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmergencyRegister"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmergencyResponse"];
                 };
             };
             /** @description Validation Error */

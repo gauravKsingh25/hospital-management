@@ -85,6 +85,94 @@ test.describe("who sees which numbers", () => {
   });
 });
 
+test.describe("the period filter", () => {
+  test("opens on today", async ({ page }) => {
+    /**
+     * The question this page is opened to answer at the end of a shift is
+     * "what came in today". So that is what it shows first, and the dates
+     * line says so: one date, not a range.
+     */
+    await openReports(page, ACCOUNTS.admin);
+
+    await expect(page.getByTestId("period-today")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("period-dates")).not.toContainText(" to ");
+  });
+
+  test("one filter at the top changes every section", async ({ page }) => {
+    /**
+     * It used to sit inside the Patients section while quietly changing the
+     * money below it too. Now it is above everything, once.
+     */
+    await openReports(page, ACCOUNTS.admin);
+    await expect(page.getByRole("group", { name: "Period" })).toHaveCount(1);
+
+    const sections = page.getByTestId("report-section");
+    const before = await sections.first().boundingBox();
+    const filter = await page.getByRole("group", { name: "Period" }).boundingBox();
+    expect(filter?.y ?? Infinity).toBeLessThan(before?.y ?? 0);
+  });
+
+  test("a wider period refetches, and is kept in the address", async ({ page }) => {
+    await openReports(page, ACCOUNTS.admin);
+    const dates = page.getByTestId("period-dates");
+    const today = await dates.innerText();
+
+    await page.getByTestId("period-7").click();
+    await expect(page).toHaveURL(/[?&]period=7(&|$)/);
+    // The dates are rendered from the response, so a changed range means the
+    // server answered the new question rather than the client relabelling.
+    await expect(dates).not.toHaveText(today, { timeout: 45_000 });
+    await expect(dates).toContainText(" to ");
+
+    // A refresh, or a link someone shared, opens on the same view.
+    await page.reload();
+    await expect(page.getByTestId("period-7")).toHaveAttribute("aria-pressed", "true", {
+      timeout: 45_000,
+    });
+  });
+
+  test("a nonsense period in the address opens today rather than an error", async ({ page }) => {
+    await signIn(page, ACCOUNTS.admin);
+    await page.goto("/reports?period=365");
+    await expect(page.getByTestId("period-today")).toHaveAttribute("aria-pressed", "true", {
+      timeout: 45_000,
+    });
+  });
+});
+
+test.describe("the money", () => {
+  test("comes first, for someone allowed to see it", async ({ page }) => {
+    await openReports(page, ACCOUNTS.admin);
+    await expect(page.getByTestId("report-section").first()).toHaveAttribute(
+      "data-section",
+      SECTIONS.revenue,
+    );
+  });
+
+  test("is four plain numbers, with what was given up broken down", async ({ page }) => {
+    await openReports(page, ACCOUNTS.cashier);
+
+    await expect(page.getByTestId("stat-earned")).toContainText("Billed");
+    await expect(page.getByTestId("stat-collected")).toContainText("Received");
+    await expect(page.getByTestId("stat-outstanding")).toContainText("Still owed");
+
+    // Discounts, waivers and refunds: one total, and each part named.
+    const givenUp = page.getByTestId("stat-given-up");
+    await expect(givenUp).toContainText("Given up");
+    await expect(givenUp).toContainText("discounts");
+    await expect(givenUp).toContainText("waived");
+    await expect(givenUp).toContainText("refunded");
+  });
+
+  test("a role without it starts with patients instead", async ({ page }) => {
+    await openReports(page, ACCOUNTS.nurse);
+    await expect(page.getByTestId("report-section").first()).toHaveAttribute(
+      "data-section",
+      SECTIONS.footfall,
+    );
+  });
+});
+
 test.describe("the dashboard", () => {
   test("counts a patient who was registered a moment ago", async ({ page }) => {
     /**
@@ -98,32 +186,40 @@ test.describe("the dashboard", () => {
     await registerAndQueue(page);
 
     await openReports(page, ACCOUNTS.admin);
-    const waiting = page.getByTestId("stat-waiting");
+    // The number itself, not the tile: the tile's text includes its label,
+    // so comparing the whole of it to "0" could never fail.
+    const waiting = page.getByTestId("stat-waiting").locator("dd");
     await expect(waiting).toBeVisible();
     await expect(waiting).not.toHaveText("0");
 
-    // And in the window's totals, not only in today's live strip.
-    await expect(page.getByTestId("stat-visits")).not.toHaveText("0");
+    // And in today's totals, not only in the live strip.
+    await expect(page.getByTestId("stat-visits").locator("dd")).not.toHaveText("0");
   });
 
-  test("draws the footfall trend", async ({ page }) => {
+  test("draws the trend over a period, and not for a single day", async ({ page }) => {
+    // One bar is not a trend, so Today has no chart.
+    await openReports(page, ACCOUNTS.admin);
+    await expect(page.getByTestId("stat-visits")).toBeVisible();
+    await expect(page.locator(".recharts-wrapper")).toHaveCount(0);
+
     // The chart is behind `next/dynamic`, which nothing at build time can
     // prove resolves. If the chunk fails to load the skeleton simply stays.
-    await openReports(page, ACCOUNTS.admin);
+    await page.getByTestId("period-30").click();
     await expect(page.locator(".recharts-wrapper")).toBeVisible({ timeout: 45_000 });
   });
 
-  test("narrowing the window refetches the report", async ({ page }) => {
+  test("folds the ward list away until it is asked for", async ({ page }) => {
+    /**
+     * Every ward used to be listed, always — dozens of rows pushing the money
+     * section off the bottom of the page. The headline numbers stay; the list
+     * opens on request.
+     */
     await openReports(page, ACCOUNTS.admin);
+    const wards = page.getByTestId("occupancy-by-ward");
+    await expect(wards).toBeHidden();
 
-    const dates = section(page, SECTIONS.footfall).locator("p").first();
-    const beforeText = await dates.innerText();
-
-    await page.getByTestId("window-7").click();
-    // The window is rendered from the response, so a changed date range means
-    // the server answered the new question rather than the client relabelling
-    // a cached one.
-    await expect(dates).not.toHaveText(beforeText, { timeout: 45_000 });
+    await page.getByRole("button", { name: /Show all \d+ wards?/ }).click();
+    await expect(wards).toBeVisible();
   });
 
   test("is reachable from the sidebar by a role that holds the permission", async ({ page }) => {

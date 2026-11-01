@@ -83,7 +83,9 @@ from app.modules.clinical.state_machine import (
     open_encounter_event,
     transition,
 )
+from app.modules.identity import service as identity_service
 from app.modules.identity.models import User
+from app.modules.identity.rbac import Roles
 from app.modules.patients import service as patients_service
 
 if TYPE_CHECKING:
@@ -104,6 +106,8 @@ __all__ = [
     "complete_consultation",
     "complete_order",
     "discharge",
+    "follow_ups_due",
+    "get_certifying_doctor",
     "get_encounter",
     "get_encounter_by_appointment",
     "get_encounter_by_number",
@@ -793,6 +797,73 @@ async def cancel_encounter(
 
 
 # --- the three edge cases (CLAUDE.md §6) -----------------------------------
+# How far before the visit opened an ending may be dated. A patient brought in
+# dead is registered after the death, so the chart opens a little late.
+BEFORE_VISIT_GRACE = timedelta(hours=1)
+
+
+async def get_certifying_doctor(
+    session: AsyncSession, user_id: uuid.UUID, *, hospital_id: uuid.UUID
+) -> User:
+    """The doctor named on a death record: active, at this hospital, and a doctor.
+
+    Existence alone let a cashier certify a death (audit BUG-01, 28 Oct 2026).
+    Loaded through identity's service, never by joining its tables (CLAUDE.md §2).
+    """
+    certifier = await identity_service.get_user(session, user_id)
+    if certifier.hospital_id != hospital_id:
+        raise ValidationError(
+            "The certifying doctor must be a clinician at this hospital.",
+            code="certifier_not_found",
+        )
+    if not certifier.is_active:
+        raise ValidationError(
+            "The certifying doctor's account is deactivated.",
+            code="certifier_inactive",
+        )
+    roles = await identity_service.get_roles_for_users(session, [certifier.id])
+    if Roles.DOCTOR not in roles.get(certifier.id, []):
+        raise ValidationError(
+            "Only a doctor can certify a death.",
+            code="certifier_not_a_doctor",
+            details={"certifier_id": str(certifier.id)},
+        )
+    return certifier
+
+
+async def _assert_dated_within_visit(
+    session: AsyncSession, encounter: Encounter, moment: datetime | None, *, field: str
+) -> None:
+    """A visit cannot end before it began, or before the patient was born.
+
+    Audit BUG-02: a death dated 2015 was accepted on a visit opened that day.
+    An estimated birth date ("about 40") is a guess, so only a documented one
+    is held against the record.
+    """
+    if moment is None:
+        return
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    earliest = encounter.started_at - BEFORE_VISIT_GRACE
+    if moment < earliest:
+        raise ValidationError(
+            "This time is before the visit began.",
+            code="recorded_before_visit",
+            details={"field": field, "earliest": earliest.isoformat()},
+        )
+    patient = await patients_service.get_patient(session, encounter.patient_id)
+    if (
+        patient.birth_date is not None
+        and not patient.birth_date_is_estimated
+        and moment.date() < patient.birth_date
+    ):
+        raise ValidationError(
+            "This time is before the patient's date of birth.",
+            code="recorded_before_birth",
+            details={"field": field, "birth_date": patient.birth_date.isoformat()},
+        )
+
+
 async def record_death(
     session: AsyncSession,
     encounter: Encounter,
@@ -808,6 +879,10 @@ async def record_death(
     `requires_settlement=True` — a deceased patient usually still has a bill,
     and it must be settled with the family, not silently written off.
     """
+    await get_certifying_doctor(
+        session, payload.death_certified_by_id, hospital_id=encounter.hospital_id
+    )
+    await _assert_dated_within_visit(session, encounter, payload.deceased_at, field="deceased_at")
     return await transition(
         session,
         encounter,
@@ -830,6 +905,7 @@ async def record_referral(
     *,
     actor: User | None = None,
 ) -> Encounter:
+    await _assert_dated_within_visit(session, encounter, payload.referred_at, field="referred_at")
     return await transition(
         session,
         encounter,
@@ -856,6 +932,7 @@ async def record_lama(
 
     Terminal, and still billable: the patient consumed care before walking out.
     """
+    await _assert_dated_within_visit(session, encounter, payload.lama_at, field="lama_at")
     return await transition(
         session,
         encounter,
@@ -1007,13 +1084,28 @@ async def place_order(
             details={"status": encounter.status.value},
         )
 
+    fields = payload.model_dump()
+    if payload.order_type is OrderType.PHARMACY:
+        # SAFE-01: a drug ordered from the OPD is checked like one charted on
+        # the ward. Only a drug — a salicylate *level* is a blood test.
+        clashes = await patients_service.drug_allergy_conflicts(
+            session, encounter.patient_id, [payload.item_name, payload.item_code]
+        )
+        patients_service.assert_no_allergy_clash(
+            clashes, override_reason=payload.allergy_override_reason
+        )
+        if not clashes:
+            fields["allergy_override_reason"] = None
+    else:
+        fields["allergy_override_reason"] = None
+
     order = Order(
         hospital_id=encounter.hospital_id,
         encounter_id=encounter.id,
         patient_id=encounter.patient_id,
         ordered_by_id=actor.id,
         ordered_at=utc_now(),
-        **payload.model_dump(),
+        **fields,
     )
     session.add(order)
     await session.flush()
@@ -2085,6 +2177,26 @@ async def visit_stats_for_patients(
 # ---------------------------------------------------------------------------
 # Auto-close safety net (CLAUDE.md §6)
 # ---------------------------------------------------------------------------
+async def follow_ups_due(
+    session: AsyncSession, *, hospital_id: uuid.UUID, on: date
+) -> list[Encounter]:
+    """Completed visits whose doctor asked to see the patient again on `on`.
+
+    COMPLETED only, the same gate as the closing message: a patient who left
+    against advice or was referred elsewhere has no follow-up here to keep, and a
+    deceased patient's visit never ends as COMPLETED.
+    """
+    rows = await session.execute(
+        select(Encounter).where(
+            col(Encounter.hospital_id) == hospital_id,
+            col(Encounter.status) == EncounterStatus.COMPLETED,
+            col(Encounter.follow_up_date) == on,
+            col(Encounter.deleted_at).is_(None),
+        )
+    )
+    return list(rows.scalars().all())
+
+
 async def close_stale_encounters(
     session: AsyncSession,
     *,

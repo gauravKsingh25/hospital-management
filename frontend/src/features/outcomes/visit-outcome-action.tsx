@@ -21,12 +21,14 @@ export function VisitOutcomeAction({
   canRecordDeath,
   canRecordReferral,
   canRecordLama,
+  currentUserId,
 }: {
   encounterId: string;
   patientName: string;
   canRecordDeath: boolean;
   canRecordReferral: boolean;
   canRecordLama: boolean;
+  currentUserId?: string;
 }) {
   const router = useRouter();
   return (
@@ -36,6 +38,7 @@ export function VisitOutcomeAction({
       canRecordDeath={canRecordDeath}
       canRecordReferral={canRecordReferral}
       canRecordLama={canRecordLama}
+      currentUserId={currentUserId}
       onRecorded={() => router.refresh()}
     />
   );

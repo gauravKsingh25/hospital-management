@@ -1,9 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, registerAndQueue, signIn } from "./support";
+import { ACCOUNTS, openLine, registerAndQueue, signIn } from "./support";
 
 /**
  * Taking money from the reception queue row: "Get payment" and "Paid".
+ *
+ * The closed line says what is owed; the buttons are under it, one tap away.
  *
  * The endpoint's rules (one transaction, no typed amount, refusal when the
  * bill moved) have their own backend tests. This spec exists to catch the
@@ -14,7 +16,9 @@ async function rowFor(page: Page, name: string) {
   await page.goto("/reception");
   const row = page.getByTestId("queue-row").filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: 30_000 });
-  await row.scrollIntoViewIfNeeded();
+  // Owed, and said so on the closed line.
+  await expect(row.getByTestId("due-tag")).toContainText("500");
+  await openLine(row);
   return row;
 }
 

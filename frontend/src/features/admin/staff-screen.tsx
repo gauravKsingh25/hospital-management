@@ -141,7 +141,7 @@ export function StaffScreen({
                         row.roles.map((role) => (
                           <span
                             key={role}
-                            className="bg-muted rounded px-1.5 py-0.5 text-[11px] font-medium"
+                            className="bg-muted rounded px-1.5 py-0.5 text-xs font-medium"
                           >
                             {role}
                           </span>

@@ -578,6 +578,40 @@ class TestPermissions:
         assert response.status_code == 422, response.text
         assert response.json()["error"]["code"] == "certifier_not_found"
 
+    async def test_a_cashier_cannot_be_named_as_the_certifying_doctor(
+        self, api: AsyncClient, records_user: User, cashier_user: User, encounter_id: str
+    ) -> None:
+        """BUG-01 from the 28 Oct audit: this returned 200 and recorded the death."""
+        token = await login(api, records_user)
+        response = await api.post(
+            f"{ENCOUNTERS}/{encounter_id}/death",
+            json={
+                "deceased_at": utc_now().isoformat(),
+                "death_certified_by_id": str(cashier_user.id),
+                "cause_of_death": "Cardiac arrest",
+            },
+            headers=auth(token),
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "certifier_not_a_doctor"
+
+    async def test_a_death_cannot_be_dated_years_before_the_visit(
+        self, api: AsyncClient, records_user: User, doctor_user: User, encounter_id: str
+    ) -> None:
+        """BUG-02 from the 28 Oct audit: a visit opened today, a death dated 2015."""
+        token = await login(api, records_user)
+        response = await api.post(
+            f"{ENCOUNTERS}/{encounter_id}/death",
+            json={
+                "deceased_at": "2015-01-01T00:00:00+00:00",
+                "death_certified_by_id": str(doctor_user.id),
+                "cause_of_death": "Cardiac arrest",
+            },
+            headers=auth(token),
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "recorded_before_visit"
+
     async def test_an_unauthenticated_request_is_refused(
         self, api: AsyncClient, encounter_id: str
     ) -> None:

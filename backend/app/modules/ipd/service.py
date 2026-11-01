@@ -51,7 +51,8 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -128,12 +129,14 @@ from app.modules.ipd.schemas import (
 )
 from app.modules.ipd.transitions import assert_admission_transition, assert_bed_transition
 from app.modules.patients import service as patients_service
+from app.modules.patients.models import Patient, PatientAlert
 from app.modules.scheduling import service as scheduling_service
 from app.modules.tenancy import service as tenancy_service
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DoseAllergies",
     "accrual_key",
     "accrue_bed_days",
     "accrue_for_admission",
@@ -151,6 +154,7 @@ __all__ = [
     "create_ward",
     "current_assignment",
     "discharge_patient",
+    "dose_allergies",
     "get_admission",
     "get_admission_by_encounter",
     "get_admission_request",
@@ -181,6 +185,7 @@ __all__ = [
     "mark_missed_doses",
     "medicine_prices",
     "occupancy",
+    "order_allergy_conflicts",
     "pending_admission_request",
     "prescribe",
     "record_dose",
@@ -876,7 +881,10 @@ async def admit_patient(
         admission_number=await _next_admission_number(session, hospital_id),
         encounter_id=encounter.id,
         patient_id=encounter.patient_id,
-        attending_doctor_id=payload.attending_doctor_id,
+        # The doctor who saw them unless the desk names another consultant — a
+        # stay with nobody attending shows no consultant on the ward list or
+        # the discharge summary.
+        attending_doctor_id=payload.attending_doctor_id or encounter.doctor_id,
         department_id=payload.department_id or ward.department_id or encounter.department_id,
         admitted_at=payload.admitted_at or utc_now(),
         provisional_diagnosis=payload.provisional_diagnosis,
@@ -1817,6 +1825,17 @@ async def prescribe(
         )
         _assert_item_active(item)
 
+    # SAFE-01: the typed name, and the medicine list's own name and code — a
+    # doctor who types "Tab X" against the item "Aspirin 75 mg" is still caught.
+    clashes = await patients_service.drug_allergy_conflicts(
+        session,
+        admission.patient_id,
+        [payload.drug_name, item.name if item else None, item.code if item else None],
+    )
+    patients_service.assert_no_allergy_clash(
+        clashes, override_reason=payload.allergy_override_reason
+    )
+
     order = MedicationOrder(
         hospital_id=admission.hospital_id,
         admission_id=admission.id,
@@ -1838,6 +1857,10 @@ async def prescribe(
         medicine_item_id=item.id if item else None,
         item_code=item.code if item else None,
         units_per_dose=payload.units_per_dose,
+        # Kept only when it overrode something: a chart must not claim a
+        # decision nobody had to make.
+        allergy_override_reason=payload.allergy_override_reason if clashes else None,
+        allergy_acknowledged_ids=[str(alert.id) for alert in clashes],
     )
     session.add(order)
     await session.flush()
@@ -1845,6 +1868,91 @@ async def prescribe(
     await materialise_doses(session, order)
     await session.refresh(order)
     return order
+
+
+@dataclass(frozen=True, slots=True)
+class DoseAllergies:
+    """What the nurse needs to know about allergies, beside one dose."""
+
+    # Every drug allergy the patient has, clashing or not.
+    patient_allergies: list[str]
+    # The ones this dose clashes with.
+    conflicts: list[str]
+    # A clash the prescriber was not shown: the dose cannot be signed as given.
+    unreviewed: bool
+
+
+async def dose_allergies(
+    session: AsyncSession,
+    doses: Sequence[MedicationAdministration],
+    *,
+    hospital_id: uuid.UUID,
+    patients: Mapping[uuid.UUID, Patient] | None = None,
+) -> dict[uuid.UUID, DoseAllergies]:
+    """Allergies beside every dose on a round, in two queries for the round.
+
+    Computed when the round is read, not when the drug was charted, so an
+    allergy recorded this morning shows against last week's prescription.
+    """
+    allergies = await patients_service.drug_allergies_by_patient(
+        session, {dose.patient_id for dose in doses}, hospital_id=hospital_id, records=patients
+    )
+    order_ids = {dose.medication_order_id for dose in doses if allergies.get(dose.patient_id)}
+    orders = (
+        {
+            order.id: order
+            for order in (
+                await session.execute(
+                    select(MedicationOrder).where(
+                        col(MedicationOrder.id).in_(order_ids),
+                        col(MedicationOrder.hospital_id) == hospital_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        if order_ids
+        else {}
+    )
+
+    views: dict[uuid.UUID, DoseAllergies] = {}
+    for dose in doses:
+        alerts = allergies.get(dose.patient_id, [])
+        order = orders.get(dose.medication_order_id)
+        clashes = patients_service.clashing_allergies(
+            alerts, [dose.drug_name, order.item_code if order else None]
+        )
+        views[dose.id] = DoseAllergies(
+            patient_allergies=[alert.label for alert in alerts],
+            conflicts=[alert.label for alert in clashes],
+            unreviewed=bool(order and unreviewed_allergies(order, clashes)),
+        )
+    return views
+
+
+async def order_allergy_conflicts(
+    session: AsyncSession, orders: Sequence[MedicationOrder], *, hospital_id: uuid.UUID
+) -> dict[uuid.UUID, list[str]]:
+    """For each drug on the chart, the patient's drug allergies it clashes with now."""
+    allergies = await patients_service.drug_allergies_by_patient(
+        session, {order.patient_id for order in orders}, hospital_id=hospital_id
+    )
+    return {
+        order.id: [
+            alert.label
+            for alert in patients_service.clashing_allergies(
+                allergies.get(order.patient_id, []), [order.drug_name, order.item_code]
+            )
+        ]
+        for order in orders
+    }
+
+
+def unreviewed_allergies(order: MedicationOrder, clashes: list[PatientAlert]) -> list[PatientAlert]:
+    """The clashing allergies the prescriber was not shown when overriding."""
+    acknowledged = set(order.allergy_acknowledged_ids or [])
+    return [alert for alert in clashes if str(alert.id) not in acknowledged]
 
 
 def _slot_times(order: MedicationOrder) -> list[time]:
@@ -2165,6 +2273,28 @@ async def record_dose(
             code="dose_already_recorded",
             details={"status": dose.status.value},
         )
+
+    if payload.status is DoseStatus.GIVEN:
+        # SAFE-01 at the bedside. An allergy the doctor overrode for is
+        # theirs to have weighed; one recorded since was weighed by nobody,
+        # so the dose waits for the drug to be reviewed. Holding it, with a
+        # reason, stays open to the nurse.
+        order = await get_medication_order(
+            session, dose.medication_order_id, hospital_id=dose.hospital_id
+        )
+        unreviewed = unreviewed_allergies(
+            order,
+            await patients_service.drug_allergy_conflicts(
+                session, dose.patient_id, [dose.drug_name, order.item_code]
+            ),
+        )
+        if unreviewed:
+            raise ConflictError(
+                "This patient has a drug allergy recorded since this drug was prescribed. "
+                "Hold the dose and ask the doctor to review the drug.",
+                code="allergy_conflict",
+                details={"allergies": patients_service.allergy_details(unreviewed)},
+            )
 
     dose.status = payload.status
     dose.reason = payload.reason

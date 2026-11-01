@@ -1286,6 +1286,7 @@ async def record_payment(
         payer_name=payload.payer_name,
         received_at=payload.received_at,
         notes=payload.notes,
+        may_backdate=context.has_permission(BillingPermissions.PAYMENT_BACKDATE),
     )
     await identity_service.record_audit(
         session,

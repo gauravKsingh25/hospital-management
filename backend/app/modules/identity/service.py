@@ -6,6 +6,7 @@ from `models.py` or `router.py`.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections.abc import Collection
@@ -17,6 +18,7 @@ from sqlalchemy import ColumnElement, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from app.core import totp
 from app.core.config import settings
 from app.core.database import system_context
 from app.core.exceptions import (
@@ -29,9 +31,14 @@ from app.core.exceptions import (
 from app.core.models import utc_now
 from app.core.pagination import PageParams
 from app.core.security import (
+    DEVICE,
+    TWO_FACTOR,
     create_access_token,
+    create_device_token,
     create_refresh_token,
+    create_two_factor_challenge,
     decode_token,
+    decode_token_with_claims,
     fingerprint,
     generate_opaque_token,
     hash_password,
@@ -329,6 +336,37 @@ async def create_user(
     return user
 
 
+async def users_with_role(
+    session: AsyncSession, *, hospital_id: uuid.UUID, role_code: str
+) -> list[User]:
+    """Active staff at one hospital holding a role — who to tell about something.
+
+    Bounded by the size of a hospital's staff in that role, so unpaginated: it
+    answers "who are the administrators", not "list everyone".
+    """
+    rows = (
+        (
+            await session.execute(
+                select(User)
+                .join(UserRole, col(UserRole.user_id) == col(User.id))
+                .join(Role, col(Role.id) == col(UserRole.role_id))
+                .where(
+                    col(User.hospital_id) == hospital_id,
+                    col(User.is_active).is_(True),
+                    col(User.deleted_at).is_(None),
+                    col(Role.code) == role_code,
+                    col(Role.deleted_at).is_(None),
+                )
+                .order_by(User.full_name)
+            )
+        )
+        .scalars()
+        .unique()
+        .all()
+    )
+    return list(rows)
+
+
 async def list_users(
     session: AsyncSession,
     params: PageParams,
@@ -482,6 +520,9 @@ async def change_password(
             resource_id=user.id,
             succeeded=False,
         )
+        # Committed before raising, as in `authenticate`, or the audit row is
+        # rolled back with the failed request.
+        await session.commit()
         raise AuthenticationError("Current password is incorrect.", code="invalid_credentials")
 
     validate_password_strength(new_password)
@@ -749,6 +790,7 @@ async def authenticate(
     password: str,
     ip_address: str | None = None,
     user_agent: str | None = None,
+    complete: bool = True,
 ) -> User:
     """Verify credentials and return the user.
 
@@ -772,6 +814,10 @@ async def authenticate(
             user_agent=user_agent,
             changes={"email": email.strip().lower(), "reason": "unknown_account"},
         )
+        # Kept, though the request fails: the request's session rolls back
+        # whatever is uncommitted when it raises, which took the failure
+        # counter (so the lockout never triggered) and this audit row with it.
+        await session.commit()
         raise generic
 
     now = datetime.now(UTC)
@@ -787,6 +833,10 @@ async def authenticate(
             user_agent=user_agent,
             changes={"reason": "locked"},
         )
+        # Kept, though the request fails: the request's session rolls back
+        # whatever is uncommitted when it raises, which took the failure
+        # counter (so the lockout never triggered) and this audit row with it.
+        await session.commit()
         raise AuthenticationError(
             "This account is temporarily locked after too many failed attempts.",
             code="account_locked",
@@ -813,6 +863,10 @@ async def authenticate(
             user_agent=user_agent,
             changes={"reason": "bad_password", "attempts": user.failed_login_attempts},
         )
+        # Kept, though the request fails: the request's session rolls back
+        # whatever is uncommitted when it raises, which took the failure
+        # counter (so the lockout never triggered) and this audit row with it.
+        await session.commit()
         raise generic
 
     if not user.is_active:
@@ -827,19 +881,36 @@ async def authenticate(
             user_agent=user_agent,
             changes={"reason": "inactive"},
         )
+        # Kept, though the request fails: the request's session rolls back
+        # whatever is uncommitted when it raises, which took the failure
+        # counter (so the lockout never triggered) and this audit row with it.
+        await session.commit()
         raise AuthenticationError("This account has been deactivated.", code="account_inactive")
 
     # Transparent work-factor upgrade when the Argon2 parameters have risen.
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
 
+    if complete:
+        await _finish_sign_in(session, user)
+    else:
+        # The password was right but a second step is still to come (SEC-05).
+        # The failure count is *not* reset here: someone holding the password
+        # could otherwise alternate it with guesses at the code for ever.
+        async with system_context(session):
+            session.add(user)
+            await session.flush()
+    return user
+
+
+async def _finish_sign_in(session: AsyncSession, user: User) -> None:
+    """Every step passed: clear the failure count and record the sign-in."""
     user.failed_login_attempts = 0
     user.locked_until = None
-    user.last_login_at = now
+    user.last_login_at = datetime.now(UTC)
     async with system_context(session):
         session.add(user)
         await session.flush()
-    return user
 
 
 # Hash of a random value, used only to equalise timing on unknown accounts.
@@ -852,8 +923,12 @@ async def issue_token_pair(
     *,
     ip_address: str | None = None,
     user_agent: str | None = None,
+    session_started_at: datetime | None = None,
 ) -> tuple[str, str, int]:
-    """Mint an access/refresh pair and persist the refresh token's hash."""
+    """Mint an access/refresh pair and persist the refresh token's hash.
+
+    `session_started_at` is passed on rotation; a fresh sign-in starts now.
+    """
     access_token, _ = create_access_token(user.id, hospital_id=user.hospital_id)
 
     refresh_jwt, claims = create_refresh_token(user.id, hospital_id=user.hospital_id)
@@ -865,6 +940,7 @@ async def issue_token_pair(
         token_hash=fingerprint(refresh_jwt),
         jti=claims.jti,
         expires_at=claims.expires_at,
+        session_started_at=session_started_at or utc_now(),
         ip_address=ip_address,
         user_agent=(user_agent or "")[:255] or None,
     )
@@ -873,6 +949,20 @@ async def issue_token_pair(
         await session.flush()
 
     return access_token, refresh_jwt, settings.ACCESS_TOKEN_TTL_MINUTES * 60
+
+
+async def _end_session(session: AsyncSession, stored: RefreshToken, *, reason: str) -> None:
+    """Retire a refresh token that has outlived its idle or shift limit.
+
+    Revoked with its reason, so a later replay of it is "ended" rather than
+    "stolen" — the reuse alarm is for rotated tokens only.
+    """
+    async with system_context(session):
+        stored.revoked_at = utc_now()
+        stored.revoked_reason = reason
+        session.add(stored)
+        await session.flush()
+    await session.commit()
 
 
 async def rotate_refresh_token(
@@ -937,6 +1027,9 @@ async def rotate_refresh_token(
                 user_agent=user_agent,
                 changes={"reason": "token_reuse"},
             )
+            # Committed before answering: the revocation is the point, and the
+            # request's session would otherwise roll it back with the error.
+            await session.commit()
             raise AuthenticationError("Your session has expired.", code="token_reused")
 
         raise AuthenticationError("Your session has ended.", code="token_revoked")
@@ -944,12 +1037,33 @@ async def rotate_refresh_token(
     if stored.expires_at <= datetime.now(UTC):
         raise AuthenticationError("Your session has expired.", code="token_expired")
 
+    # SEC-04. Idle: this token was issued at its `created_at`, and nothing has
+    # refreshed it since — nobody has used the session. Absolute: however
+    # busy, a session ends a shift's length after sign-in.
+    now = datetime.now(UTC)
+    if stored.created_at + timedelta(minutes=settings.REFRESH_IDLE_MINUTES) <= now:
+        await _end_session(session, stored, reason="idle")
+        raise AuthenticationError(
+            "You were signed out after a period of inactivity.", code="session_idle"
+        )
+    started = stored.session_started_at or stored.created_at
+    if started + timedelta(hours=settings.SESSION_MAX_HOURS) <= now:
+        await _end_session(session, stored, reason="max_age")
+        raise AuthenticationError(
+            "Your session has reached the end of a shift. Please sign in again.",
+            code="session_expired",
+        )
+
     user = await get_user(session, stored.user_id)
     if not user.is_active:
         raise AuthenticationError("This account has been deactivated.", code="account_inactive")
 
     access_token, new_refresh, expires_in = await issue_token_pair(
-        session, user, ip_address=ip_address, user_agent=user_agent
+        session,
+        user,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        session_started_at=stored.session_started_at or stored.created_at,
     )
 
     async with system_context(session):
@@ -1026,11 +1140,32 @@ async def login(
     password: str,
     ip_address: str | None = None,
     user_agent: str | None = None,
+    device_token: str | None = None,
 ) -> tuple[User, str, str, int]:
-    """Full login flow: authenticate, mint tokens, audit."""
+    """Full login flow: authenticate, mint tokens, audit.
+
+    Raises `TwoFactorChallenge` instead when the password was right and an
+    authenticator code is needed next (SEC-05) — unless this device was
+    remembered for this person within the last twelve hours.
+    """
     user = await authenticate(
-        session, email=email, password=password, ip_address=ip_address, user_agent=user_agent
+        session,
+        email=email,
+        password=password,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        complete=False,
     )
+    if await two_factor_needed(session, user) and not (
+        user.two_factor_enabled and _remembered(user, device_token)
+    ):
+        token, _ = create_two_factor_challenge(
+            user.id, hospital_id=user.hospital_id, enrol=not user.two_factor_enabled
+        )
+        await session.commit()
+        raise TwoFactorChallenge(token, enrol=not user.two_factor_enabled)
+
+    await _finish_sign_in(session, user)
     access_token, refresh_token, expires_in = await issue_token_pair(
         session, user, ip_address=ip_address, user_agent=user_agent
     )
@@ -1054,3 +1189,282 @@ async def user_from_access_token(session: AsyncSession, token: str) -> User:
     if not user.is_active:
         raise AuthenticationError("This account has been deactivated.", code="account_inactive")
     return user
+
+
+# ---------------------------------------------------------------------------
+# Two-step sign-in with an authenticator app (SEC-05)
+# ---------------------------------------------------------------------------
+# A challenge lives for five minutes: long enough to find the phone.
+TWO_FACTOR_CHALLENGE_SECONDS = 5 * 60
+
+
+class TwoFactorChallenge(Exception):  # noqa: N818 - an outcome, not a failure
+    """The password was right; an authenticator code is needed next.
+
+    Raised by `login` and answered by the router with the challenge token —
+    not an error response, because nothing went wrong. `enrol` says whether
+    the person has yet to set the app up.
+    """
+
+    def __init__(self, token: str, *, enrol: bool) -> None:
+        super().__init__("two-step sign-in required")
+        self.token = token
+        self.enrol = enrol
+        self.expires_in = TWO_FACTOR_CHALLENGE_SECONDS
+
+
+async def two_factor_needed(session: AsyncSession, user: User) -> bool:
+    """Whether this person signs in with a code: by choice, or by role."""
+    return user.two_factor_enabled or await two_factor_required_by_role(session, user)
+
+
+async def two_factor_required_by_role(session: AsyncSession, user: User) -> bool:
+    required = settings.two_factor_roles
+    if not required:
+        return False
+    roles, _ = await resolve_permissions(session, user)
+    return bool(roles & required)
+
+
+def _device_binding(secret: str | None) -> str:
+    """Ties a remembered device to the secret it was remembered under."""
+    return hashlib.sha256((secret or "").encode()).hexdigest()[:16]
+
+
+def _remembered(user: User, device_token: str | None) -> bool:
+    if not device_token or not user.totp_secret:
+        return False
+    try:
+        claims, payload = decode_token_with_claims(device_token, expected_type=DEVICE)
+    except AuthenticationError:
+        return False
+    return claims.subject == user.id and payload.get("bind") == _device_binding(user.totp_secret)
+
+
+def _otpauth_uri(user: User, secret: str) -> str:
+    return totp.provisioning_uri(secret, account=user.email, issuer=settings.APP_NAME)
+
+
+async def _challenged_user(session: AsyncSession, challenge_token: str, *, enrol: bool) -> User:
+    """The person a challenge was issued to — if it is the right kind, still
+    in date, and they can still sign in."""
+    claims, payload = decode_token_with_claims(challenge_token, expected_type=TWO_FACTOR)
+    if bool(payload.get("enrol")) is not enrol:
+        raise AuthenticationError("Invalid credentials.", code="invalid_token")
+    user = await get_user(session, claims.subject)
+    if not user.is_active:
+        raise AuthenticationError("This account has been deactivated.", code="account_inactive")
+    if user.locked_until is not None and user.locked_until > datetime.now(UTC):
+        raise AuthenticationError(
+            "This account is temporarily locked after too many failed attempts.",
+            code="account_locked",
+        )
+    return user
+
+
+async def _check_code(
+    session: AsyncSession,
+    user: User,
+    code: str,
+    *,
+    spend: bool = True,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """Accept a code from the app, or count a failure exactly like a wrong
+    password. `spend` marks the code used, so it never signs anybody in again."""
+    secret = user.totp_secret
+    step = (
+        totp.verify(secret, code, after_step=user.totp_last_step if spend else None)
+        if secret
+        else None
+    )
+    if step is None:
+        user.failed_login_attempts += 1
+        if user.failed_login_attempts >= MAX_FAILED_LOGINS:
+            user.locked_until = datetime.now(UTC) + LOCKOUT_DURATION
+        async with system_context(session):
+            session.add(user)
+            await session.flush()
+        await record_audit(
+            session,
+            action="auth.2fa.verify",
+            actor=user,
+            resource_type="user",
+            resource_id=user.id,
+            succeeded=False,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            changes={"attempts": user.failed_login_attempts},
+        )
+        # Committed before raising, as in `authenticate`: the count is the lock.
+        await session.commit()
+        raise AuthenticationError(
+            "That code is not right. Check the app and try again.", code="invalid_code"
+        )
+    if spend:
+        user.totp_last_step = step
+        async with system_context(session):
+            session.add(user)
+            await session.flush()
+
+
+async def _signed_in(
+    session: AsyncSession,
+    user: User,
+    *,
+    remember_device: bool,
+    ip_address: str | None,
+    user_agent: str | None,
+) -> tuple[User, str, str, int, str | None]:
+    await _finish_sign_in(session, user)
+    access_token, refresh_token, expires_in = await issue_token_pair(
+        session, user, ip_address=ip_address, user_agent=user_agent
+    )
+    device_token = (
+        create_device_token(
+            user.id, hospital_id=user.hospital_id, binding=_device_binding(user.totp_secret)
+        )[0]
+        if remember_device
+        else None
+    )
+    await record_audit(
+        session,
+        action="auth.login",
+        actor=user,
+        hospital_id=user.hospital_id,
+        resource_type="user",
+        resource_id=user.id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        changes={"two_factor": True, "device_remembered": remember_device},
+    )
+    return user, access_token, refresh_token, expires_in, device_token
+
+
+async def verify_two_factor(
+    session: AsyncSession,
+    *,
+    challenge_token: str,
+    code: str,
+    remember_device: bool = False,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> tuple[User, str, str, int, str | None]:
+    """The second step: the code from the app, then a session."""
+    user = await _challenged_user(session, challenge_token, enrol=False)
+    await _check_code(session, user, code, ip_address=ip_address, user_agent=user_agent)
+    return await _signed_in(
+        session, user, remember_device=remember_device, ip_address=ip_address, user_agent=user_agent
+    )
+
+
+async def _pending_secret(session: AsyncSession, user: User) -> str:
+    """The secret being enrolled: kept across a reload of the setup screen,
+    so a code scanned a moment ago still works."""
+    if user.two_factor_enabled:
+        raise ConflictError("Two-step sign-in is already on.", code="two_factor_already_enabled")
+    if not user.totp_secret:
+        user.totp_secret = totp.new_secret()
+        user.totp_last_step = None
+        async with system_context(session):
+            session.add(user)
+            await session.flush()
+    return user.totp_secret
+
+
+async def start_enrolment(session: AsyncSession, *, challenge_token: str) -> tuple[str, str]:
+    """A required role signing in for the first time: the secret to scan."""
+    user = await _challenged_user(session, challenge_token, enrol=True)
+    secret = await _pending_secret(session, user)
+    return secret, _otpauth_uri(user, secret)
+
+
+async def _switch_on(
+    session: AsyncSession,
+    user: User,
+    code: str,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """On only once a code from the app proves the app holds the secret."""
+    if not user.totp_secret:
+        raise ValidationError("Set up the authenticator app first.", code="enrolment_not_started")
+    await _check_code(session, user, code, ip_address=ip_address, user_agent=user_agent)
+    user.two_factor_enabled = True
+    async with system_context(session):
+        session.add(user)
+        await session.flush()
+    await record_audit(
+        session,
+        action="auth.2fa.enable",
+        actor=user,
+        hospital_id=user.hospital_id,
+        resource_type="user",
+        resource_id=user.id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+
+
+async def confirm_enrolment(
+    session: AsyncSession,
+    *,
+    challenge_token: str,
+    code: str,
+    remember_device: bool = False,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> tuple[User, str, str, int, str | None]:
+    """A required role's first sign-in: switch two-step on, then a session."""
+    user = await _challenged_user(session, challenge_token, enrol=True)
+    await _switch_on(session, user, code, ip_address=ip_address, user_agent=user_agent)
+    return await _signed_in(
+        session, user, remember_device=remember_device, ip_address=ip_address, user_agent=user_agent
+    )
+
+
+async def setup_two_factor(session: AsyncSession, user: User) -> tuple[str, str]:
+    """Someone turning two-step on for themselves: the secret to scan."""
+    secret = await _pending_secret(session, user)
+    return secret, _otpauth_uri(user, secret)
+
+
+async def enable_two_factor(session: AsyncSession, user: User, *, code: str) -> None:
+    if user.two_factor_enabled:
+        raise ConflictError("Two-step sign-in is already on.", code="two_factor_already_enabled")
+    await _switch_on(session, user, code)
+
+
+async def disable_two_factor(
+    session: AsyncSession, user: User, *, password: str, code: str
+) -> None:
+    """Off — only for someone whose role does not require it, and only with
+    both their password and a current code. Forgets every remembered device,
+    because each was bound to the secret this clears."""
+    if await two_factor_required_by_role(session, user):
+        raise ConflictError(
+            "Your role requires two-step sign-in, so it cannot be turned off.",
+            code="two_factor_required_by_role",
+        )
+    if not user.two_factor_enabled:
+        raise ConflictError("Two-step sign-in is not on.", code="two_factor_not_enabled")
+    if not verify_password(password, user.password_hash):
+        raise AuthenticationError("Your password is not right.", code="invalid_credentials")
+    await _check_code(session, user, code, spend=False)
+
+    user.two_factor_enabled = False
+    user.totp_secret = None
+    user.totp_last_step = None
+    async with system_context(session):
+        session.add(user)
+        await session.flush()
+    await record_audit(
+        session,
+        action="auth.2fa.disable",
+        actor=user,
+        hospital_id=user.hospital_id,
+        resource_type="user",
+        resource_id=user.id,
+    )

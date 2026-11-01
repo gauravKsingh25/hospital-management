@@ -1501,3 +1501,101 @@ async def test_two_simultaneous_payments_on_one_invoice_cannot_overpay_it(
     assert len(failures) == 1, outcomes
     payments, _ = await service.list_payments(session, PageParams(), hospital_id=hospital_id)
     assert [payment.amount for payment in payments] == [D("500.00")]
+
+
+# ---------------------------------------------------------------------------
+# When a payment says it was received (SEC-07)
+# ---------------------------------------------------------------------------
+async def _issued(session: AsyncSession, encounter: Encounter, hospital: Hospital, cashier: User):  # type: ignore[no-untyped-def]
+    invoice = await service.assemble_draft(
+        session, InvoiceDraftRequest(encounter_id=encounter.id), hospital_id=hospital.id
+    )
+    await service.issue_invoice(session, invoice, actor=cashier, hospital_id=hospital.id)
+    return invoice
+
+
+async def test_a_payment_cannot_be_dated_in_the_future(
+    session: AsyncSession, encounter: Encounter, priced_hospital: Hospital, cashier_user: User
+) -> None:
+    from datetime import timedelta
+
+    from app.core.models import utc_now
+
+    invoice = await _issued(session, encounter, priced_hospital, cashier_user)
+    with pytest.raises(ValidationError) as exc:
+        await service.record_payment(
+            session,
+            invoice,
+            amount=D("100.00"),
+            method=PaymentMethod.CASH,
+            actor=cashier_user,
+            hospital_id=priced_hospital.id,
+            received_at=utc_now() + timedelta(hours=2),
+        )
+    assert exc.value.code == "received_at_in_future"
+
+
+async def test_a_counter_cannot_back_date_a_receipt_into_a_closed_day(
+    session: AsyncSession, encounter: Encounter, priced_hospital: Hospital, cashier_user: User
+) -> None:
+    """Back-dating moves money into a day whose cash has already been counted."""
+    from datetime import timedelta
+
+    from app.core.models import utc_now
+
+    invoice = await _issued(session, encounter, priced_hospital, cashier_user)
+    with pytest.raises(ValidationError) as exc:
+        await service.record_payment(
+            session,
+            invoice,
+            amount=D("100.00"),
+            method=PaymentMethod.CASH,
+            actor=cashier_user,
+            hospital_id=priced_hospital.id,
+            received_at=utc_now() - timedelta(days=3),
+        )
+    assert exc.value.code == "received_at_backdated"
+
+
+async def test_accounts_may_back_date_with_the_right(
+    session: AsyncSession, encounter: Encounter, priced_hospital: Hospital, cashier_user: User
+) -> None:
+    """A cheque that cleared on Friday is entered on Monday — by accounts."""
+    from datetime import timedelta
+
+    from app.core.models import utc_now
+
+    invoice = await _issued(session, encounter, priced_hospital, cashier_user)
+    when = utc_now() - timedelta(days=3)
+    payment, _ = await service.record_payment(
+        session,
+        invoice,
+        amount=D("100.00"),
+        method=PaymentMethod.CHEQUE,
+        reference="CHQ 004512",
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+        received_at=when,
+        may_backdate=True,
+    )
+    assert payment.received_at == when
+
+
+async def test_a_payment_received_now_is_fine(
+    session: AsyncSession, encounter: Encounter, priced_hospital: Hospital, cashier_user: User
+) -> None:
+    from app.core.models import utc_now
+
+    invoice = await _issued(session, encounter, priced_hospital, cashier_user)
+    # Now, not "a minute ago": a minute ago is yesterday just after midnight.
+    when = utc_now()
+    payment, _ = await service.record_payment(
+        session,
+        invoice,
+        amount=D("100.00"),
+        method=PaymentMethod.CASH,
+        actor=cashier_user,
+        hospital_id=priced_hospital.id,
+        received_at=when,
+    )
+    assert payment.received_at == when

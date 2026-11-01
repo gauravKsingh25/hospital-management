@@ -9,24 +9,28 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.core.deps import SessionDep, TenantId, get_client_ip, require
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import NotFoundError, PermissionDeniedError, ValidationError
 from app.core.models import utc_now
 from app.core.pagination import Page, PageParams, page_params
 from app.modules.billing import service as billing_service
 from app.modules.billing.rbac import BillingPermissions
 from app.modules.clinical import service as clinical_service
-from app.modules.clinical.models import Encounter
+from app.modules.clinical.models import Encounter, EncounterType
 from app.modules.clinical.rbac import ClinicalPermissions
 from app.modules.identity import service as identity_service
 from app.modules.identity.service import AuthContext
+from app.modules.ipd import service as ipd_service
+from app.modules.ipd.rbac import IpdPermissions
 from app.modules.patients import service as patients_service
 from app.modules.patients.rbac import PatientPermissions
 from app.modules.patients.schemas import PatientRead
 from app.modules.scheduling import service
 from app.modules.scheduling.models import (
     Appointment,
+    AppointmentSource,
     AppointmentStatus,
     QueueEntry,
+    QueuePriority,
     QueueStatus,
 )
 from app.modules.scheduling.rbac import SchedulingPermissions
@@ -44,6 +48,8 @@ from app.modules.scheduling.schemas import (
     DoctorQueue,
     DoctorRead,
     DoctorUpdate,
+    EmergencyRegister,
+    EmergencyResponse,
     QueueBoardEntry,
     QueueEntryRead,
     QueueReassignRequest,
@@ -123,6 +129,7 @@ async def universal_search(
         # `patient:read` and not `note:read`, and a hit that leads to a 403 is
         # worse than a missing one.
         can_open_charts=ClinicalPermissions.NOTE_READ in context.permissions,
+        mask_phones=not context.has_permission(PatientPermissions.CONTACT),
     )
     await identity_service.record_audit(
         session,
@@ -225,8 +232,12 @@ async def _open_encounter_for(
     *,
     context: AuthContext,
     tenant_id: uuid.UUID,
+    priority: QueuePriority = QueuePriority.NORMAL,
 ) -> Encounter:
     """Open the clinical Encounter that belongs to this check-in.
+
+    An EMERGENCY place in the line opens an EMERGENCY visit: the casualty
+    census and the emergency-visit count read the chart, not the token.
 
     Trade-off, stated because it is not the obvious choice: `scheduling` already
     publishes `PatientCheckedIn`, and `clinical` could have subscribed to it.
@@ -247,6 +258,9 @@ async def _open_encounter_for(
         appointment_id=appointment.id,
         doctor_id=appointment.doctor_id,
         department_id=appointment.department_id,
+        encounter_type=(
+            EncounterType.EMERGENCY if priority is QueuePriority.EMERGENCY else EncounterType.OPD
+        ),
         chief_complaint=appointment.reason,
     )
     await service.link_encounter(session, appointment, encounter.id)
@@ -435,7 +449,9 @@ async def check_in(
         actor_id=context.user.id,
     )
     # The chart opens with the token, not as a second step someone must remember.
-    await _open_encounter_for(session, appointment, context=context, tenant_id=tenant_id)
+    await _open_encounter_for(
+        session, appointment, context=context, tenant_id=tenant_id, priority=entry.priority
+    )
     await identity_service.record_audit(
         session,
         action="appointment.check_in",
@@ -577,7 +593,7 @@ async def quick_opd(
         actor_id=context.user.id,
     )
     encounter = await _open_encounter_for(
-        session, appointment, context=context, tenant_id=tenant_id
+        session, appointment, context=context, tenant_id=tenant_id, priority=entry.priority
     )
     await identity_service.record_audit(
         session,
@@ -590,7 +606,103 @@ async def quick_opd(
         ip_address=await get_client_ip(request),
     )
     await session.commit()
+    return await _token_slip(session, appointment, entry, encounter=encounter, tenant_id=tenant_id)
 
+
+@queue_router.post(
+    "/emergency",
+    response_model=EmergencyResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Emergency: register an unidentified patient and put them first in line",
+)
+async def register_emergency(
+    payload: EmergencyRegister,
+    session: SessionDep,
+    request: Request,
+    context: CanBook,
+    tenant_id: TenantId,
+) -> EmergencyResponse:
+    """UX-01 — the casualty door, in one call and one transaction.
+
+    An unconscious patient with no name and no mobile becomes `Unknown Male
+    EM-0034`, gets a UHID, a token at the top of the chosen doctor's line and
+    an EMERGENCY chart — and, if asked, a place on the admission desk's list.
+    One transaction because the alternative failure is the worst one: an
+    unknown patient registered with no visit is a record nobody can name and
+    nobody is looking after.
+    """
+    if not context.has_permission(PatientPermissions.CREATE):
+        raise PermissionDeniedError("You cannot register patients.", code="permission_denied")
+    if payload.send_to_admission and not context.has_permission(IpdPermissions.ADMISSION_REQUEST):
+        raise PermissionDeniedError(
+            "You cannot send patients for admission.", code="permission_denied"
+        )
+    # Checked before anything is written, so a mistyped doctor costs nothing —
+    # not even an emergency tag.
+    await service.get_doctor(session, payload.doctor_id, hospital_id=tenant_id)
+
+    patient = await patients_service.register_unidentified(
+        session, hospital_id=tenant_id, gender=payload.gender, age_years=payload.age_years
+    )
+    appointment, entry = await service.quick_opd(
+        session,
+        hospital_id=tenant_id,
+        patient_id=patient.id,
+        doctor_id=payload.doctor_id,
+        reason=payload.complaint,
+        priority=QueuePriority.EMERGENCY,
+        priority_reason="Emergency",
+        source=AppointmentSource.WALK_IN,
+        actor_id=context.user.id,
+    )
+    encounter = await _open_encounter_for(
+        session, appointment, context=context, tenant_id=tenant_id, priority=entry.priority
+    )
+    admission_request = (
+        await ipd_service.request_admission(
+            session,
+            hospital_id=tenant_id,
+            encounter_id=encounter.id,
+            note=payload.complaint,
+            actor=context.user,
+        )
+        if payload.send_to_admission
+        else None
+    )
+    await identity_service.record_audit(
+        session,
+        action="patient.register_emergency",
+        actor=context.user,
+        hospital_id=tenant_id,
+        resource_type="patient",
+        resource_id=patient.id,
+        changes={
+            "emergency_tag": patient.emergency_tag,
+            "uhid": patient.uhid,
+            "token": entry.token_number,
+            "sent_to_admission": admission_request is not None,
+        },
+        ip_address=await get_client_ip(request),
+    )
+    await session.commit()
+
+    slip = await _token_slip(session, appointment, entry, encounter=encounter, tenant_id=tenant_id)
+    return EmergencyResponse(
+        **slip.model_dump(),
+        emergency_tag=patient.emergency_tag or "",
+        admission_request_id=admission_request.id if admission_request else None,
+    )
+
+
+async def _token_slip(
+    session: SessionDep,
+    appointment: Appointment,
+    entry: QueueEntry,
+    *,
+    encounter: Encounter,
+    tenant_id: uuid.UUID,
+) -> QuickOpdResponse:
+    """Everything the token slip needs, after the check-in has committed."""
     doctor = await service.get_doctor(session, entry.doctor_id, hospital_id=tenant_id)
     department = None
     if doctor.department_id is not None:
@@ -678,6 +790,7 @@ async def _to_board(
             row.patient_age_years = view.age_years
             row.patient_gender = str(view.gender)
             row.patient_is_deceased = view.is_deceased
+            row.patient_is_unidentified = view.is_unidentified
         board.append(row)
     return board
 

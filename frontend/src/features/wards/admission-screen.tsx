@@ -80,6 +80,7 @@ export function AdmissionScreen({
   canRecordDeath = false,
   canRecordReferral = false,
   canRecordLama = false,
+  currentUserId,
   canReadVitals = false,
   canRecordVitals = false,
   canUpdate = false,
@@ -97,6 +98,8 @@ export function AdmissionScreen({
   canRecordDeath?: boolean;
   canRecordReferral?: boolean;
   canRecordLama?: boolean;
+  /** Who is signed in, so a doctor recording a death starts as its certifier. */
+  currentUserId?: string;
   canReadVitals?: boolean;
   canRecordVitals?: boolean;
   /** Edit the stay's details inline (`admission:update`). */
@@ -242,6 +245,7 @@ export function AdmissionScreen({
                 canRecordDeath={canRecordDeath}
                 canRecordReferral={canRecordReferral}
                 canRecordLama={canRecordLama}
+                currentUserId={currentUserId}
               />
             </div>
           ) : null}

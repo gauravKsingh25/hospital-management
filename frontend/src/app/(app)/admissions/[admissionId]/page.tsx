@@ -51,6 +51,7 @@ export default async function AdmissionPage({
       canRecordDeath={can(user, "encounter:record_death")}
       canRecordReferral={can(user, "encounter:record_referral")}
       canRecordLama={can(user, "encounter:record_lama")}
+      currentUserId={user.id}
       canReadVitals={can(user, "vitals:read")}
       canRecordVitals={can(user, "vitals:record")}
       canUpdate={can(user, "admission:update")}

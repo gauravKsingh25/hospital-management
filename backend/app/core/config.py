@@ -115,8 +115,25 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_TTL_MINUTES: Annotated[int, Field(ge=1, le=1440)] = 15
     # Refresh tokens rotate on every use and are revoked on reuse.
     REFRESH_TOKEN_TTL_DAYS: Annotated[int, Field(ge=1, le=90)] = 7
+    # SEC-04. A refresh token unused this long is dead: a tablet nobody has
+    # touched for half an hour must not refresh itself back to life.
+    REFRESH_IDLE_MINUTES: Annotated[int, Field(ge=5, le=1440)] = 30
+    # SEC-04. No chain of refreshes outlives a shift from the original sign-in.
+    SESSION_MAX_HOURS: Annotated[int, Field(ge=1, le=72)] = 12
+
+    # SEC-05. Roles that must sign in with an authenticator code as well as a
+    # password. Unset, it follows the environment: admins and doctors in
+    # staging and production, nobody on a developer's machine. Set it (even
+    # to an empty value) to decide explicitly.
+    TWO_FACTOR_REQUIRED_ROLES: Annotated[list[str] | None, NoDecode] = None
+    # How long "remember this device" skips the code on that device.
+    TWO_FACTOR_REMEMBER_HOURS: Annotated[int, Field(ge=1, le=720)] = 12
 
     PASSWORD_MIN_LENGTH: Annotated[int, Field(ge=8)] = 12
+
+    # SEC-01: distinct patients one staff member may read in an hour before
+    # administrators are told. A flag for a person to look at, not a lock.
+    PATIENT_BULK_READ_ALERT: Annotated[int, Field(ge=1)] = 300
 
     # Argon2id work factors. Defaults follow OWASP's second recommended
     # configuration (46 MiB, 1 iteration, 1 lane); raise MEMORY_KIB before
@@ -211,7 +228,21 @@ class Settings(BaseSettings):
     # value: we want a plain comma-separated list in .env, not `["a","b"]`.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    @field_validator("CORS_ORIGINS", "NOTIFICATION_CHANNEL_PRIORITY", mode="before")
+    # SEC-06. The proxies (addresses or CIDR ranges) whose `X-Forwarded-For`
+    # is believed for the audit log's IP. Anybody else's is ignored: a caller
+    # who reaches the API directly must not choose the address recorded
+    # against a payment. Name the edge proxy and the web app's container here.
+    TRUSTED_PROXIES: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["127.0.0.1", "::1"]
+    )
+
+    @field_validator(
+        "CORS_ORIGINS",
+        "NOTIFICATION_CHANNEL_PRIORITY",
+        "TRUSTED_PROXIES",
+        "TWO_FACTOR_REQUIRED_ROLES",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         if isinstance(value, str):
@@ -262,6 +293,20 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
+
+    @property
+    def two_factor_roles(self) -> frozenset[str]:
+        """The roles that must use two-step sign-in (SEC-05)."""
+        if self.TWO_FACTOR_REQUIRED_ROLES is not None:
+            return frozenset(self.TWO_FACTOR_REQUIRED_ROLES)
+        if self.ENVIRONMENT in ("staging", "production"):
+            return frozenset({"PLATFORM_ADMIN", "HOSPITAL_ADMIN", "DOCTOR"})
+        return frozenset()
+
+    @property
+    def api_docs_enabled(self) -> bool:
+        """Interactive docs and the OpenAPI map: a developer's machine only (SEC-09)."""
+        return self.ENVIRONMENT == "local"
 
     @property
     def async_database_url(self) -> URL:

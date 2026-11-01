@@ -139,7 +139,11 @@ export const NAV_ITEMS: NavItem[] = [
     // box and from a worklist far more often than from this index, and
     // lighting "Patients" while a doctor is reading a chart mislabels where
     // they are.
-    permissions: ["patient:read"],
+    //
+    // `patient:list`, not `patient:read` (SEC-01): browsing the whole
+    // directory belongs to the front desk, records and admin. Everybody else
+    // reaches a patient from the visit or the search box.
+    permissions: ["patient:list"],
   },
   {
     href: "/messages",
@@ -148,7 +152,8 @@ export const NAV_ITEMS: NavItem[] = [
     // `notification:read`, not `send`: the common case is looking, and the
     // question ("did it go out?") is asked far more often than a message is
     // composed by hand.
-    permissions: ["notification:read"],
+    // The whole outbox is reception's, records' and admin's (SEC-03).
+    permissions: ["notification:read_all"],
     prefix: true,
   },
   {

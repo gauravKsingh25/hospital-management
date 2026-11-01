@@ -41,6 +41,8 @@ export type Gender = Schemas["Gender"];
 export type PatientSort = Schemas["PatientSort"];
 export type BloodGroup = Schemas["BloodGroup"];
 export type AlertSeverity = Schemas["AlertSeverity"];
+/** Naming an unidentified emergency patient: a new person, or an existing record. */
+export type PatientIdentifyRequest = Schemas["PatientIdentify"];
 
 // --- Scheduling ------------------------------------------------------------
 export type Doctor = Schemas["DoctorRead"];
@@ -53,6 +55,8 @@ export type DoctorQueue = Schemas["DoctorQueue"];
 export type QueueReassignRequest = Schemas["QueueReassignRequest"];
 export type QuickOpdRequest = Schemas["QuickOpdRequest"];
 export type QuickOpdResult = Schemas["QuickOpdResponse"];
+/** The token slip for an unidentified emergency arrival, plus its EM tag. */
+export type EmergencyResult = Schemas["EmergencyResponse"];
 export type QueueStatus = Schemas["QueueStatus"];
 export type QueuePriority = Schemas["QueuePriority"];
 
@@ -201,6 +205,7 @@ export type SuppressionReason = Schemas["SuppressionReason"];
 // --- Reporting -------------------------------------------------------------
 /** Every section the caller's permissions allow, in one round trip. */
 export type Dashboard = Schemas["Dashboard"];
+export type DateWindow = Schemas["DateWindow"];
 export type FootfallReport = Schemas["FootfallReport"];
 export type DailyCount = Schemas["DailyCount"];
 export type DepartmentLoad = Schemas["DepartmentLoad"];

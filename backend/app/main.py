@@ -29,6 +29,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.redis import check_redis, close_redis
 from app.core.request_id import REQUEST_ID_HEADER, RequestIdMiddleware
+from app.core.security_headers import SecurityHeadersMiddleware
 from app.modules.billing import router as billing_router
 from app.modules.clinical import router as clinical_router
 from app.modules.diagnostics import router as diagnostics_router
@@ -188,10 +189,13 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="Patient-journey management for a multi-department hospital.",
         lifespan=lifespan,
-        # API docs are an information-disclosure surface — off in production.
-        docs_url="/docs" if not settings.is_production else None,
-        redoc_url="/redoc" if not settings.is_production else None,
-        openapi_url="/openapi.json" if not settings.is_production else None,
+        # API docs are an information-disclosure surface: the full map of every
+        # route. Only on a developer's machine — staging published it (SEC-09).
+        # The frontend's codegen reads the schema from the app object, not from
+        # this URL, so it is unaffected.
+        docs_url="/docs" if settings.api_docs_enabled else None,
+        redoc_url="/redoc" if settings.api_docs_enabled else None,
+        openapi_url="/openapi.json" if settings.api_docs_enabled else None,
     )
 
     if settings.CORS_ORIGINS:
@@ -204,6 +208,8 @@ def create_app() -> FastAPI:
             # Lets the browser read the ID, so an error screen can show it.
             expose_headers=[REQUEST_ID_HEADER],
         )
+
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # Added last so it is the outermost user middleware: the ID is assigned
     # before anything else (CORS included) runs or logs.

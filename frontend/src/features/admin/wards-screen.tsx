@@ -146,7 +146,7 @@ export function WardsScreen({
                     )}
                   >
                     <div className="tabular text-sm font-semibold">{bed.code}</div>
-                    <div className="text-muted-foreground mt-0.5 text-[10px] uppercase">
+                    <div className="text-muted-foreground mt-0.5 text-xs uppercase">
                       {bed.status}
                     </div>
                   </li>

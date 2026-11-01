@@ -768,6 +768,14 @@ class MedicationOrder(AuditedTenantModel, table=True):
     # a real prescription.
     units_per_dose: Decimal = Field(default=Decimal("1.00"), sa_type=Numeric(9, 2))  # type: ignore[call-overload]
 
+    # --- allergy (SAFE-01) -------------------------------------------------
+    # Set only when the drug clashed with a recorded drug allergy and the
+    # doctor prescribed it anyway, saying why. The ids are the allergies the
+    # doctor was shown: an allergy recorded later is not covered, and stops
+    # the dose at the bedside until the drug is reviewed.
+    allergy_override_reason: str | None = Field(default=None, max_length=300)
+    allergy_acknowledged_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+
     starts_at: datetime = Field(
         sa_type=DateTime(timezone=True),  # type: ignore[call-overload]
         index=True,

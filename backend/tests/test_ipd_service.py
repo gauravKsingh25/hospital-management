@@ -57,6 +57,8 @@ from app.modules.ipd.schemas import (
 from app.modules.patients import service as patients_service
 from app.modules.patients.models import Gender, Patient
 from app.modules.patients.schemas import PatientRegister
+from app.modules.scheduling import service as scheduling_service
+from app.modules.scheduling.schemas import DoctorCreate
 from app.modules.tenancy import service as tenancy_service
 from app.modules.tenancy.models import Hospital
 
@@ -176,6 +178,30 @@ async def test_admitting_takes_the_bed_and_converts_the_visit(
     assert admission.admission_number.startswith("IPD-")
     # The bed class is snapshotted, not looked up later.
     assert assignment.bed_class is BedClass.GENERAL
+
+
+async def test_the_visits_doctor_becomes_the_attending_when_none_is_named(
+    session: AsyncSession, tenant: Hospital, patient: Patient, doctor_user: User, beds
+) -> None:
+    """Otherwise the ward list and the discharge summary name no consultant."""
+    doctor = await scheduling_service.create_doctor(
+        session, DoctorCreate(user_id=doctor_user.id), hospital_id=tenant.id, display_name="Dr Rao"
+    )
+    visit = await clinical_service.open_encounter(
+        session,
+        hospital_id=tenant.id,
+        patient_id=patient.id,
+        actor=doctor_user,
+        doctor_id=doctor.id,
+    )
+    admission = await service.admit_patient(
+        session,
+        AdmissionCreate(encounter_id=visit.id, bed_id=beds[0].id),
+        hospital_id=tenant.id,
+        actor=doctor_user,
+    )
+
+    assert admission.attending_doctor_id == doctor.id
 
 
 async def test_a_second_patient_cannot_be_put_in_an_occupied_bed(

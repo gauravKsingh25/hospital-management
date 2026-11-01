@@ -41,6 +41,17 @@ import type {
   Page,
 } from "@/types/api";
 
+/** One allergy named by an `allergy_conflict` refusal (SAFE-01). */
+type AllergyClash = { id: string; label: string; severity: string; detail: string | null };
+
+/**
+ * Bring an element into view once, when it first renders. Module-level so its
+ * identity is stable: React calls a ref callback again whenever it changes.
+ */
+function revealOnMount(node: HTMLElement | null) {
+  node?.scrollIntoView({ block: "nearest" });
+}
+
 const ROUTES: MedicationRoute[] = [
   "ORAL",
   "IV",
@@ -206,6 +217,19 @@ export function ChartScreen({
                       {order.instructions}
                     </div>
                   ) : null}
+                  {(order.allergy_conflicts ?? []).length > 0 ? (
+                    // SAFE-01: the clash stays visible on the chart for as
+                    // long as the drug is on it, with the doctor's reason.
+                    <div
+                      className="text-critical mt-0.5 text-xs font-medium"
+                      data-testid="order-allergy"
+                    >
+                      {t("allergyClash", { allergies: (order.allergy_conflicts ?? []).join(", ") })}
+                      {order.allergy_override_reason
+                        ? ` · ${t("overrideReason", { reason: order.allergy_override_reason })}`
+                        : ` · ${t("notReviewed")}`}
+                    </div>
+                  ) : null}
                   <BillingLine order={order} />
                   {!order.is_active ? (
                     <div className="text-muted-foreground mt-0.5 text-xs">
@@ -331,6 +355,10 @@ function PrescribeDialog({
   const [isPrn, setIsPrn] = useState(false);
   const [prnIndication, setPrnIndication] = useState("");
   const [instructions, setInstructions] = useState("");
+  // SAFE-01: the allergies the server said this drug clashes with, and the
+  // doctor's reason for prescribing it anyway. Null until there is a clash.
+  const [clash, setClash] = useState<AllergyClash[] | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
 
   const prescribe = useMutation({
     mutationFn: () =>
@@ -348,9 +376,12 @@ function PrescribeDialog({
         instructions: instructions.trim() || null,
         medicine_item_id: item?.id ?? null,
         units_per_dose: item ? unitsPerDose.trim() || "1" : "1",
+        allergy_override_reason: clash ? overrideReason.trim() : null,
       }),
     onSuccess: (order) => {
       toast.success(t("prescribed", { drug: order.drug_name }));
+      setClash(null);
+      setOverrideReason("");
       setItem(null);
       setUnitsPerDose("1");
       setDrug("");
@@ -360,10 +391,27 @@ function PrescribeDialog({
       onOpenChange(false);
       onDone();
     },
-    onError: (error) => toast.error(isApiError(error) ? error.message : String(error)),
+    onError: (error) => {
+      if (isApiError(error) && error.code === "allergy_conflict") {
+        // Not a toast: the doctor has to read it, and answer it, here.
+        setClash((error.details?.allergies as AllergyClash[] | undefined) ?? []);
+        return;
+      }
+      toast.error(isApiError(error) ? error.message : String(error));
+    },
   });
 
+  // Changing the drug answers a different question: the clash shown was for
+  // the old one.
+  const changeDrug = (next: string) => {
+    setDrug(next);
+    setClash(null);
+    setOverrideReason("");
+  };
+
   const pick = (next: MedicineItem | null) => {
+    setClash(null);
+    setOverrideReason("");
     setItem(next);
     if (!next) return;
     setDrug(next.name);
@@ -424,7 +472,7 @@ function PrescribeDialog({
               <Input
                 id="drug-name"
                 value={drug}
-                onChange={(event) => setDrug(event.target.value)}
+                onChange={(event) => changeDrug(event.target.value)}
                 className="h-tap"
                 autoFocus={!canPickMedicine}
               />
@@ -542,6 +590,37 @@ function PrescribeDialog({
               />
             </div>
           </div>
+
+          {clash ? (
+            <div
+              role="alert"
+              ref={revealOnMount}
+              className="border-critical/50 bg-critical/10 space-y-2 rounded-lg border p-3 text-left"
+              data-testid="allergy-conflict"
+            >
+              <p className="text-critical text-sm font-semibold">{t("allergyConflictTitle")}</p>
+              <ul className="text-critical list-disc pl-5 text-sm">
+                {clash.map((allergy) => (
+                  <li key={allergy.id}>
+                    {allergy.label}
+                    {allergy.severity === "CRITICAL" ? ` · ${t("critical")}` : ""}
+                    {allergy.detail ? ` — ${allergy.detail}` : ""}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-sm">{t("allergyConflictHint")}</p>
+              <Label htmlFor="allergy-override">{t("overrideLabel")}</Label>
+              <Input
+                id="allergy-override"
+                autoFocus
+                value={overrideReason}
+                onChange={(event) => setOverrideReason(event.target.value)}
+                className="h-tap"
+                maxLength={300}
+                placeholder={t("overridePlaceholder")}
+              />
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -549,11 +628,15 @@ function PrescribeDialog({
             {common("cancel")}
           </Button>
           <Button
-            className="h-tap"
-            disabled={!valid || prescribe.isPending}
+            className={cn("h-tap", clash && "bg-critical hover:bg-critical/90 text-white")}
+            // The server wants at least ten characters: a reason, not "ok".
+            disabled={
+              !valid || prescribe.isPending || (clash !== null && overrideReason.trim().length < 10)
+            }
             onClick={() => prescribe.mutate()}
+            data-testid="prescribe-submit"
           >
-            {t("prescribe")}
+            {clash ? t("prescribeAnyway") : t("prescribe")}
           </Button>
         </DialogFooter>
       </DialogContent>

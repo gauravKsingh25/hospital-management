@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { ACCOUNTS, registerAndQueue, signIn, signOut } from "./support";
+import { ACCOUNTS, openLine, registerAndQueue, signIn, signOut } from "./support";
 
 /**
  * Open on a dashboard bill row: the patient's bills, that bill selected and
@@ -17,7 +17,7 @@ test("Open shows the bill locked, and Edit issues a corrected bill under a new n
   await page.goto("/reception");
   const row = page.getByTestId("queue-row").filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: 30_000 });
-  await row.scrollIntoViewIfNeeded();
+  await openLine(row);
   const paid = row.getByTestId("mark-paid");
   await paid.click();
   await paid.click();

@@ -47,8 +47,8 @@ test.describe("recording how a visit ended", () => {
     await dialog.getByLabel("What happened").click();
     await page.getByRole("option", { name: "The patient died" }).click();
 
-    await dialog.getByLabel("Certified by").click();
-    await page.getByRole("option", { name: /Vikram/ }).click();
+    // The doctor recording the death starts as its certifier — nothing to pick.
+    await expect(dialog.getByLabel("Certified by")).toContainText("Vikram");
     await dialog.getByLabel("Cause of death").fill("Cardiac arrest.");
     await dialog.getByLabel("Where").fill("Casualty");
 
@@ -193,12 +193,13 @@ test.describe("the queue empties", () => {
 });
 
 test.describe("who may record one", () => {
-  test("a nurse reads the record and is not offered the outcomes", async ({ page }) => {
+  test("a nurse may record LAMA, and only LAMA", async ({ page }) => {
     /**
-     * Three permissions rather than one (§8), and a nurse holds none of them.
-     * They still get the whole chart — a nurse who cannot read the visit
-     * cannot nurse the patient — which is exactly why the control is gated
-     * separately from the screen.
+     * Three permissions rather than one (§8). A nurse holds one of them: on a
+     * night ward the doctor may not be on the floor, and "absconded at 02:10"
+     * is written down when it is noticed (UX-04). Death and referral stay with
+     * doctors and records — so the dialog opens straight onto the LAMA form,
+     * with no choice to make and no death fields to see.
      */
     const { name, url } = await consultingRoom(page);
     await signOut(page);
@@ -207,6 +208,8 @@ test.describe("who may record one", () => {
     await page.goto(url);
     await expect(page.getByText(name).first()).toBeVisible({ timeout: 45_000 });
 
-    await expect(page.getByTestId("record-outcome")).toHaveCount(0);
+    await page.getByTestId("record-outcome").first().click();
+    await expect(page.getByTestId("lama-form-signed")).toBeVisible();
+    await expect(page.getByLabel("Time of death")).toHaveCount(0);
   });
 });

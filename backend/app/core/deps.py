@@ -8,6 +8,7 @@ something each router has to remember.
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated
@@ -16,6 +17,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_session, set_bypass_rls, set_tenant_context
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
 from app.modules.identity.service import AuthContext, build_auth_context, user_from_access_token
@@ -27,16 +29,41 @@ _bearer = HTTPBearer(auto_error=False, description="JWT access token")
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
+def _trusted(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    for entry in settings.TRUSTED_PROXIES:
+        try:
+            if ip in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 async def get_client_ip(request: Request) -> str | None:
     """Best-effort client address for the audit log.
 
-    `X-Forwarded-For` is only meaningful behind a proxy we control; it is
-    recorded as provenance, never used for an access decision.
+    `X-Forwarded-For` is believed only from a proxy named in
+    `TRUSTED_PROXIES` (SEC-06); from anyone else it is the caller's own claim
+    and is ignored. Read from the right: a client may prepend anything, so the
+    real address is the nearest hop our own proxies did not add. Provenance
+    only — never used for an access decision.
     """
+    peer = request.client.host if request.client else None
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:45]
-    return request.client.host[:45] if request.client else None
+    if peer is None or not forwarded or not _trusted(peer):
+        return peer[:45] if peer else None
+    for hop in reversed([part.strip() for part in forwarded.split(",") if part.strip()]):
+        try:
+            ipaddress.ip_address(hop)
+        except ValueError:
+            break
+        if not _trusted(hop):
+            return hop[:45]
+    return peer[:45]
 
 
 async def get_auth_context(

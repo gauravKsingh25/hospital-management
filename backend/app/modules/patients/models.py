@@ -25,7 +25,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Index, text
+from sqlalchemy import CheckConstraint, Date, DateTime, Index, text
 from sqlmodel import Field
 
 from app.core.models import AuditedTenantModel, TenantModel
@@ -132,6 +132,14 @@ class Patient(AuditedTenantModel, table=True):
             postgresql_using="gin",
             postgresql_ops={"name_normalized": "gin_trgm_ops"},
         ),
+        # No mobile is only ever honest on a record that says it does not know
+        # who the patient is. Enforced here rather than trusted to the service:
+        # a known patient with no number is one every message silently fails
+        # for, and nobody is told why.
+        CheckConstraint(
+            "phone IS NOT NULL OR is_unidentified",
+            name="ck_patients_phone_or_unidentified",
+        ),
     )
 
     # --- Identifier -------------------------------------------------------
@@ -147,7 +155,10 @@ class Patient(AuditedTenantModel, table=True):
     # Maintained by the service so matching never depends on how carefully a
     # busy receptionist typed.
     name_normalized: str = Field(max_length=200, index=True)
-    phone: str = Field(
+    # Null only while the patient is unidentified (see `is_unidentified` and
+    # the check constraint above).
+    phone: str | None = Field(
+        default=None,
         max_length=15,
         index=True,
         description="Primary mobile, stored as 10 digits (India) without prefix.",
@@ -201,6 +212,21 @@ class Patient(AuditedTenantModel, table=True):
         default="hi",
         max_length=8,
         description="ISO 639-1. Drives notification language, not just the UI.",
+    )
+
+    # --- Emergency arrivals nobody can name (UX-01) ------------------------
+    # An unconscious patient is registered as `Unknown Male EM-0034` with no
+    # mobile, rather than under a name and number somebody made up — which
+    # would break duplicate detection and message a stranger. The flag is what
+    # keeps patient messages suppressed and the record on reception's "needs
+    # identification" list; it is cleared only by `service.identify_patient`.
+    # The tag stays after identification: casualty spent the night calling the
+    # patient by it, and the notes say so.
+    is_unidentified: bool = Field(default=False, index=True)
+    emergency_tag: str | None = Field(default=None, max_length=16)
+    identified_at: datetime | None = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),  # type: ignore[call-overload]
     )
 
     # --- Lifecycle --------------------------------------------------------
@@ -344,7 +370,20 @@ class UhidSequence(TenantModel, table=True):
     """
 
     __tablename__ = "uhid_sequences"
-    __table_args__ = (Index("uq_uhid_sequences_hospital_year", "hospital_id", "year", unique=True),)
+    __table_args__ = (
+        Index(
+            "uq_uhid_sequences_hospital_series_year",
+            "hospital_id",
+            "series",
+            "year",
+            unique=True,
+        ),
+    )
 
+    # Which numbering this row counts: `UHID` for the record number, `EM` for
+    # the emergency tags of unidentified arrivals. One table, one locking rule,
+    # rather than a second counter that would have to relearn the first's
+    # first-registration-of-the-year race.
+    series: str = Field(default="UHID", max_length=8)
     year: int = Field(index=True)
     last_value: int = Field(default=0)

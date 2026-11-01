@@ -10,6 +10,7 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.modules.patients.models import Gender
 from app.modules.scheduling.models import (
     AppointmentSource,
     AppointmentStatus,
@@ -31,6 +32,8 @@ __all__ = [
     "DoctorQueue",
     "DoctorRead",
     "DoctorUpdate",
+    "EmergencyRegister",
+    "EmergencyResponse",
     "QueueBoardEntry",
     "QueueEntryRead",
     "QueueReassignRequest",
@@ -58,6 +61,9 @@ class DoctorCreate(BaseModel):
 
 
 class DoctorUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     department_id: uuid.UUID | None = None
     specialty: Annotated[str | None, Field(max_length=120)] = None
     qualification: Annotated[str | None, Field(max_length=200)] = None
@@ -266,6 +272,9 @@ class QueueBoardEntry(QueueEntryRead):
     patient_age_years: int | None = None
     patient_gender: str | None = None
     patient_is_deceased: bool = False
+    # An emergency arrival nobody has named yet (UX-01). Reception's cue that
+    # this row still needs somebody to find out who the patient is.
+    patient_is_unidentified: bool = False
 
     # The chart this row opens. Carried here so a doctor clicking a waiting
     # patient goes straight to the consultation screen — without it the
@@ -389,6 +398,31 @@ class QuickOpdResponse(BaseModel):
     # can be reached from the check-in response without a second lookup.
     encounter_id: uuid.UUID
     encounter_number: str
+
+
+class EmergencyRegister(BaseModel):
+    """One tap at the casualty door (UX-01): a patient nobody can name.
+
+    No name and no mobile — the patient is registered as `Unknown Male
+    EM-0034` and identified later. Gender is the one thing staff can always
+    see (or say they cannot: `UNKNOWN`); an age is a guess and may be left out.
+    """
+
+    gender: Gender
+    age_years: Annotated[int | None, Field(ge=0, le=130)] = None
+    doctor_id: uuid.UUID
+    # What brought them in, as the chart's chief complaint: "RTA, unconscious".
+    complaint: Annotated[str | None, Field(max_length=500)] = None
+    # Straight to the admission desk as well, for a patient who is going to a
+    # bed whatever the doctor finds. The doctor still sees them first.
+    send_to_admission: bool = False
+
+
+class EmergencyResponse(QuickOpdResponse):
+    """The token slip, plus what casualty calls the patient until they are named."""
+
+    emergency_tag: str
+    admission_request_id: uuid.UUID | None = None
 
 
 class QueueReassignRequest(BaseModel):

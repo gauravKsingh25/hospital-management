@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { ACCOUNTS, registerAndQueue, signIn, signOut } from "./support";
+import { ACCOUNTS, openLine, registerAndQueue, signIn, signOut } from "./support";
 
 /**
  * Billing → Accounts: the accountant's own dashboard.
@@ -18,7 +18,7 @@ async function collectCash(page: Page, name: string): Promise<void> {
   await page.goto("/reception");
   const row = page.getByTestId("queue-row").filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: 30_000 });
-  await row.scrollIntoViewIfNeeded();
+  await openLine(row);
   const paid = row.getByTestId("mark-paid");
   await paid.click();
   await paid.click();

@@ -159,40 +159,80 @@ def test_every_english_code_also_ships_hindi() -> None:
     assert english == hindi
 
 
-def test_shipped_copy_only_asks_for_placeholders_a_trigger_supplies() -> None:
-    """Guards the seam between `handlers.py` and the copy.
+def test_shipped_copy_only_asks_for_placeholders_its_trigger_supplies() -> None:
+    """Guards the seam between `handlers.py` and the copy, per code.
 
     Every handler supplies `hospital_name`, `patient_name` and `uhid`; anything
-    else has to come from that event's own payload. This asserts the vocabulary
-    stays inside a known set, so a reworded template cannot quietly start asking
-    for a value nothing provides.
+    else has to come from that event's own payload. A reworded template must not
+    quietly start asking for a value its trigger never provides.
     """
-    known = {
-        "hospital_name",
-        "patient_name",
-        "uhid",
-        "doctor_name",
-        "appointment_time",
-        "appointment_number",
-        "test_name",
-        "report_number",
-        "discipline",
-        "critical_values",
-        "reason",
-        "accession_number",
-        "amount",
-        "method",
-        "receipt_number",
-        "balance_due",
-        "invoice_number",
-        "grand_total",
-        "context_status",
-    }
-
     for language, entries in tpl.DEFAULT_TEMPLATES.items():
         for code, template in entries.items():
-            unknown = set(tpl.placeholders_in(template.body)) - known
+            unknown = set(tpl.placeholders_in(template.body)) - tpl.allowed_placeholders(code)
             assert not unknown, f"{code}/{language} asks for {sorted(unknown)}"
+
+
+def test_every_template_code_declares_its_placeholders() -> None:
+    codes = {
+        value
+        for name, value in vars(tpl.TemplateCode).items()
+        if not name.startswith("_") and isinstance(value, str)
+    }
+    assert codes == set(tpl.PLACEHOLDERS)
+
+
+def test_a_made_up_code_may_use_only_the_common_placeholders() -> None:
+    assert tpl.allowed_placeholders("CUSTOM_NOTE") == tpl.COMMON_PLACEHOLDERS
+
+
+# ---------------------------------------------------------------------------
+# Checking hospital-authored copy before it is saved
+# ---------------------------------------------------------------------------
+def test_a_placeholder_its_trigger_never_supplies_is_reported() -> None:
+    """The demo tenant's corrupted copy, verbatim from the audit."""
+    problems = tpl.check_template_text(
+        tpl.TemplateCode.APPOINTMENT_BOOKED,
+        "Namaste {{patient_name}}, aapka {{nonexistent}} taiyar hai.",
+    )
+    assert problems.unknown == ("nonexistent",)
+    assert problems.malformed == ()
+
+
+def test_single_braces_are_reported_as_a_malformed_placeholder() -> None:
+    """`{patient_name}` is never substituted — it reaches the patient verbatim."""
+    problems = tpl.check_template_text(
+        tpl.TemplateCode.APPOINTMENT_BOOKED,
+        "Namaste {patient_name}, aapka {nonexistent} taiyar hai.",
+    )
+    assert problems.malformed == ("{patient_name}", "{nonexistent}")
+
+
+def test_a_double_brace_the_renderer_cannot_read_is_malformed_too() -> None:
+    problems = tpl.check_template_text(
+        tpl.TemplateCode.APPOINTMENT_BOOKED, "Dear {{Patient Name}}, see {{ patient.name }}."
+    )
+    assert problems.malformed == ("{{Patient Name}}", "{{ patient.name }}")
+
+
+def test_copy_using_only_supplied_placeholders_has_no_problems() -> None:
+    problems = tpl.check_template_text(
+        tpl.TemplateCode.REPORT_READY,
+        "{{hospital_name}}: {{ patient_name }}, your {{test_name}} ({{report_number}}) is ready.",
+    )
+    assert not problems
+
+
+def test_a_literal_brace_that_is_not_a_word_stays_allowed() -> None:
+    """Clinical copy occasionally needs a brace; only `{word}` looks like a placeholder."""
+    problems = tpl.check_template_text(
+        tpl.TemplateCode.REPORT_READY, "OPD timings {Mon-Sat, 9-5}. Bring {2} photos {"
+    )
+    assert not problems
+
+
+def test_every_shipped_language_is_a_supported_language() -> None:
+    assert set(tpl.DEFAULT_TEMPLATES) <= tpl.SUPPORTED_LANGUAGES
+    assert {"en", "hi"} <= tpl.SUPPORTED_LANGUAGES
 
 
 def test_default_template_lookup_falls_back_to_english() -> None:

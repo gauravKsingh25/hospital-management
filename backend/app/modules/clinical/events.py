@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from app.core.events import DomainEvent
 
@@ -99,6 +99,9 @@ class EncounterClosed(DomainEvent):
     # this was found: a deceased patient stayed first in the OPD queue.
     appointment_id: uuid.UUID | None = None
     was_seen: bool = False
+    # Carried rather than re-read: the handler that tells the patient runs
+    # before this transaction commits, and the date is written in it.
+    follow_up_date: date | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

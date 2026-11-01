@@ -85,6 +85,9 @@ class EncounterOpen(BaseModel):
 
 
 class EncounterUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     doctor_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
     chief_complaint: Annotated[str | None, Field(max_length=500)] = None
@@ -333,6 +336,9 @@ class NoteTemplateCreate(BaseModel):
 
 
 class NoteTemplateUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     title: Annotated[str | None, Field(min_length=1, max_length=120)] = None
     body: Annotated[str | None, Field(min_length=1)] = None
     note_type: NoteType | None = None
@@ -395,6 +401,9 @@ class OrderCreate(BaseModel):
     # PENDING_CLEARANCE, so reception stops guessing.
     review_in_visit: bool = False
     blocks_closure: bool = True
+    # SAFE-01. Read only for a PHARMACY order that clashes with a recorded
+    # drug allergy: the prescriber's reason for ordering it anyway.
+    allergy_override_reason: Annotated[str | None, Field(min_length=10, max_length=300)] = None
 
 
 class OrderRead(BaseModel):
@@ -417,6 +426,7 @@ class OrderRead(BaseModel):
     completed_at: datetime | None
     cancelled_at: datetime | None
     cancellation_reason: str | None
+    allergy_override_reason: str | None = None
 
 
 class OrderCancelRequest(BaseModel):

@@ -35,7 +35,7 @@ export function MobileNav({ permissions }: { permissions: readonly string[] }) {
       <Button
         variant="ghost"
         size="icon"
-        className="size-tap md:hidden"
+        className="size-tap lg:hidden"
         onClick={() => setOpen(true)}
         aria-label={t("openMenu")}
       >

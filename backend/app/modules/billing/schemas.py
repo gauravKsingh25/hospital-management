@@ -95,6 +95,9 @@ class RateCardCreate(BaseModel):
 
 
 class RateCardUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=1, max_length=120)] = None
     scheme_code: Annotated[str | None, Field(max_length=32)] = None
     valid_from: date | None = None
@@ -140,6 +143,9 @@ class ServiceItemCreate(BaseModel):
 
 
 class ServiceItemUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[str | None, Field(min_length=1, max_length=200)] = None
     category: ChargeCategory | None = None
     department_id: uuid.UUID | None = None
@@ -516,6 +522,9 @@ class ClaimCreate(BaseModel):
 
 
 class ClaimUpdate(BaseModel):
+    # SEC-08: a field this update cannot change is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     status: ClaimStatus
     approved_amount: Money | None = None
     settled_amount: Money | None = None

@@ -29,6 +29,8 @@ import { api } from "@/lib/api/client";
 import { isApiError } from "@/lib/api/error";
 import { useElapsed } from "@/lib/hooks/use-elapsed";
 import { cn } from "@/lib/utils";
+import { LONG_WAIT_MINUTES } from "@/lib/duration";
+import { useWaitFormatter } from "@/lib/hooks/use-wait";
 import type { AdmissionRequest } from "@/types/api";
 
 /**
@@ -113,6 +115,7 @@ function identityLine(request: AdmissionRequest): string {
 
 function WaitingRow({ request }: { request: AdmissionRequest }) {
   const t = useTranslations("admissions");
+  const wait = useWaitFormatter();
   const common = useTranslations("common");
   const waited = useElapsed(request.requested_at);
   const [admitting, setAdmitting] = useState(false);
@@ -121,7 +124,14 @@ function WaitingRow({ request }: { request: AdmissionRequest }) {
 
   return (
     <li
-      className={cn("flex flex-wrap items-center gap-3 p-3", waited >= 30 && "bg-caution/10")}
+      className={cn(
+        "flex flex-wrap items-center gap-3 p-3",
+        // A day or more at the desk is not "running late" — it is a patient
+        // the desk has lost track of, and it is red (UX-04).
+        waited >= LONG_WAIT_MINUTES
+          ? "bg-critical/10 shadow-[inset_4px_0_0_var(--color-critical)]"
+          : waited >= 30 && "bg-caution/10",
+      )}
       data-testid="admission-request"
     >
       <div className="min-w-[14rem] flex-1 space-y-0.5">
@@ -131,7 +141,7 @@ function WaitingRow({ request }: { request: AdmissionRequest }) {
           {[
             request.doctor_name ? t("fromDoctor", { doctor: request.doctor_name }) : null,
             request.requested_by_name ? t("sentBy", { name: request.requested_by_name }) : null,
-            t("waiting", { minutes: waited }),
+            t("waiting", { duration: wait(waited) }),
           ]
             .filter(Boolean)
             .join(" · ")}
@@ -197,7 +207,8 @@ function HandledRow({ request }: { request: AdmissionRequest }) {
       {admitted && request.admission_id ? (
         <Link
           href={`/admissions/${request.admission_id}`}
-          className="text-sm font-medium underline underline-offset-4"
+          // A full tap target (UX-03): the text link was 20 px tall.
+          className="min-h-tap inline-flex items-center text-sm font-medium underline underline-offset-4"
         >
           {t("openAdmission")}
         </Link>

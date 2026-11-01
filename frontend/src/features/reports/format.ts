@@ -17,6 +17,8 @@
  * turning an occupancy of 83% into 8300%.
  */
 
+import { compactWait } from "@/lib/duration";
+
 /** What an absent number looks like. Never "0", never blank. */
 export const DASH = "—";
 
@@ -47,7 +49,8 @@ export function formatRate(value: number | null | undefined): string {
  */
 export function formatMinutes(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return DASH;
-  return `${Math.round(value)}m`;
+  // "2d 21h", not "4173m" (UX-04).
+  return compactWait(value);
 }
 
 /** A day count to one decimal — ALOS is genuinely read as "4.2 days". */

@@ -82,7 +82,7 @@ async function request<T>(
     // reload is deliberate: it re-runs `proxy.ts`, which sends the user to
     // the login screen with `next` set, so signing back in returns them to
     // the patient they had open rather than to a blank home screen.
-    if (error.isUnauthenticated && typeof window !== "undefined") {
+    if (error.isUnauthenticated && typeof window !== "undefined" && !sessionLocked) {
       // An absolute URL, and a hard navigation rather than `router.push`.
       // Both are deliberate: the full load re-runs `proxy.ts` (which owns the
       // decision about where an unauthenticated user goes) and discards the
@@ -100,6 +100,18 @@ async function request<T>(
   }
 
   return (await response.json()) as T;
+}
+
+/**
+ * Set while the idle lock is up (SEC-04). The lock ends the server session on
+ * purpose, so every background poll now gets a 401 — and the usual response,
+ * a hard navigation to the login page, would throw away the work under the
+ * lock that unlocking exists to keep.
+ */
+let sessionLocked = false;
+
+export function setSessionLocked(locked: boolean): void {
+  sessionLocked = locked;
 }
 
 export const api = {
